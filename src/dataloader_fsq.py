@@ -3,7 +3,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 from typing import Tuple
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from src.tokenization_padding import SequenceTokenizer
+from src.data_util.tokenization_padding import SequenceTokenizer
 import math
 
 # --------------------------------------------------------------------------- #

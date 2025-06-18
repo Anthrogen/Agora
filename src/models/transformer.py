@@ -5,10 +5,10 @@ import torch.nn.functional as F
 from typing import Optional
 import math
 
-from attention.GeometricAttention import GeometricAttention
-from attention.SelfAttention import SelfAttention
-from attention.ReflexiveAttention import ReflexiveAttention
-from attention.Consensus import Consensus
+from src.attention.GeometricAttention import GeometricAttention
+from src.attention.SelfAttention import SelfAttention
+from src.attention.ReflexiveAttention import ReflexiveAttention
+from src.attention.Consensus import Consensus
 
 class FeedForward(nn.Module):
     """Position-wise feed-forward network used in each Transformer block."""

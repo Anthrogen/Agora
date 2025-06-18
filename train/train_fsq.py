@@ -31,10 +31,10 @@ import random
 
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from src.models.autoencoder_fsq import Autoencoder, StandardTransformerBlock
+from src.models.autoencoder import Autoencoder, StandardTransformerBlock
 from src.dataloader_fsq import MLMDataLoader, DiffusionDataLoader
-from src.dataset_fsq import ProteinDataset
-from src.vocabulary_fsq import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from src.data_util.dataset_fsq import ProteinDataset
+from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
 
 # --------------------------------------------------------------------------- #
@@ -95,8 +95,8 @@ class TrainingConfig:
         mask_prob_seq: float = 0.2 # Masking probability for sequence tokens
         mask_prob_struct: float = 0.2 # Masking probability for structure tokens
 
-    data_dir: str = "../data/sample_training_data"  # Data paths
-    checkpoint_dir: str = "../checkpoints"  # Checkpointing
+    data_dir: str = "../data/1k"  # Data paths
+    checkpoint_dir: str = "../checkpoints/fsq"  # Checkpointing
     reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization across architectures
 
 def create_model_with_config(model_type: str, base_config: ModelConfig, device: torch.device) -> Autoencoder:

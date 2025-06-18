@@ -37,10 +37,10 @@ from types import SimpleNamespace
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.models.transformer import TransformerTrunk, StandardTransformerBlock
-from src.models.autoencoder_trunk import FSQEncoder
+from src.models.autoencoder import FSQEncoder
 from src.dataloader_trunk import MLMDataLoader
-from src.dataset_trunk import ProteinBackboneDataset
-from src.vocabulary_trunk import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from src.data_util.dataset_trunk import ProteinBackboneDataset
+from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 
 # --------------------------------------------------------------------------- #
 #  Configurations                                                              #
@@ -84,8 +84,8 @@ class TrainingConfig:
         seq_loss_weight: float = 1.0  # sequence loss weight - complex: 1.0
         struct_loss_weight: float = 0.5  # structure loss weight - complex: 0.5
 
-    data_dir: str = "../data/sample_training_data"  # Data paths
-    checkpoint_dir: str = "checkpoints"  # Checkpointing
+    data_dir: str = "../sample_data/1k/"  # Data paths
+    checkpoint_dir: str = "../checkpoints/transformer_trunk"  # Checkpointing
     reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization across architectures
 
 def create_model_with_config(model_type: str, base_config: ModelConfig, device: torch.device) -> TransformerTrunk:
@@ -344,7 +344,8 @@ def main():
             optimizers[model_type] = AdamW(models[model_type].parameters(), lr=train_cfg.learning_rate)
 
             # Load checkpoint with dynamic path based on model type
-            encoder_checkpoint_path = f"../checkpoints/{model_type}_stage_1_iter1_{train_cfg.masking_strategy}.pt"
+            #TODO: make this configurable; use os.path.join
+            encoder_checkpoint_path = f"../checkpoints/fsq/{model_type}_stage_1_iter1_{train_cfg.masking_strategy}.pt"
             checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
             encoder_state = {k.replace('encoder.', ''): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
             fsq_config = SimpleNamespace(**checkpoint['model_cfg_dict'])

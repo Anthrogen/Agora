@@ -2,7 +2,7 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader
 from typing import Tuple
-from src.tokenization_padding import SequenceTokenizer, StructureTokenizer
+from src.data_util.tokenization_padding import SequenceTokenizer, StructureTokenizer
 import math
 
 # --------------------------------------------------------------------------- #

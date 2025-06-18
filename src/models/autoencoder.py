@@ -6,11 +6,11 @@ from typing import Optional
 import math
 import matplotlib.pyplot as plt
 
-from src.quantizer.fsq_trunk import FSQ
-from attention.GeometricAttention import GeometricAttention
-from attention.SelfAttention import SelfAttention
-from attention.ReflexiveAttention import ReflexiveAttention
-from attention.Consensus import Consensus
+from src.quantizer import FSQ
+from src.attention.GeometricAttention import GeometricAttention
+from src.attention.SelfAttention import SelfAttention
+from src.attention.ReflexiveAttention import ReflexiveAttention
+from src.attention.Consensus import Consensus
 
 class ConvBlock(nn.Module):
     """1D Convolutional block with residual connection."""
