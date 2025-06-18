@@ -95,7 +95,7 @@ class TrainingConfig:
         mask_prob_seq: float = 0.2 # Masking probability for sequence tokens
         mask_prob_struct: float = 0.2 # Masking probability for structure tokens
 
-    data_dir: str = "../data/1k"  # Data paths
+    data_dir: str = "../sample_data/1k"  # Data paths
     checkpoint_dir: str = "../checkpoints/fsq"  # Checkpointing
     reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization across architectures
 
