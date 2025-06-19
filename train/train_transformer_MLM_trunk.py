@@ -39,7 +39,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.models.transformer import TransformerTrunk, StandardTransformerBlock
 from src.models.autoencoder import FSQEncoder
 from src.dataloader_trunk import MLMDataLoader
-from src.data_util.dataset_trunk import ProteinBackboneDataset
+from src.data_util.dataset import ProteinDataset
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 
 # --------------------------------------------------------------------------- #
@@ -390,7 +390,7 @@ def main():
         np.random.seed(data_seed)
         random.seed(data_seed)
         
-        dataset = ProteinBackboneDataset(train_cfg.data_dir, max_length=model_cfg.max_len - 2) # Reserve 2 positions for BOS/EOS
+        dataset = ProteinDataset(train_cfg.data_dir, max_length=model_cfg.max_len - 2) # Reserve 2 positions for BOS/EOS
         val_size = max(1, int(0.2 * len(dataset)))
         train_size = len(dataset) - val_size
         train_ds, val_ds = random_split(dataset, [train_size, val_size])

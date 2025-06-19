@@ -30,7 +30,7 @@ from types import SimpleNamespace
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.models.transformer import TransformerTrunk, StandardTransformerBlock
 from src.models.autoencoder import FSQEncoder
-from src.data_util.dataset_trunk import ProteinDataset
+from src.data_util.dataset import ProteinDataset
 from src.dataloader_trunk import DiffusionDataLoader 
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 

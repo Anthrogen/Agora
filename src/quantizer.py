@@ -24,7 +24,7 @@ def pack_one(t: Tensor, pattern: str):
 def unpack_one(t: Tensor, ps, pattern: str):
     return unpack(t, ps, pattern)[0]
 
-class FSQ(nn.Module):
+class Quantizer(nn.Module):
     """
     Finite Scalar Quantizer.
     levels: list of ints, number of quantization levels along each code dimension.

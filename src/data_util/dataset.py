@@ -257,7 +257,7 @@ class ProteinDataset(Dataset):
         # 1) Load protein structure from JSON file
         path = self.file_paths[idx]
 
-        protein = JSONWrapper(path, mode = self.mode)
+        protein = JSONWrapper(path, mode=self.mode)
         coords = protein.coords[:self.max_length]
         seq = protein.seq[:self.max_length]
         l = torch.tensor(min(protein.len, self.max_length))

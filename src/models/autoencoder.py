@@ -5,136 +5,9 @@ import torch.nn.functional as F
 from typing import Optional
 import math
 import matplotlib.pyplot as plt
+from src.quantizer import Quantizer
 
-from src.quantizer import FSQ
-from src.attention.GeometricAttention import GeometricAttention
-from src.attention.SelfAttention import SelfAttention
-from src.attention.ReflexiveAttention import ReflexiveAttention
-from src.attention.Consensus import Consensus
-
-class ConvBlock(nn.Module):
-    """1D Convolutional block with residual connection."""
-    def __init__(self, channels, kernel_size=3):
-        super().__init__()
-        self.conv = nn.Conv1d(
-            channels, 
-            channels, 
-            kernel_size=kernel_size, 
-            padding=kernel_size//2
-        )
-        self.norm = nn.BatchNorm1d(channels)
-        self.act = nn.GELU()
-        
-    def forward(self, x):
-        """
-        x: [B, C, L]
-        """
-        residual = x
-        x = self.conv(x)
-        x = self.norm(x)
-        x = self.act(x)
-        return x + residual
-
-class FeedForward(nn.Module):
-    """Position-wise feed-forward network used in each Transformer block."""
-
-    def __init__(self, d_model: int, hidden_dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d_model, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, d_model),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # [B, L, d]
-        return self.net(x)
-
-class StandardTransformerBlock(nn.Module):
-    """Standard transformer block: LayerNorm + SelfAttention + LayerNorm + FeedForward."""
-
-    def __init__(self, cfg):
-        super().__init__()
-        self.self_attn = SelfAttention(cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, max_position_embeddings=cfg.max_len)
-        self.ff = FeedForward(cfg.d_model, hidden_dim=cfg.ff_hidden_dim, dropout=cfg.dropout)
-        
-        self.norm1 = nn.LayerNorm(cfg.d_model)
-        self.norm2 = nn.LayerNorm(cfg.d_model)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Layer norm + self-attention + residual
-        x = x + self.self_attn(self.norm1(x))
-        # Layer norm + feed-forward + residual  
-        x = x + self.ff(self.norm2(x))
-        return x
-
-class GeometricTransformerBlock(nn.Module):
-    """Geometric transformer block: LayerNorm + SelfAttention + LayerNorm + GeometricAttention + LayerNorm + FeedForward."""
-
-    def __init__(self, cfg):
-        super().__init__()
-        self.self_attn = SelfAttention(cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, max_position_embeddings=cfg.max_len)
-        self.geom_attn = GeometricAttention(cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout)
-        self.ff = FeedForward(cfg.d_model, hidden_dim=cfg.ff_hidden_dim, dropout=cfg.dropout)
-        
-        self.norm1 = nn.LayerNorm(cfg.d_model)
-        self.norm2 = nn.LayerNorm(cfg.d_model)
-        self.norm3 = nn.LayerNorm(cfg.d_model)
-
-    def forward(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None, coord_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        assert coords is not None, "Coordinates are required for GeometricTransformerBlock"
-        
-        # Layer norm + self-attention + residual
-        x = x + self.self_attn(self.norm1(x))
-        # Layer norm + geometric attention + residual
-        x = x + self.geom_attn(self.norm2(x), coords, coord_mask)
-        # Layer norm + feed-forward + residual
-        x = x + self.ff(self.norm3(x))
-        return x
-
-class ReflexiveTransformerBlock(nn.Module):
-    """Reflexive transformer block: LayerNorm + SelfAttention + LayerNorm + ReflexiveAttention + LayerNorm + FeedForward."""
-
-    def __init__(self, cfg):
-        super().__init__()
-        self.self_attn = SelfAttention(cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, max_position_embeddings=cfg.max_len)
-        self.refl_attn = ReflexiveAttention(cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout)
-        self.ff = FeedForward(cfg.d_model, hidden_dim=cfg.ff_hidden_dim, dropout=cfg.dropout)
-        
-        self.norm1 = nn.LayerNorm(cfg.d_model)
-        self.norm2 = nn.LayerNorm(cfg.d_model)
-        self.norm3 = nn.LayerNorm(cfg.d_model)
-
-    def forward(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None, coord_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        assert coords is not None, "Coordinates are required for ReflexiveTransformerBlock"
-        
-        # Layer norm + self-attention + residual
-        x = x + self.self_attn(self.norm1(x))
-        # Layer norm + reflexive attention + residual
-        x = x + self.refl_attn(self.norm2(x), coords, coord_mask)
-        # Layer norm + feed-forward + residual
-        x = x + self.ff(self.norm3(x))
-        return x
-
-class ConsensusTransformerBlock(nn.Module):
-    """Consensus transformer block: LayerNorm + Consensus + LayerNorm + FeedForward."""
-
-    def __init__(self, cfg):
-        super().__init__()
-        # Use Consensus instead of SelfAttention
-        self.consensus = Consensus(dim=cfg.d_model, dropout=cfg.dropout, num_iterations=cfg.consensus_num_iterations, connectivity_type=cfg.consensus_connectivity_type, 
-                                   w=cfg.consensus_w, r=cfg.consensus_r, edge_hidden_dim=cfg.consensus_edge_hidden_dim, max_len=cfg.max_len)
-        self.ff = FeedForward(cfg.d_model, hidden_dim=cfg.ff_hidden_dim, dropout=cfg.dropout)
-        
-        self.norm1 = nn.LayerNorm(cfg.d_model)
-        self.norm2 = nn.LayerNorm(cfg.d_model)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Layer norm + consensus + residual
-        x = x + self.consensus(self.norm1(x))
-        # Layer norm + feed-forward + residual
-        x = x + self.ff(self.norm2(x))
-        return x
+from src.models.blocks import ConvBlock, StandardTransformerBlock, GeometricTransformerBlock, ReflexiveTransformerBlock, ConsensusTransformerBlock
 
 class FSQEncoder(nn.Module):
     """
@@ -188,7 +61,7 @@ class FSQEncoder(nn.Module):
         # FSQ Quantizer
         # Using custom level structure: [7, 5, 5, 5, 5]
         # Codebook size = 7 × 5 × 5 × 5 × 5 = 4,375 discrete codes
-        self.quantizer = FSQ(levels=cfg.fsq_levels, dim=cfg.fsq_dim, scale=1)
+        self.quantizer = Quantizer(levels=cfg.fsq_levels, dim=cfg.fsq_dim, scale=1)
         
     def forward(
         self,
