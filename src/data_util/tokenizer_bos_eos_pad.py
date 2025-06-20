@@ -105,12 +105,13 @@ class StructureTokenizer():
         self.mapping = {name: member.value + self.fsq_output_max + 1 for name, member in SPECIAL_TOKENS.__members__.items()}
 
         self.coordinates_tokenizer = CoordinatesTokenizer(full_length)
+        self.reapply_bos_eos_pad = reapply_bos_eos_pad
 
     def tokenize(self, coords):
         assert self.fsq_encoder is not None, "FSQ encoder is not set!"
         assert coords.shape[0] == self.full_length
 
-        
+
         # Coordinates tensor: [M, H, 3]
         # M is at most full_length.  H is number of atoms per residue.
 
