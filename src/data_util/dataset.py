@@ -52,13 +52,16 @@ for k in ATOMS:
     assert ATOMS[k][ATOM_O_ENC] == "O"
     assert len(ATOMS[k]) <= ENCODING_LEN
 
-class JSONWrapper():
+class Protein():
     """
     To test this code, try it with:
 
-    JSONWrapper("/workspace/demo/transformer_stack/data/sample_training_data/7x99_B.json", True)
+    Protein("/workspace/demo/transformer_stack/data/sample_training_data/7x99_B.json", True)
 
     Modes: side_chain, backbone
+
+    TODO: this class should have two methods of construction: one from PDB/JSON, one from sequence and coordinate tensors.
+    TODO: furthrmore, we should be able to "dump" to PDB/JSON from this class.
     """
     def __init__(self, file_path, mode="side_chain"):
 
@@ -220,6 +223,7 @@ class JSONWrapper():
         
         return chirality_vector
 
+    
 class ProteinDataset(Dataset):
     def __init__(self, root_dir: str, center: bool = True, mode: str = "backbone", max_length: int = 2048):
         self.root_dir = root_dir
@@ -237,7 +241,7 @@ class ProteinDataset(Dataset):
         for fn in all_files:
             path = os.path.join(root_dir, fn)
             try:
-                protein = JSONWrapper(path, mode=self.mode)
+                protein = Protein(path, mode=self.mode)
                 valid_paths.append(path)
    
             except Exception as e:
@@ -257,7 +261,7 @@ class ProteinDataset(Dataset):
         # 1) Load protein structure from JSON file
         path = self.file_paths[idx]
 
-        protein = JSONWrapper(path, mode=self.mode)
+        protein = Protein(path, mode=self.mode)
         coords = protein.coords[:self.max_length]
         seq = protein.seq[:self.max_length]
         l = torch.tensor(min(protein.len, self.max_length))

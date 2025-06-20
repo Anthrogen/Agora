@@ -32,7 +32,7 @@ import random
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.models.autoencoder import Autoencoder, StandardTransformerBlock
-from src.dataloader_fsq import MLMDataLoader, DiffusionDataLoader
+from src.dataloader import MaskedBatch, SimpleDataLoader, ComplexDataLoader, DiffusionDataLoader, NoMaskDataLoader, _get_training_dataloader
 from src.data_util.dataset import ProteinDataset
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
@@ -47,6 +47,7 @@ class ModelConfig:
     fsq_dim: int = 5
     fsq_levels: list[int] = field(default_factory=lambda: [7, 5, 5, 5, 5])
     stage: str = "stage_1" # "stage_1" or "stage_2"
+    fsq_encoder = None
     
     # Transformer parameters
     model_type: Optional[str] = None # Placeholder for model type
@@ -163,6 +164,8 @@ def ensure_identical_parameters_all_models(models: Dict[str, Autoencoder], seed:
             if model is not ref_model:
                 # Copy encoder components
                 # Input projection and conv blocks are shared
+                #TODO: this needs to be in the model.
+                #e.g. model.load(state_dictionary) and it can unpack what it needs internally.
                 model.encoder.input_proj.load_state_dict(ref_model.encoder.input_proj.state_dict())
                 model.encoder.encoder_conv1.load_state_dict(ref_model.encoder.encoder_conv1.state_dict())
                 model.encoder.encoder_conv2.load_state_dict(ref_model.encoder.encoder_conv2.state_dict())
@@ -198,57 +201,44 @@ def worker_init_fn(worker_id):
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
-def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim.Optimizer], batch_data: Tuple, model_cfg: ModelConfig, device: torch.device) -> Dict[str, Dict[str, float]]:
+def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim.Optimizer], batch: MaskedBatch, model_cfg: ModelConfig, device: torch.device) -> Dict[str, Dict[str, float]]:
     """Perform a single training step for all models with the same batch."""
     metrics = {} # Store metrics for each model
     
     if model_cfg.stage == "stage_1":
+
         # Stage 1: Masked coordinate reconstruction
-        masked_coords, mask_struct, lengths = batch_data
-        B, L, H, _ = masked_coords.shape
-        
-        # Create coord_mask for GA/RA models (valid positions that are not masked)
-        positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-        valid_start = 1
-        valid_end = lengths.unsqueeze(1) + 1
-        coord_mask = (positions >= valid_start) & (positions < valid_end)
-        coord_mask = coord_mask & (~mask_struct)
-        
-        # Ensure at least one position is valid in coord_mask for each sequence
-        all_masked = ~coord_mask.any(dim=1)
-        if all_masked.any():
-            for idx in torch.where(all_masked)[0]:
-                # When all positions are masked, add dummy coordinates to prevent NaNs
-                # Create minimal valid coordinates at position 1 (after BOS)
-                # Set non-collinear coordinates that form a proper triangle:
-                # N at origin, CA displaced in x, C displaced in x and y
-                masked_coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)  # N
-                masked_coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)  # CA  
-                masked_coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)  # C
-                # Update coord_mask for this position
-                coord_mask[idx, 1] = True
+        B, L, H, _ = batch.masked_data['coords'].shape
         
         # Train each model on the same batch
         for model_type, model in models.items():
             model.train()
             optimizer = optimizers[model_type]
+
+            indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+            unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
+            unmasked_indices = indices[unmasked_elements]
             
             # Forward pass - use only first 3 atoms for standard coordinates
-            coords_input = masked_coords[:, :, :3, :]  # [B, L, 3, 3]
-            if model_type in ("GA", "RA"): x_rec, _ = model(coords_input, masked_coords, coord_mask)
-            else: x_rec, _ = model(coords_input)
+            three_atom_masked_coords = batch.masked_data['coords'][:, :, :3, :]  # [B, L, 3, 3]
+            if model_type in ("GA", "RA"): x_rec, _ = model(three_atom_masked_coords, batch.masked_data['coords'], unmasked_elements)
+            else: x_rec, _ = model(three_atom_masked_coords)
+
+
             
-            # Compute loss on unmasked positions
-            # Extract valid (unmasked) coordinates
+            # In order to run KABSCH, we need to isolate only unmasked residues into a [U, 3, 3] tensor for each protein in the batch, where U is number of unmasked residues in a given protein.
             pts_pred = []; pts_true = []
-            for b in range(B):
-                valid_mask = coord_mask[b]  # Valid and unmasked positions
-                if valid_mask.any():
-                    pred_coords = x_rec[b][valid_mask]  # [M, 3, 3]
-                    true_coords = masked_coords[b, valid_mask, :3, :]  # [M, 3, 3] - only first 3 atoms!
-                    # Flatten to [1, M*3, 3]
-                    pts_pred.append(pred_coords.reshape(1, -1, 3))
-                    pts_true.append(true_coords.reshape(1, -1, 3))
+            for batch_idx in range(B):
+                
+                real_residues = unmasked_indices[batch_idx]
+                assert real_residues.any() # This should have been gauranteed by dataloader
+                
+                pred_coords = x_rec[batch_idx][real_residues]  # [U, 3, 3]
+                true_coords = batch.masked_data['coords'][batch_idx, real_residues, :3, :]  # [U, 3, 3] - only first 3 atoms!
+
+                # Flatten to [1, U*3, 3]
+                pts_pred.append(pred_coords.reshape(1, -1, 3))
+                pts_true.append(true_coords.reshape(1, -1, 3))
             
             # Compute squared Kabsch RMSD loss and regular RMSD
             if pts_pred:
@@ -267,30 +257,17 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
             
             # Store metrics
             metrics[model_type] = {'loss': loss.item(), 'rmsd': rmsd.item()}
+
+
     
     elif model_cfg.stage == "stage_2":
         # Stage 2: Full structure reconstruction from frozen encoder
-        seq_tokens, coords, lengths = batch_data
-        B, L = seq_tokens.shape
+        B, L, H, _ = batch.masked_data['coords'].shape
         
         # Create coord_mask for GA/RA models
-        positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-        valid_start = 1
-        valid_end = lengths.unsqueeze(1) + 1
-        coord_mask = (positions >= valid_start) & (positions < valid_end)
-        
-        # Ensure at least one position is valid in coord_mask for each sequence
-        all_masked = ~coord_mask.any(dim=1)  # Check which sequences have all positions masked
-        if all_masked.any():
-            for idx in torch.where(all_masked)[0]:
-                # When all positions are masked, add dummy coordinates to prevent NaNs
-                # Create minimal valid coordinates at position 1 (after BOS)
-                # Set non-collinear coordinates to prevent issues in GeometricAttention
-                coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)  # N
-                coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)  # CA  
-                coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)  # C
-                # Update coord_mask
-                coord_mask[idx, 1] = True
+        indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+        unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
+        unmasked_indices = indices[unmasked_elements]
         
         # Train each model on the same batch
         for model_type, model in models.items():
@@ -300,39 +277,35 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
             
             # Forward pass through frozen encoder to get z_q
             with torch.no_grad():
-                masked_coords = coords[:, :, :4, :]  # [B, L, 4, 3] for encoder
-                coords_input = coords[:, :, :3, :]  # [B, L, 3, 3]
-                if model_type in ("GA", "RA"): z_q, _ = model.encoder(coords_input, masked_coords, coord_mask)
-                else: z_q, _ = model.encoder(coords_input)
+                four_atom = batch.masked_data['coords'][:, :, :4, :]  # [B, L, 4, 3] for encoder
+                three_atom = batch.masked_data['coords'][:, :, :3, :]  # [B, L, 3, 3]
+                if model_type in ("GA", "RA"): z_q, _ = model.encoder(three_atom, four_atom, unmasked_elements)
+                else: z_q, _ = model.encoder(three_atom)
             
-            # Zero out BOS/EOS positions in z_q before concatenation
-            # BOS is always at position 0
-            z_q[:, 0, :] = 0.0
-            # EOS is at position lengths + 1 (due to BOS offset)
-            batch_indices = torch.arange(B, device=device)
-            eos_positions = (lengths + 1).long()
-            z_q[batch_indices, eos_positions, :] = 0.0
+            # Zero out BOS/EOS/PAD positions in z_q
+            z_q[batch.beospad['coords']] = 0.0
             
             # Concatenate z_q with seq_tokens along last dimension
             # z_q: [B, L, fsq_dim], seq_tokens: [B, L] -> [B, L, 1]
-            seq_tokens_float = seq_tokens.unsqueeze(-1).float()  # [B, L, 1]
+            seq_tokens_float = batch.masked_data['seq'].unsqueeze(-1).float()  # [B, L, 1]
             decoder_input = torch.cat([z_q, seq_tokens_float], dim=-1)  # [B, L, fsq_dim + 1]
             
             # Decoder forward pass
-            if model_type in ("GA", "RA"): x_rec = model.decoder(decoder_input, masked_coords, coord_mask)
+            if model_type in ("GA", "RA"): x_rec = model.decoder(decoder_input, four_atom, unmasked_elements)
             else: x_rec = model.decoder(decoder_input)
             
             # x_rec is [B, L, 14, 3] for stage 2
             # Compute loss on all valid positions (no masking in stage 2)
             pts_pred = []; pts_true = []
-            for b in range(B):
-                valid_mask = coord_mask[b]
-                if valid_mask.any():
-                    pred_coords = x_rec[b][valid_mask]  # [M, 14, 3] 
-                    true_coords = coords[b][valid_mask]  # [M, 14, 3]
-                    # Flatten to [1, M*14, 3]
-                    pts_pred.append(pred_coords.reshape(1, -1, 3))
-                    pts_true.append(true_coords.reshape(1, -1, 3))
+            for batch_idx in range(B):
+                real_residues = unmasked_indices[batch_idx]
+                assert real_residues.any() # This should have been gauranteed by dataloader.
+
+                pred_coords = x_rec[batch_idx][real_residues]  # [M, 14, 3] 
+                true_coords = batch.masked_data['coords'][batch_idx][real_residues]  # [M, 14, 3]
+                # Flatten to [1, M*14, 3]
+                pts_pred.append(pred_coords.reshape(1, -1, 3))
+                pts_true.append(true_coords.reshape(1, -1, 3))
             
             # Compute squared Kabsch RMSD loss
             if pts_pred:
@@ -354,35 +327,18 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
     
     return metrics
 
-def validate_step(models: Dict[str, Autoencoder], batch_data: Tuple, model_cfg: ModelConfig, device: torch.device) -> Dict[str, Dict[str, float]]:
+def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg: ModelConfig, device: torch.device) -> Dict[str, Dict[str, float]]:
     """Perform a single validation step for all models with the same batch."""
     metrics = {} # Store metrics for each model
     
     if model_cfg.stage == "stage_1":
         # Stage 1: Masked coordinate reconstruction
-        masked_coords, mask_struct, lengths = batch_data
-        B, L, H, _ = masked_coords.shape
+        B, L, H, _ = batch.masked_data['coords'].shape
         
         # Create coord_mask for GA/RA models (valid positions that are not masked)
-        positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-        valid_start = 1
-        valid_end = lengths.unsqueeze(1) + 1
-        coord_mask = (positions >= valid_start) & (positions < valid_end)
-        coord_mask = coord_mask & (~mask_struct)
-        
-        # Ensure at least one position is valid in coord_mask for each sequence
-        all_masked = ~coord_mask.any(dim=1)
-        if all_masked.any():
-            for idx in torch.where(all_masked)[0]:
-                # When all positions are masked, add dummy coordinates to prevent NaNs
-                # Create minimal valid coordinates at position 1 (after BOS)
-                # Set non-collinear coordinates that form a proper triangle:
-                # N at origin, CA displaced in x, C displaced in x and y
-                masked_coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)  # N
-                masked_coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)  # CA  
-                masked_coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)  # C
-                # Update coord_mask for this position
-                coord_mask[idx, 1] = True
+        indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+        unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
+        unmasked_indices = indices[unmasked_elements]
         
         # Evaluate each model on the same batch
         for model_type, model in models.items():
@@ -390,21 +346,24 @@ def validate_step(models: Dict[str, Autoencoder], batch_data: Tuple, model_cfg: 
             
             with torch.no_grad():
                 # Forward pass - use only first 3 atoms for standard coordinates
-                coords_input = masked_coords[:, :, :3, :]  # [B, L, 3, 3]
-                if model_type in ("GA", "RA"): x_rec, _ = model(coords_input, masked_coords, coord_mask)
-                else: x_rec, _ = model(coords_input)
+                three_atoms = batch.masked_data['coords'][:, :, :3, :]  # [B, L, 3, 3]
+
+                #TODO: so is coords_mask for masked or unmasked positions?  I think unmasked?
+                if model_type in ("GA", "RA"): x_rec, _ = model(three_atoms, batch.masked_data['coords'], unmasked_elements)
+                else: x_rec, _ = model(three_atoms)
                 
                 # Compute loss on unmasked positions
                 # Extract valid (unmasked) coordinates
                 pts_pred = []; pts_true = []
-                for b in range(B):
-                    valid_mask = coord_mask[b]  # Valid and unmasked positions
-                    if valid_mask.any():
-                        pred_coords = x_rec[b][valid_mask]  # [M, 3, 3]
-                        true_coords = masked_coords[b, valid_mask, :3, :]  # [M, 3, 3] - only first 3 atoms!
-                        # Flatten to [1, M*3, 3]
-                        pts_pred.append(pred_coords.reshape(1, -1, 3))
-                        pts_true.append(true_coords.reshape(1, -1, 3))
+                for batch_idx in range(B):
+                    real_residues = unmasked_indices[batch_idx]  # Valid and unmasked positions
+                    assert real_residues.any() # Dataloader should have guaranteed this.
+
+                    pred_coords = x_rec[batch_idx][real_residues]  # [M, 3, 3]
+                    true_coords = batch.masked_data['coords'][batch_idx, real_residues, :3, :]  # [M, 3, 3] - only first 3 atoms!
+                    # Flatten to [1, M*3, 3]
+                    pts_pred.append(pred_coords.reshape(1, -1, 3))
+                    pts_true.append(true_coords.reshape(1, -1, 3))
                 
                 # Compute squared Kabsch RMSD loss and regular RMSD
                 if pts_pred:
@@ -419,27 +378,12 @@ def validate_step(models: Dict[str, Autoencoder], batch_data: Tuple, model_cfg: 
     
     elif model_cfg.stage == "stage_2":
         # Stage 2: Full structure reconstruction from frozen encoder
-        seq_tokens, coords, lengths = batch_data
-        B, L = seq_tokens.shape
+        B, L, H, _ = batch.masked_data['coords'].shape
         
         # Create coord_mask for GA/RA models
-        positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-        valid_start = 1
-        valid_end = lengths.unsqueeze(1) + 1
-        coord_mask = (positions >= valid_start) & (positions < valid_end)
-        
-        # Ensure at least one position is valid in coord_mask for each sequence
-        all_masked = ~coord_mask.any(dim=1)  # Check which sequences have all positions masked
-        if all_masked.any():
-            for idx in torch.where(all_masked)[0]:
-                # When all positions are masked, add dummy coordinates to prevent NaNs
-                # Create minimal valid coordinates at position 1 (after BOS)
-                # Set non-collinear coordinates to prevent issues in GeometricAttention
-                coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)  # N
-                coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)  # CA  
-                coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)  # C
-                # Update coord_mask
-                coord_mask[idx, 1] = True
+        indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+        unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
+        unmasked_indices = indices[unmasked_elements]
         
         # Evaluate each model on the same batch
         for model_type, model in models.items():
@@ -447,39 +391,34 @@ def validate_step(models: Dict[str, Autoencoder], batch_data: Tuple, model_cfg: 
             
             with torch.no_grad():
                 # Forward pass through frozen encoder to get z_q
-                masked_coords = coords[:, :, :4, :]  # [B, L, 4, 3] for encoder
-                coords_input = coords[:, :, :3, :]  # [B, L, 3, 3]
-                if model_type in ("GA", "RA"): z_q, _ = model.encoder(coords_input, masked_coords, coord_mask)
-                else: z_q, _ = model.encoder(coords_input)
+                four_atoms = batch.masked_data['coords'][:, :, :4, :]  # [B, L, 4, 3] for encoder
+                three_atoms = batch.masked_data['coords'][:, :, :3, :]  # [B, L, 3, 3]
+                if model_type in ("GA", "RA"): z_q, _ = model.encoder(three_atoms, four_atoms, unmasked_elements)
+                else: z_q, _ = model.encoder(three_atoms)
                 
-                # Zero out BOS/EOS positions in z_q before concatenation
-                # BOS is always at position 0
-                z_q[:, 0, :] = 0.0
-                # EOS is at position lengths + 1 (due to BOS offset)
-                batch_indices = torch.arange(B, device=device)
-                eos_positions = (lengths + 1).long()
-                z_q[batch_indices, eos_positions, :] = 0.0
+                # Zero out BOS/EOS/PAD positions in z_q
+                z_q[batch.beospad['coords']] = 0.0
                 
                 # Concatenate z_q with seq_tokens along last dimension
                 # z_q: [B, L, fsq_dim], seq_tokens: [B, L] -> [B, L, 1]
-                seq_tokens_float = seq_tokens.unsqueeze(-1).float()  # [B, L, 1]
+                seq_tokens_float = batch.masked_data['seq'].unsqueeze(-1).float()  # [B, L, 1]
                 decoder_input = torch.cat([z_q, seq_tokens_float], dim=-1)  # [B, L, fsq_dim + 1]
                 
                 # Decoder forward pass
-                if model_type in ("GA", "RA"): x_rec = model.decoder(decoder_input, masked_coords, coord_mask)
+                if model_type in ("GA", "RA"): x_rec = model.decoder(decoder_input, four_atoms, unmasked_elements)
                 else: x_rec = model.decoder(decoder_input)
                 
                 # x_rec is [B, L, 14, 3] for stage 2
                 # Compute loss on all valid positions (no masking in stage 2)
                 pts_pred = []; pts_true = []
-                for b in range(B):
-                    valid_mask = coord_mask[b]
-                    if valid_mask.any():
-                        pred_coords = x_rec[b][valid_mask]  # [M, 14, 3] 
-                        true_coords = coords[b][valid_mask]  # [M, 14, 3]
-                        # Flatten to [1, M*14, 3]
-                        pts_pred.append(pred_coords.reshape(1, -1, 3))
-                        pts_true.append(true_coords.reshape(1, -1, 3))
+                for batch_idx in range(B):
+                    real_residues = unmasked_indices[batch_idx]
+                    assert real_residues.any()
+                    pred_coords = x_rec[batch_idx][real_residues]  # [M, 14, 3] 
+                    true_coords = batch.masked_data['coords'][batch_idx][real_residues]  # [M, 14, 3]
+                    # Flatten to [1, M*14, 3]
+                    pts_pred.append(pred_coords.reshape(1, -1, 3))
+                    pts_true.append(true_coords.reshape(1, -1, 3))
                 
                 # Compute squared Kabsch RMSD loss
                 if pts_pred:
@@ -608,32 +547,17 @@ def main():
         
         # Use different masking strategies for stage 1 vs stage 2
         if model_cfg.stage == "stage_1":
-            if train_cfg.masking_strategy == "simple" or train_cfg.masking_strategy == "complex":
-                train_loader = MLMDataLoader(train_ds, model_cfg=model_cfg, masking_strategy=train_cfg.masking_strategy, mask_prob_struct=train_cfg.mask_prob_struct, 
-                    device=device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn
-                )
-                
-                val_loader = MLMDataLoader(val_ds, model_cfg=model_cfg, masking_strategy=train_cfg.masking_strategy, mask_prob_struct=train_cfg.mask_prob_struct, 
-                    device=device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn
-                )
-                
-            elif train_cfg.masking_strategy == "discrete_diffusion":
-                train_loader = DiffusionDataLoader(train_ds, model_cfg=model_cfg, diffusion_cfg=diffusion_cfg, 
-                    device=device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn
-                )
-                
-                val_loader = DiffusionDataLoader(val_ds, model_cfg=model_cfg, diffusion_cfg=diffusion_cfg,
-                    device=device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn
-                )
+
+            stage_1_tracks = {'seq': False, 'struct': False, 'coords': True}
+            train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, stage_1_tracks, device=device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn)
+            val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, stage_1_tracks, device=device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn)
 
         elif model_cfg.stage == "stage_2":  # stage_2 - no masking
-            train_loader = MLMDataLoader(train_ds, model_cfg=model_cfg, device=device, batch_size=train_cfg.batch_size, shuffle=True,
-                generator=g_train, worker_init_fn=worker_init_fn
-            )
-            
-            val_loader = MLMDataLoader(val_ds, model_cfg=model_cfg, device=device, batch_size=train_cfg.batch_size, shuffle=False,
-                generator=g_val, worker_init_fn=worker_init_fn
-            )
+
+            stage_2_tracks = {'seq': True, 'struct': False, 'coords': True}
+            train_loader = NoMaskDataLoader(train_ds, model_cfg, train_cfg, stage_2_tracks, device=device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn)
+            val_loader = NoMaskDataLoader(val_ds, model_cfg, train_cfg, stage_2_tracks, device=device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn)
+
         
         # Initialize tracking for each model
         history = {model_type: {'train_loss': [], 'train_rmsd': [], 'val_loss': [], 'val_rmsd': []} for model_type in train_cfg.model_types}
