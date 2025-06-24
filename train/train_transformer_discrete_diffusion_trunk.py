@@ -393,8 +393,8 @@ def main():
 
         diffusion_tracks = {'seq': True, 'struct': True, 'coords': True}
         min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
-        train_loader = DiffusionDataLoader(train_ds, model_cfg, train_cfg, diffusion_cfg, diffusion_tracks, fsq_encoder=fsq_encoders[train_cfg.model_types[0]], device=device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
-        val_loader = DiffusionDataLoader(val_ds, model_cfg, train_cfg, diffusion_cfg, diffusion_tracks, fsq_encoder=fsq_encoders[train_cfg.model_types[0]], device=device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
+        train_loader = DiffusionDataLoader(train_ds, model_cfg, train_cfg, diffusion_cfg, diffusion_tracks, device, fsq_encoder=fsq_encoders[train_cfg.model_types[0]], batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
+        val_loader = DiffusionDataLoader(val_ds, model_cfg, train_cfg, diffusion_cfg, diffusion_tracks, device, fsq_encoder=fsq_encoders[train_cfg.model_types[0]], batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
         
         # Initialize tracking
         history = {

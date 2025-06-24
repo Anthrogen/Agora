@@ -565,14 +565,14 @@ def main():
 
             stage_1_tracks = {'seq': False, 'struct': False, 'coords': True}
             min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
-            train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, stage_1_tracks, device=device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
-            val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, stage_1_tracks, device=device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
+            train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, stage_1_tracks, device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
+            val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, stage_1_tracks, device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
 
         elif model_cfg.stage == "stage_2":  # stage_2 - no masking
 
             stage_2_tracks = {'seq': True, 'struct': False, 'coords': True}
-            train_loader = NoMaskDataLoader(train_ds, model_cfg, train_cfg, stage_2_tracks, device=device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
-            val_loader = NoMaskDataLoader(val_ds, model_cfg, train_cfg, stage_2_tracks, device=device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
+            train_loader = NoMaskDataLoader(train_ds, model_cfg, train_cfg, stage_2_tracks, device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
+            val_loader = NoMaskDataLoader(val_ds, model_cfg, train_cfg, stage_2_tracks, device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
 
         
         # Initialize tracking for each model

@@ -145,17 +145,17 @@ def _sample_cosine(batch_size: int, device: torch.device) -> torch.Tensor:
     mask_rates = torch.sin(u * np.pi / 2)  # Apply sine transformation
     return torch.clamp(mask_rates, min=0.05, max=0.95)  # Clamp to avoid extreme values
 
-def _get_training_dataloader(dataset, model_cfg, train_cfg, tracks, device=None, diffusion_cfg=None, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
+def _get_training_dataloader(dataset, model_cfg, train_cfg, tracks, device, diffusion_cfg=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
     #TODO: replace this with a constructor that simply examines the MaskCfg object of the TrainingConfig object
     if train_cfg.masking_strategy == "simple":
-        return SimpleDataLoader(dataset, model_cfg, train_cfg, tracks, **kwargs)
+        return SimpleDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
     elif train_cfg.masking_strategy == "complex":
-        return ComplexDataLoader(dataset, model_cfg, train_cfg, tracks, **kwargs)
+        return ComplexDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
     elif train_cfg.masking_strategy == "discrete_diffusion":
         assert diffusion_cfg is not None, "Diffusion config is required for discrete diffusion"
-        return DiffusionDataLoader(dataset, model_cfg, train_cfg, diffusion_cfg, tracks, **kwargs)
+        return DiffusionDataLoader(dataset, model_cfg, train_cfg, diffusion_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
     elif train_cfg.masking_strategy == "no_mask":
-        return NoMaskDataLoader(dataset, model_cfg, train_cfg, tracks, **kwargs)
+        return NoMaskDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
     else:
         raise ValueError(f"Unknown masking strategy: {train_cfg.masking_strategy}")
     
@@ -163,7 +163,7 @@ def _get_training_dataloader(dataset, model_cfg, train_cfg, tracks, device=None,
 class MaskingDataLoader(DataLoader):
     """DataLoader that applies masking during collation."""
     
-    def __init__(self, dataset, model_cfg, train_cfg, tracks, fsq_encoder=None, device=None, 
+    def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None,  
                   propogate_coords_mask=True, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
 
         self.device = device if device is not None else torch.device("cpu")
@@ -212,8 +212,8 @@ class MaskingDataLoader(DataLoader):
 
     
 class SimpleDataLoader(MaskingDataLoader):
-    def __init__(self, dataset, model_cfg, train_cfg, tracks, fsq_encoder=None, device=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-        super(SimpleDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, fsq_encoder=fsq_encoder, device=device, min_unmasked=min_unmasked,  **kwargs)
+    def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
+        super(SimpleDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device,fsq_encoder=fsq_encoder, min_unmasked=min_unmasked,  **kwargs)
 
         self.simple_mask_prob = {'seq': train_cfg.mask_prob_seq, 'coords': train_cfg.mask_prob_coords}
 
@@ -225,8 +225,8 @@ class SimpleDataLoader(MaskingDataLoader):
             batch.masks[track] = mask.bool()
     
 class ComplexDataLoader(MaskingDataLoader):
-    def __init__(self, dataset, model_cfg, train_cfg, tracks, fsq_encoder=None, device=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-        super(ComplexDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, fsq_encoder=fsq_encoder, device=device, min_unmasked=min_unmasked, **kwargs)
+    def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
+        super(ComplexDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, device=device, min_unmasked=min_unmasked, **kwargs)
 
     def sample_masks(self, batch):
         """
@@ -249,8 +249,8 @@ class ComplexDataLoader(MaskingDataLoader):
 
 
 class NoMaskDataLoader(MaskingDataLoader):
-    def __init__(self, dataset, model_cfg, train_cfg, tracks, fsq_encoder=None, device=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-        super(NoMaskDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, fsq_encoder=fsq_encoder, device=device, min_unmasked=min_unmasked, **kwargs)
+    def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
+        super(NoMaskDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, device=device, min_unmasked=min_unmasked, **kwargs)
     
     def sample_masks(self, batch):
         for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:
@@ -259,8 +259,8 @@ class NoMaskDataLoader(MaskingDataLoader):
 class DiffusionDataLoader(MaskingDataLoader):
     """DataLoader that applies discrete diffusion noise process during batch collation."""
 
-    def __init__(self, dataset, model_cfg, train_cfg, diffusion_cfg, tracks, fsq_encoder=None,device=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-        super(DiffusionDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, fsq_encoder=fsq_encoder, device=device, min_unmasked=min_unmasked, **kwargs)
+    def __init__(self, dataset, model_cfg, train_cfg, diffusion_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
+        super(DiffusionDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, min_unmasked=min_unmasked, **kwargs)
 
         # Store diffusion config
         self.diffusion_cfg = diffusion_cfg
