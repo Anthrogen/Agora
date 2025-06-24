@@ -39,7 +39,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.models.transformer import TransformerTrunk, StandardTransformerBlock
 from src.models.autoencoder import FSQEncoder
 from src.dataloader import _get_training_dataloader, MaskedBatch
-from src.data_util.dataset import ProteinDataset
+from src.dataset import ProteinDataset
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 
 # --------------------------------------------------------------------------- #
@@ -167,45 +167,17 @@ def worker_init_fn(worker_id):
 
 def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.optim.Optimizer], batch: MaskedBatch, train_cfg: TrainingConfig, model_cfg: ModelConfig, device: torch.device) -> Dict[str, Dict[str, float]]:
     """Perform a single training step for all models with the same batch."""
-    # Unpack the batch data
-    # inputs, masks, lengths, original_tokens = batch_data
-    # masked_seq, masked_struct, masked_coords = inputs
-    # mask_seq, mask_struct = masks
-    # seq_tokens, struct_tokens = original_tokens
     masked_seq, masked_struct, masked_coords = batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords']
     mask_seq, mask_struct, mask_coords= batch.masks['seq'], batch.masks['struct'], batch.masks['coords']
     seq_tokens, struct_tokens = batch.unmasked_data['seq'], batch.unmasked_data['struct']
+    B, L = masked_seq.shape
 
     assert torch.all(mask_coords == mask_struct), f"mask_coords and mask_struct differ in some positions:\nmask_coords:\n{mask_coords}\nmask_struct:\n{mask_struct}"
 
     # Create coord_mask for GA/RA models
-    B, L = masked_seq.shape
-    positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-    # valid_start = 1
-    # valid_end = lengths.unsqueeze(1) + 1
-    # coord_mask = (positions >= valid_start) & (positions < valid_end)
     nonspecial_elements_coords = (~batch.beospad['coords']) & (~mask_struct)
-
-    mask_el = batch.masks['coords']
-    num_masked = mask_el.sum(dim=1)
-    print(f"mask_coords: {batch.masks['coords'].shape}")
-    print(f"Number of masked positions per row of batch: {num_masked}")
-
     # We need one non-special element in coords for GA/RA models.
     assert nonspecial_elements_coords.any(dim=1).all()
-    # Ensure at least one position is valid in coord_mask for each sequence
-    # all_masked = ~coord_mask.any(dim=1)  # Check which sequences have all positions masked
-    # if all_masked.any():
-    #     for idx in torch.where(all_masked)[0]:
-    #         # When all positions are masked, add dummy coordinates to prevent NaNs
-    #         # Create minimal valid coordinates at position 1 (after BOS)
-    #         # Set non-collinear coordinates that form a proper triangle:
-    #         # N at origin, CA displaced in x, C displaced in x and y
-    #         masked_coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)  # N
-    #         masked_coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)  # CA  
-    #         masked_coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)  # C
-    #         # Update coord_mask for this position
-    #         coord_mask[idx, 1] = True
     
     inputs = (masked_seq, masked_struct) # Prepare model input
     metrics = {} # Store metrics for each model
@@ -268,38 +240,15 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
 
 def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch, train_cfg: TrainingConfig, model_cfg: ModelConfig, device: torch.device) -> Dict[str, Dict[str, float]]:
     """Perform a single validation step for all models with the same batch."""
-    # Unpack the batch data
-    # inputs, masks, lengths, original_tokens = batch_data
-    # masked_seq, masked_struct, masked_coords = inputs
-    # mask_seq, mask_struct = masks
-    # seq_tokens, struct_tokens = original_tokens
     masked_seq, masked_struct, masked_coords = batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords']
     mask_seq, mask_struct = batch.masks['seq'], batch.masks['struct']
     seq_tokens, struct_tokens = batch.unmasked_data['seq'], batch.unmasked_data['struct']
+    B, L = masked_seq.shape
 
     # Create coord_mask for GA/RA models
-    B, L = masked_seq.shape
-    positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-    # valid_start = 1
-    # valid_end = lengths.unsqueeze(1) + 1
-    # coord_mask = (positions >= valid_start) & (positions < valid_end)
-    # coord_mask = coord_mask & (~mask_struct)
     nonspecial_elements = (~batch.beospad['coords']) & (~mask_struct) # boolean tensor of shape (B,L), True for all positions corresponding to non-BOS/EOS/PAD and non-MASK tokens.
-    
+    # We need one non-special element in coords for GA/RA models.
     assert nonspecial_elements.any(dim=1).all()
-    # Ensure at least one position is valid in coord_mask for each sequence
-    # all_masked = ~coord_mask.any(dim=1)  # Check which sequences have all positions masked
-    # if all_masked.any():
-    #     for idx in torch.where(all_masked)[0]:
-    #         # When all positions are masked, add dummy coordinates to prevent NaNs
-    #         # Create minimal valid coordinates at position 1 (after BOS)
-    #         # Set non-collinear coordinates that form a proper triangle:
-    #         # N at origin, CA displaced in x, C displaced in x and y
-    #         masked_coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)  # N
-    #         masked_coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)  # CA  
-    #         masked_coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)  # C
-    #         # Update coord_mask for this position
-    #         coord_mask[idx, 1] = True
     
     inputs = (masked_seq, masked_struct) # Prepare model input
     metrics = {} # Store metrics for each model

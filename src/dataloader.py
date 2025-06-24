@@ -3,7 +3,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 from typing import Tuple
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from src.data_util.tokenizer_bos_eos_pad import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer
+from src.tokenizer_bos_eos_pad import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer
 import math
 from abc import abstractmethod
 
@@ -12,7 +12,7 @@ from abc import abstractmethod
 # --------------------------------------------------------------------------- #
 _DEFAULT_MIN_UNMASKED = {'seq': 0, 'struct': 0, 'coords': 0}
 #TODO: make min_unmasked positional in base class constructor MaskingDataLoader.
-def get_noise_levels(s_min, s_max, T, schedule_type="linear"):
+def _get_noise_levels(s_min, s_max, T, schedule_type="linear"):
     """Generate instantaneous and cumulative noise levels for discrete diffusion.
     
     Args:
@@ -283,7 +283,7 @@ class DiffusionDataLoader(MaskingDataLoader):
         cumulative_noise_level = self.cumulative_noise_levels[timestep_indices].unsqueeze(1)  # [B, 1]
         inst_noise_levels = self.inst_noise_levels[timestep_indices].unsqueeze(1)
 
-        batch.metadata = {'timestep_indices': timestep_indices, 'cumulative_noise': cumulative_noise_level, 'inst_noise': inst_noise_levels}
+        batch.metadata.update({'timestep_indices': timestep_indices, 'cumulative_noise': cumulative_noise_level, 'inst_noise': inst_noise_levels})
 
         for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:
 
@@ -317,7 +317,7 @@ class MaskedBatch():
         self.unmasked_data = {'seq': None, 'struct': None, 'coords': None}
         self.masks = {'seq': None, 'struct': None, 'coords': None}
         self.beospad = {'seq': None, 'struct': None, 'coords': None}
-        self.metadata = None
+        self.metadata = {}
 
         seq_list, coords_list, _ = zip(*data)
         

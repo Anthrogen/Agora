@@ -48,7 +48,9 @@ def score_entropy_loss(output, x_0, x_t, cumulative_noise_levels, inst_noise_lev
     # base = (1 - exp(-σ)) / exp(-σ) = exp(σ) - 1
     base = torch.exp(cumulative_noise_levels) - 1.0
     base = base.unsqueeze(1)
-    masked_positions = x_t == mask_token
+    masked_positions = (x_t == mask_token).bool()
+    assert masked_positions.shape == (B,L)
+
     alpha = 1.0 - 2.0 * masked_positions.float()
 
     # Define "opposite": if x_t is masked, opposite is x_0; if x_t is not masked, opposite is mask_token

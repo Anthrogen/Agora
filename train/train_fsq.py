@@ -33,7 +33,7 @@ import random
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.models.autoencoder import Autoencoder, StandardTransformerBlock
 from src.dataloader import MaskedBatch, SimpleDataLoader, ComplexDataLoader, DiffusionDataLoader, NoMaskDataLoader, _get_training_dataloader
-from src.data_util.dataset import ProteinDataset
+from src.dataset import ProteinDataset
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
 
