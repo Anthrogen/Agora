@@ -2,33 +2,41 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader
 from typing import Tuple
-from Odyssey.src.data_util.tokenizer_bos_eos_pad import SequenceTokenizer, StructureTokenizer
+from src.data_util.tokenizer_bos_eos_pad import SequenceTokenizer, StructureTokenizer
 import math
 
 # --------------------------------------------------------------------------- #
 #  Noise Schedules                                        #
 # --------------------------------------------------------------------------- #
-def get_noise_levels(s_min, s_max, T):
+def get_noise_levels(s_min, s_max, T, schedule_type="linear"):
     """Generate instantaneous and cumulative noise levels for discrete diffusion.
     
     Args:
         s_min: Minimum noise level (sigma_min)
         s_max: Maximum noise level (sigma_max)
         T: Number of timesteps
+        schedule_type: "linear"
         
     Returns:
         inst_noise_levels: Tensor of shape (T,) with instantaneous noise at each timestep
         cumulative_noise_levels: Tensor of shape (T,) with cumulative noise up to each timestep
     """
     t = torch.arange(T, dtype=torch.float32)
-    # Geometric schedule for instantaneous noise
-    inst_noise_levels = s_min**(1-t/T) * s_max**(t/T)
-    
-    # Cumulative noise: integral of instantaneous noise
-    # For geometric schedule: ∫_0^t σ(s) ds
-    cumulative_noise_levels = (math.log(s_max/s_min)/T) * (inst_noise_levels - inst_noise_levels[0])
+    if schedule_type == "linear":
+        # Linear schedule: σ(t) = σ_min + (σ_max - σ_min) * t/T
+        # where t/T is the normalized timestep in [0, 1]
+        normalized_t = t / (T - 1) if T > 1 else torch.zeros_like(t)
+        inst_noise_levels = s_min + (s_max - s_min) * normalized_t
+        
+        # Cumulative noise: ∫_0^t σ(s) ds 
+        # For linear schedule σ(s) = σ_min + (σ_max - σ_min) * s
+        # ∫_0^t σ(s) ds = σ_min * t + 0.5 * (σ_max - σ_min) * t^2
+        cumulative_noise_levels = s_min * normalized_t + 0.5 * (s_max - s_min) * normalized_t**2
+    else:
+        raise ValueError(f"Unknown schedule type: {schedule_type}")
     
     return inst_noise_levels, cumulative_noise_levels
+
 def sample_betalinear30(batch_size: int, device: torch.device) -> torch.Tensor:
     """Sample valid rates from betalinear30 distribution. 80% Beta(3,9), 20% Uniform(0,1), avg ~30%"""
     mask_rates = torch.zeros(batch_size, device=device)

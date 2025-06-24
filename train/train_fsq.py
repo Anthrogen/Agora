@@ -73,9 +73,9 @@ class ModelConfig:
 class DiffusionConfig:
     """Discrete diffusion configuration."""
     # Noise schedule parameters
-    noise_schedule: str = "geometric"  # Type of noise schedule
-    sigma_min: float = 0.1  # Minimum noise level
-    sigma_max: float = 10.0  # Maximum noise level
+    noise_schedule: str = "linear"  # Type of noise schedule
+    sigma_min: float = 0.31  # Minimum noise level
+    sigma_max: float = 5.68  # Maximum noise level
     num_timesteps: int = 100  # Number of discrete timesteps for training
     
     # Absorbing state tokens (using MASK token index)
@@ -90,11 +90,11 @@ class TrainingConfig:
     max_epochs: int = 70
     learning_rate: float = 1e-5
     num_iter: int = 3  # Number of iterations to repeat training
-    masking_strategy: str = "discrete_diffusion" # Masking strategy: 'simple' or 'complex' or 'discrete_diffusion'
+    masking_strategy: str = "simple" # Masking strategy: 'simple' or 'complex' or 'discrete_diffusion'
     
     if masking_strategy == "simple":
         mask_prob_seq: float = 0.2 # Masking probability for sequence tokens
-        mask_prob_struct: float = 0.2 # Masking probability for structure tokens
+        mask_prob_coords: float = 0.2 # Masking probability for structure tokens
 
     data_dir: str = "../sample_data/1k"  # Data paths
     checkpoint_dir: str = "../checkpoints/fsq"  # Checkpointing
@@ -215,9 +215,10 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
             model.train()
             optimizer = optimizers[model_type]
 
-            indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+            #indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
             unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
-            unmasked_indices = indices[unmasked_elements]
+            assert unmasked_elements.any(dim=1).all()
+            #unmasked_indices = indices[unmasked_elements]
             
             # Forward pass - use only first 3 atoms for standard coordinates
             three_atom_masked_coords = batch.masked_data['coords'][:, :, :3, :]  # [B, L, 3, 3]
@@ -229,9 +230,12 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
             # In order to run KABSCH, we need to isolate only unmasked residues into a [U, 3, 3] tensor for each protein in the batch, where U is number of unmasked residues in a given protein.
             pts_pred = []; pts_true = []
             for batch_idx in range(B):
+
+                real_residues = torch.arange(L, device=device)[unmasked_elements[batch_idx]]
                 
-                real_residues = unmasked_indices[batch_idx]
-                assert real_residues.any() # This should have been gauranteed by dataloader
+                # real_residues = unmasked_indices[batch_idx]
+                #assert real_residues.any() # This should have been gauranteed by dataloader
+                # assert real_residues.numel() > 0
                 
                 pred_coords = x_rec[batch_idx][real_residues]  # [U, 3, 3]
                 true_coords = batch.masked_data['coords'][batch_idx, real_residues, :3, :]  # [U, 3, 3] - only first 3 atoms!
@@ -265,9 +269,10 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
         B, L, H, _ = batch.masked_data['coords'].shape
         
         # Create coord_mask for GA/RA models
-        indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+        # indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
         unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
-        unmasked_indices = indices[unmasked_elements]
+        assert unmasked_elements.any(dim=1).all()
+        #unmasked_indices = indices[unmasked_elements]
         
         # Train each model on the same batch
         for model_type, model in models.items():
@@ -298,8 +303,11 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
             # Compute loss on all valid positions (no masking in stage 2)
             pts_pred = []; pts_true = []
             for batch_idx in range(B):
-                real_residues = unmasked_indices[batch_idx]
-                assert real_residues.any() # This should have been gauranteed by dataloader.
+
+                # real_residues = unmasked_indices[batch_idx]
+                real_residues = torch.arange(L, device=device)[unmasked_elements[batch_idx]]
+                # assert real_residues.any() # This should have been gauranteed by dataloader.
+                # assert real_residues.numel() > 0
 
                 pred_coords = x_rec[batch_idx][real_residues]  # [M, 14, 3] 
                 true_coords = batch.masked_data['coords'][batch_idx][real_residues]  # [M, 14, 3]
@@ -336,9 +344,10 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
         B, L, H, _ = batch.masked_data['coords'].shape
         
         # Create coord_mask for GA/RA models (valid positions that are not masked)
-        indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+        # indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
         unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
-        unmasked_indices = indices[unmasked_elements]
+        assert unmasked_elements.any(dim=1).all()
+        # unmasked_indices = indices[unmasked_elements]
         
         # Evaluate each model on the same batch
         for model_type, model in models.items():
@@ -356,8 +365,10 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
                 # Extract valid (unmasked) coordinates
                 pts_pred = []; pts_true = []
                 for batch_idx in range(B):
-                    real_residues = unmasked_indices[batch_idx]  # Valid and unmasked positions
-                    assert real_residues.any() # Dataloader should have guaranteed this.
+                    # real_residues = unmasked_indices[batch_idx]  # Valid and unmasked positions
+                    real_residues = torch.arange(L, device=device)[unmasked_elements[batch_idx]]
+                    # assert real_residues.any() # Dataloader should have guaranteed this.
+                    # assert real_residues.numel() > 0
 
                     pred_coords = x_rec[batch_idx][real_residues]  # [M, 3, 3]
                     true_coords = batch.masked_data['coords'][batch_idx, real_residues, :3, :]  # [M, 3, 3] - only first 3 atoms!
@@ -381,9 +392,10 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
         B, L, H, _ = batch.masked_data['coords'].shape
         
         # Create coord_mask for GA/RA models
-        indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+        # indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
         unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
-        unmasked_indices = indices[unmasked_elements]
+        assert unmasked_elements.any(dim=1).all()
+        # unmasked_indices = indices[unmasked_elements]
         
         # Evaluate each model on the same batch
         for model_type, model in models.items():
@@ -412,8 +424,11 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
                 # Compute loss on all valid positions (no masking in stage 2)
                 pts_pred = []; pts_true = []
                 for batch_idx in range(B):
-                    real_residues = unmasked_indices[batch_idx]
-                    assert real_residues.any()
+                    # real_residues = unmasked_indices[batch_idx]
+                    real_residues = torch.arange(L, device=device)[unmasked_elements[batch_idx]]
+                    # assert real_residues.any()
+                    # assert real_residues.numel() > 0
+                    
                     pred_coords = x_rec[batch_idx][real_residues]  # [M, 14, 3] 
                     true_coords = batch.masked_data['coords'][batch_idx][real_residues]  # [M, 14, 3]
                     # Flatten to [1, M*14, 3]
@@ -500,7 +515,7 @@ def main():
                 if encoder_checkpoint_path.exists():
                     checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
                     # Load encoder state dict
-                    encoder_state = {k.replace('encoder.', ''): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
+                    encoder_state = {k.removeprefix('encoder.'): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
                     models[model_type].encoder.load_state_dict(encoder_state)
                     print(f"Loaded encoder weights for {model_type} from {encoder_checkpoint_path}")
                 else:
@@ -549,14 +564,15 @@ def main():
         if model_cfg.stage == "stage_1":
 
             stage_1_tracks = {'seq': False, 'struct': False, 'coords': True}
-            train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, stage_1_tracks, device=device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn)
-            val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, stage_1_tracks, device=device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn)
+            min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
+            train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, stage_1_tracks, device=device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
+            val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, stage_1_tracks, device=device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
 
         elif model_cfg.stage == "stage_2":  # stage_2 - no masking
 
             stage_2_tracks = {'seq': True, 'struct': False, 'coords': True}
-            train_loader = NoMaskDataLoader(train_ds, model_cfg, train_cfg, stage_2_tracks, device=device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn)
-            val_loader = NoMaskDataLoader(val_ds, model_cfg, train_cfg, stage_2_tracks, device=device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn)
+            train_loader = NoMaskDataLoader(train_ds, model_cfg, train_cfg, stage_2_tracks, device=device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
+            val_loader = NoMaskDataLoader(val_ds, model_cfg, train_cfg, stage_2_tracks, device=device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
 
         
         # Initialize tracking for each model

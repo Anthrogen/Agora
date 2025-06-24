@@ -38,7 +38,7 @@ from types import SimpleNamespace
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.models.transformer import TransformerTrunk, StandardTransformerBlock
 from src.models.autoencoder import FSQEncoder
-from src.dataloader_trunk import MLMDataLoader
+from src.dataloader import _get_training_dataloader
 from src.data_util.dataset import ProteinDataset
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 
@@ -79,7 +79,7 @@ class TrainingConfig:
         seq_loss_weight: float = 1.0  # sequence loss weight - simple: 1.0
         struct_loss_weight: float = 1.0 # structure loss weight - simple: 1.0
         mask_prob_seq: float = 0.2 # Masking probability for sequence tokens
-        mask_prob_struct: float = 0.2 # Masking probability for structure tokens
+        mask_prob_coords: float = 0.2 # Masking probability for structure tokens
     elif masking_strategy == "complex":
         seq_loss_weight: float = 1.0  # sequence loss weight - complex: 1.0
         struct_loss_weight: float = 0.5  # structure loss weight - complex: 0.5
@@ -347,23 +347,9 @@ def main():
             #TODO: make this configurable; use os.path.join
             encoder_checkpoint_path = f"../checkpoints/fsq/{model_type}_stage_1_iter1_{train_cfg.masking_strategy}.pt"
             checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
-            encoder_state = {k.replace('encoder.', ''): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
+            encoder_state = {k.removeprefix('encoder.'): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
             fsq_config = SimpleNamespace(**checkpoint['model_cfg_dict'])
             fsq_encoder = FSQEncoder(fsq_config)
-            
-            # Handle key mapping for Consensus model (token_weight -> token_encoder.weight)
-            if model_type == "C":
-                new_encoder_state = {}
-                for k, v in encoder_state.items():
-                    if 'consensus.token_weight' in k:
-                        new_k = k.replace('consensus.token_weight', 'consensus.token_encoder.weight')
-                        new_encoder_state[new_k] = v
-                    elif 'consensus.token_bias' in k:
-                        new_k = k.replace('consensus.token_bias', 'consensus.token_encoder.bias')
-                        new_encoder_state[new_k] = v
-                    else:
-                        new_encoder_state[k] = v
-                encoder_state = new_encoder_state
             
             fsq_encoder.load_state_dict(encoder_state)
             print(f"Loaded {model_type} encoder weights from: {encoder_checkpoint_path}")
@@ -401,14 +387,29 @@ def main():
         g_val = torch.Generator()
         g_val.manual_seed(data_seed + 5000)
         
-        train_loader = MLMDataLoader(train_ds, fsq_encoder=fsq_encoders[train_cfg.model_types[3]], model_cfg=model_cfg, masking_strategy=train_cfg.masking_strategy, 
-            mask_prob_seq=train_cfg.mask_prob_seq, mask_prob_struct=train_cfg.mask_prob_struct, device=device, batch_size=train_cfg.batch_size, shuffle=True,
-            generator=g_train, worker_init_fn=worker_init_fn
-        )
-        
-        val_loader = MLMDataLoader(val_ds, fsq_encoder=fsq_encoders[train_cfg.model_types[3]], model_cfg=model_cfg, masking_strategy=train_cfg.masking_strategy, 
-            mask_prob_seq=train_cfg.mask_prob_seq, mask_prob_struct=train_cfg.mask_prob_struct, device=device, batch_size=train_cfg.batch_size, shuffle=False,
-            generator=g_val, worker_init_fn=worker_init_fn)
+        tracks = {'seq': True, 'struct': True, 'coords': True}
+        min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
+        train_loader = _get_training_dataloader(train_ds, 
+                                                model_cfg, 
+                                                train_cfg, 
+                                                tracks, 
+                                                device, 
+                                                min_unmasked=min_unmasked, 
+                                                fsq_encoder=fsq_encoders[train_cfg.model_types[3]],
+                                                shuffle=True, 
+                                                generator=g_train, 
+                                                worker_init_fn=worker_init_fn)
+
+        train_loader = _get_training_dataloader(val_ds, 
+                                                model_cfg, 
+                                                train_cfg, 
+                                                tracks, 
+                                                device, 
+                                                min_unmasked=min_unmasked, 
+                                                fsq_encoder=fsq_encoders[train_cfg.model_types[3]],
+                                                shuffle=False, 
+                                                generator=g_val, 
+                                                worker_init_fn=worker_init_fn)
         
         # Initialize tracking for each model
         history = {
@@ -427,9 +428,9 @@ def main():
             # Training
             with tqdm(train_loader, desc=f"Iter {iteration+1}/{train_cfg.num_iter}, Epoch {epoch+1}/{train_cfg.max_epochs} [Train]", 
                      ascii=True, leave=True, ncols=150, position=0) as pbar:
-                for batch_data in pbar:
+                for batch in pbar:
                     # Train all models on the same batch
-                    batch_metrics = train_step(models, optimizers, batch_data, train_cfg, model_cfg, device)
+                    batch_metrics = train_step(models, optimizers, batch, train_cfg, model_cfg, device)
                     
                     # Accumulate metrics
                     for model_type in train_cfg.model_types:
@@ -513,6 +514,7 @@ def main():
                     'model_state_dict': models[model_type].state_dict(),
                     'optimizer_state_dict': optimizers[model_type].state_dict(),
                     'history': history[model_type],
+                    'model_cfg': model_cfg,
                 }, final_checkpoint_path)
             print(f"\nSaved final checkpoints for iteration {iteration+1}")
         else:

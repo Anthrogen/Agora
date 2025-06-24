@@ -98,7 +98,8 @@ class TransformerTrunk(nn.Module):
         seq_tokens, struct_tokens = x  # unpack tuple
 
         if seq_tokens.shape != struct_tokens.shape:
-            raise ValueError("Sequence and structure token tensors must have identical shape")
+            raise ValueError(f"Sequence and structure token tensors must have identical shape: {seq_tokens.shape} != {struct_tokens.shape}")
+        
 
         B, L = seq_tokens.shape
         if L > self.cfg.max_len:

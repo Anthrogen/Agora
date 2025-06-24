@@ -102,16 +102,15 @@ class StructureTokenizer():
         self.fsq_num_atoms = fsq_num_atoms
 
         self.full_length = full_length
-        self.mapping = {name: member.value + self.fsq_output_max + 1 for name, member in SPECIAL_TOKENS.__members__.items()}
+        #self.mapping = {name: member.value + self.fsq_output_max + 1 for name, member in SPECIAL_TOKENS.__members__.items()}
+        self.mapping = {name: member.value + self.fsq_output_max for name, member in SPECIAL_TOKENS.__members__.items()} #off by one?
 
         self.coordinates_tokenizer = CoordinatesTokenizer(full_length)
         self.reapply_bos_eos_pad = reapply_bos_eos_pad
 
-    def tokenize(self, coords):
+    def tokenize(self, coords): # coords should be UNTOKENIZED.
         assert self.fsq_encoder is not None, "FSQ encoder is not set!"
-        assert coords.shape[0] == self.full_length
-
-
+        
         # Coordinates tensor: [M, H, 3]
         # M is at most full_length.  H is number of atoms per residue.
 
@@ -125,7 +124,8 @@ class StructureTokenizer():
             coords_for_fsq = padded_coords[:, :self.fsq_num_atoms, :]
             coords_for_fsq = coords_for_fsq.unsqueeze(0).to(next(self.fsq_encoder.parameters()).device)
             struct_tokens_full = self.fsq_encoder.encode_to_tokens(coords_for_fsq)  # [1, L]
-            struct_tokens_full = struct_tokens_full.squeeze(0).cpu().long()         # [L]
+            struct_tokens_full = struct_tokens_full.squeeze(0).cpu().long().squeeze(-1)         # [L]
+
 
         # ------------------------------------------------------------------ #
         # Postprocess FSQ output -- replace BOS, EOS, PAD positions with special tokens
@@ -146,8 +146,8 @@ class StructureTokenizer():
         # ------------------------------------------------------------------ #
         # Sanity checks                                                    #
         # ------------------------------------------------------------------ #
-        assert torch.max(padded_struct_tokens) < self.fsq_output_max + len(self.mapping), "Structure Tokenization failed!"
-        assert torch.min(padded_struct_tokens) >= 0, "Structure Tokenization failed!"
+        assert torch.max(padded_struct_tokens) < self.fsq_output_max + len(self.mapping), f"Structure Tokenization failed! Max token = {torch.max(padded_struct_tokens)}"
+        assert torch.min(padded_struct_tokens) >= 0, f"Structure Tokenization failed! Min token = {torch.min(padded_struct_tokens)}"
         assert padded_coords.shape[0] == self.full_length, "Structure padding length mismatch!"
 
         return padded_coords, coords_beospad, padded_struct_tokens, struct_boespad

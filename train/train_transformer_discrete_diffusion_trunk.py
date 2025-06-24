@@ -26,16 +26,18 @@ import random
 import math
 from types import SimpleNamespace
 
+
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.models.transformer import TransformerTrunk, StandardTransformerBlock
 from src.models.autoencoder import FSQEncoder
 from src.data_util.dataset import ProteinDataset
-from src.dataloader_trunk import DiffusionDataLoader 
+from src.dataloader import DiffusionDataLoader, MaskedBatch
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from src.losses import score_entropy_loss
 
 # --------------------------------------------------------------------------- #
-#  Configurations                                                              #
+#  Configurations                                                             #
 # --------------------------------------------------------------------------- #
 @dataclass
 class ModelConfig:
@@ -57,13 +59,14 @@ class ModelConfig:
     consensus_r: int = 24  # Rank of Lambda_ij matrices
     consensus_edge_hidden_dim: int = 12  # Hidden dim for edge networks
 
+
 @dataclass
 class DiffusionConfig:
     """Discrete diffusion configuration."""
     # Noise schedule parameters
-    noise_schedule: str = "geometric"  # Type of noise schedule
-    sigma_min: float = 0.1  # Minimum noise level
-    sigma_max: float = 10.0  # Maximum noise level
+    noise_schedule: str = "skewed_rectangular"  # Type of noise schedule ("linear", "inverted_u", or "skewed_rectangular")
+    sigma_min: float = 0.31  # Minimum noise level
+    sigma_max: float = 5.68  # Maximum noise level
     num_timesteps: int = 100  # Number of discrete timesteps for training
     
     # Absorbing state tokens (using MASK token index)
@@ -84,7 +87,7 @@ class TrainingConfig:
     struct_loss_weight: float = 1.0
 
     data_dir: str = "../sample_data/1k"  # Data paths
-    checkpoint_dir: str = "../checkpoints/transformer_trunk"  # Checkpointing
+    checkpoint_dir: str = "../checkpoints/transformer_trunk_tmp"  # Checkpointing
     reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization
 
 def create_model_with_config(model_type: str, base_config: ModelConfig, device: torch.device) -> TransformerTrunk:
@@ -151,109 +154,11 @@ def ensure_identical_parameters_all_models(models: Dict[str, TransformerTrunk], 
                         isinstance(ref_model.layers[i], StandardTransformerBlock)):
                         model.layers[i].load_state_dict(ref_model.layers[i].state_dict())
 
-# --------------------------------------------------------------------------- #
-#  Discrete Diffusion Utilities                                                #
-# --------------------------------------------------------------------------- #
-def score_entropy_loss(output, x_0, x_t, cumulative_noise_levels, inst_noise_levels, mask_token, validation):
-    """
-    Score entropy loss from SEDD paper.
-    
-    Args:
-        output: Model predictions of shape (B, L, V)
-        x_0: Original tokens of shape (B, L)
-        x_t: Noisy tokens of shape (B, L)
-        cumulative_noise_levels: Cumulative noise at time t, shape (B, 1)
-        inst_noise_levels: Instantaneous noise at time t, shape (B, 1)
-        mask_token: Index of the absorbing/mask token
-        validation: Whether to compute training or validation loss
-    
-    Returns:
-        Loss value
-    """
-
-    B, L, V = output.shape
-    
-    # Output represents log score ratios, apply exp to get ratios p_t(y)/p_t(x^i)
-    # This ensures the ratios are positive
-    output = torch.exp(output)
-
-    # Create one-hot encoding of x_t
-    # x_t shape: [B, L] with values in [0, V-1]
-    x_t_onecold = 1.0 - F.one_hot(x_t, num_classes=V).float()  # [B, L, V]
-    
-    # Calculate delta = output @ (1 - one_hot_{x_t})
-    # This computes the dot product along the vocabulary dimension
-    # (1 - x_t_onehot) zeros out the position corresponding to x_t
-    #x_t_onecold = 1.0 - x_t_onehot  # [B, L, V]
-    
-    # Compute dot product: sum over vocabulary dimension
-    # delta[b, l] = sum_v output[b, l, v] * x_t_onecold[b, l, v]
-    delta = (output * x_t_onecold).sum(dim=-1)  # [B, L]
-    
-    # The delta tensor now has shape [B, L] where:
-    # delta[b, l] = sum of all output[b, l, v] except where v == x_t[b, l]
-
-    # More numerically stable computation of base
-    # base = (1 - exp(-σ)) / exp(-σ) = exp(σ) - 1
-    base = torch.exp(cumulative_noise_levels) - 1.0
-    base = base.unsqueeze(1)
-    masked_positions = x_t == mask_token
-    alpha = 1.0 - 2.0 * masked_positions.float()
-
-    # Define "opposite": if x_t is masked, opposite is x_0; if x_t is not masked, opposite is mask_token
-    opposite = torch.where(masked_positions, x_0, torch.full_like(x_t, mask_token))
-    
-    # epsilon_1[b, l] = output[b, l, opposite[b, l]]
-    # Gather values from output at opposite positions
-    # batch_indices = torch.arange(B, device=output.device).unsqueeze(1).expand(B, L)  # [B, L]
-    # position_indices = torch.arange(L, device=output.device).unsqueeze(0).expand(B, L)  # [B, L]
-    
-    #epsilon_1 = output[batch_indices, position_indices, opposite]  # [B, L]
-    epsilon_1 = torch.gather(output, dim=2, index=opposite.unsqueeze(-1)).squeeze(-1)
-    
-    # epsilon_2: base^alpha
-    # base has shape [B, 1, 1] after unsqueeze, alpha has shape [B, L]
-    # We need to squeeze base back to [B, 1] for proper broadcasting
-    base = base.squeeze(-1)  # [B, 1, 1] -> [B, 1]
-    epsilon_2 = torch.pow(base, alpha)  # [B, L]
-    epsilon_2 = torch.clamp(epsilon_2, min=1e-10)
-
-    # Clip epsilon_1 to prevent log of very small numbers
-    epsilon_1 = torch.clamp(epsilon_1, min=1e-10)
-    epsilon = epsilon_2 * torch.log(epsilon_1)
-
-    gamma = (delta - epsilon) # Gamma is (B, L)
-    K = epsilon_2 * (torch.log(epsilon_2) - 1) # (B, L)
-    gamma += K # now >= 0 element-wise
-    
-    # inst_noise_levels has shape [B, 1], we want to broadcast with gamma [B, L]
-    # We should NOT unsqueeze, as [B, 1] will broadcast correctly to [B, L]
-    per_residue = gamma * inst_noise_levels  # [B, L] * [B, 1] -> [B, L]
-
-    if validation:
-        # num_masked = masked_positions.sum(dim=1) # (B,)
-        # valid = num_masked > 0  # keep samples that have masks
-        # if valid.any(): # at least one valid sequence
-        #     per_protein = (per_residue.sum(dim=1)[valid] / num_masked[valid]) # (B_valid,)
-        # else: # rare corner-case: skip batch
-        #     return torch.tensor(0., dtype=gamma.dtype, device=gamma.device, requires_grad=False)
-        per_protein = per_residue.sum(dim=1) / L
-    else:
-        per_protein = per_residue.sum(dim=1) # (B,)
-
-    return per_protein.mean(0) # scalar
 
 # --------------------------------------------------------------------------- #
 #  Training utilities                                                         #
 # --------------------------------------------------------------------------- #
-def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, mask_token: int) -> float:
-    """Calculate accuracy for non-masked positions."""
-    non_masked = labels != mask_token
-    if not non_masked.any():
-        return 0.0
-    predictions = torch.argmax(logits, dim=-1)
-    correct = (predictions == labels) & non_masked
-    return (correct.sum().float() / non_masked.sum().float()).item()
+
 
 def worker_init_fn(worker_id):
     """Initialize each worker with a deterministic seed."""
@@ -262,41 +167,29 @@ def worker_init_fn(worker_id):
     random.seed(worker_seed)
 
 def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.optim.Optimizer], 
-               batch_data: Tuple, diffusion_cfg: DiffusionConfig, model_cfg: ModelConfig, 
+               batch: MaskedBatch, diffusion_cfg: DiffusionConfig, model_cfg: ModelConfig, 
                train_cfg: TrainingConfig, device: torch.device) -> Dict[str, Dict[str, float]]:
     """Perform a single training step for all models with discrete diffusion."""
     # Unpack batch data (now includes masks)
-    x_t, x_0, masks, timestep_indices, cumulative_noise_levels, inst_noise, lengths, coords = batch_data
-    seq_x_t, struct_x_t = x_t
-    seq_x_0, struct_x_0 = x_0
-    seq_mask, struct_mask = masks
+    # x_t, x_0, masks, timestep_indices, cumulative_noise_levels, inst_noise, lengths, coords = batch_data
+    # seq_x_t, struct_x_t = x_t
+    # seq_x_0, struct_x_0 = x_0
+    # seq_mask, struct_mask = masks
+    # B, L = seq_x_t.shape
+    seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
+    seq_x_0, struct_x_0 = batch.unmasked_data['seq'], batch.unmasked_data['struct']
+    seq_mask, struct_mask = batch.masks['seq'], batch.masks['struct']
+    coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
     B, L = seq_x_t.shape
-    
-    # Create coord_mask for GA/RA models
-    positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-    valid_start = 1  # After BOS
-    valid_end = lengths.unsqueeze(1) + 1  # Before EOS
-    coord_mask = (positions >= valid_start) & (positions < valid_end)
-    # Exclude positions where structure is masked
-    coord_mask = coord_mask & (~struct_mask)
+
+    unmasked_coords_elements = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
     
     # Ensure at least one position is valid in coord_mask for each sequence
-    all_masked = ~coord_mask.any(dim=1)  # Check which sequences have all positions masked
-    if all_masked.any():
-        for idx in torch.where(all_masked)[0]:
-            # When all positions are masked, add dummy coordinates to prevent NaNs
-            # Create minimal valid coordinates at position 1 (after BOS)
-            # Set non-collinear coordinates that form a proper triangle:
-            # N at origin, CA displaced in x, C displaced in x and y
-            coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)  # N
-            coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)  # CA  
-            coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)  # C
-            # Update coord_mask for this position
-            coord_mask[idx, 1] = True
+    #assert not (~unmasked_coords_elements.any(dim=1).any()) # Dataloader should have gauranteed this.
+    assert unmasked_coords_elements.any(dim=1).all() # Need at least one real residue in each sequence
     
     # Pass raw timestep indices following DiT convention
-    timesteps = timestep_indices.float()
-    timesteps = timesteps.unsqueeze(-1)  # [B] -> [B, 1]
+    timesteps = batch.metadata['timestep_indices'].float().unsqueeze(-1) # Timesteps shoudl be the same across all tracks of a protein, though masks are not.
     
     # Prepare inputs
     inputs = (seq_x_t, struct_x_t)
@@ -308,68 +201,73 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
         optimizer = optimizers[model_type]
         
         # Forward pass with time conditioning
-        if model_type in ("GA", "RA"): outputs = model(inputs, coords, coord_mask, timesteps)
+        if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, unmasked_coords_elements, timesteps)
         else: outputs = model(inputs, timesteps=timesteps)
         seq_logits, struct_logits = outputs
         
         # Compute losses using score entropy loss (for training)
-        loss_seq = score_entropy_loss(seq_logits, seq_x_0, seq_x_t, cumulative_noise_levels, inst_noise, diffusion_cfg.seq_absorb_token, validation=False)
-        loss_struct = score_entropy_loss(struct_logits, struct_x_0, struct_x_t, cumulative_noise_levels, inst_noise, diffusion_cfg.struct_absorb_token, validation=False)
+        loss_seq = score_entropy_loss(seq_logits, seq_x_0, seq_x_t, batch.metadata['cumulative_noise'], batch.metadata['inst_noise'], diffusion_cfg.seq_absorb_token, valid_mask=batch.beospad['seq'])
+        loss_struct = score_entropy_loss(struct_logits, struct_x_0, struct_x_t, batch.metadata['cumulative_noise'], batch.metadata['inst_noise'], diffusion_cfg.struct_absorb_token, valid_mask=batch.beospad['coords'])
         
         # Total loss (what we train on)
         loss = train_cfg.seq_loss_weight * loss_seq + train_cfg.struct_loss_weight * loss_struct
         
-        # Calculate accuracies (for monitoring)
-        seq_acc = calculate_accuracy(seq_logits.view(-1, model_cfg.seq_vocab), seq_x_0.view(-1), diffusion_cfg.seq_absorb_token)
-        struct_acc = calculate_accuracy(struct_logits.view(-1, model_cfg.struct_vocab), struct_x_0.view(-1), diffusion_cfg.struct_absorb_token)
-        
         # Backward pass
         optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Gradient clipping
         optimizer.step()
         
         # Store metrics
-        metrics[model_type] = {'loss': loss.item(), 'loss_seq': loss_seq.item(), 'loss_struct': loss_struct.item(), 'seq_acc': seq_acc, 'struct_acc': struct_acc}
+        metrics[model_type] = {'loss': loss.item(), 'loss_seq': loss_seq.item(), 'loss_struct': loss_struct.item()}
     
     return metrics
 
-def validate_step(models: Dict[str, TransformerTrunk], batch_data: Tuple, 
+def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch, 
                  diffusion_cfg: DiffusionConfig, model_cfg: ModelConfig, 
                  train_cfg: TrainingConfig, device: torch.device) -> Dict[str, Dict[str, float]]:
     """Perform a single validation step for all models."""
     # Unpack batch data (now includes masks)
-    x_t, x_0, masks, timestep_indices, cumulative_noise_levels, inst_noise, lengths, coords = batch_data
-    seq_x_t, struct_x_t = x_t
-    seq_x_0, struct_x_0 = x_0
-    seq_mask, struct_mask = masks
+    # x_t, x_0, masks, timestep_indices, cumulative_noise_levels, inst_noise, lengths, coords = batch_data
+    # seq_x_t, struct_x_t = x_t
+    # seq_x_0, struct_x_0 = x_0
+    # seq_mask, struct_mask = masks
+    # B, L = seq_x_t.shape
+    seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
+    seq_x_0, struct_x_0 = batch.unmasked_data['seq'], batch.unmasked_data['struct']
+    seq_mask, struct_mask = batch.masks['seq'], batch.masks['struct']
+    coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
     B, L = seq_x_t.shape
+
     
     # Create coord_mask for GA/RA models
-    positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-    valid_start = 1  # After BOS
-    valid_end = lengths.unsqueeze(1) + 1  # Before EOS
-    coord_mask = (positions >= valid_start) & (positions < valid_end)
-    # Exclude positions where structure is masked
-    coord_mask = coord_mask & (~struct_mask)
+    # positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+    # valid_start = 1  # After BOS
+    # valid_end = lengths.unsqueeze(1) + 1  # Before EOS
+    # coord_mask = (positions >= valid_start) & (positions < valid_end)
+    # # Exclude positions where structure is masked
+    # coord_mask = coord_mask & (~struct_mask)
+    unmasked_coords_elements = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
     
     # Ensure at least one position is valid in coord_mask for each sequence
-    all_masked = ~coord_mask.any(dim=1)  # Check which sequences have all positions masked
-    if all_masked.any():
-        for idx in torch.where(all_masked)[0]:
-            # When all positions are masked, add dummy coordinates to prevent NaNs
-            # Create minimal valid coordinates at position 1 (after BOS)
-            # Set non-collinear coordinates that form a proper triangle:
-            # N at origin, CA displaced in x, C displaced in x and y
-            coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)  # N
-            coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)  # CA  
-            coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)  # C
-            # Update coord_mask for this position
-            coord_mask[idx, 1] = True
+    #TODO: use less ambiguous logic (order of operations)
+    #assert not (~unmasked_coords_elements.any(dim=1).any()) # Dataloader should gaurantee this.
+ 
+    assert unmasked_coords_elements.any(dim=1).all()
+    # all_masked = ~coord_mask.any(dim=1)  # Check which sequences have all positions masked
+    # if all_masked.any():
+    #     for idx in torch.where(all_masked)[0]:
+    #         # When all positions are masked, add dummy coordinates to prevent NaNs
+    #         # Create minimal valid coordinates at position 1 (after BOS)
+    #         # Set non-collinear coordinates that form a proper triangle:
+    #         # N at origin, CA displaced in x, C displaced in x and y
+    #         coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)  # N
+    #         coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)  # CA  
+    #         coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)  # C
+    #         # Update coord_mask for this position
+    #         coord_mask[idx, 1] = True
     
     # Pass raw timestep indices following DiT convention
-    timesteps = timestep_indices.float()
-    timesteps = timesteps.unsqueeze(-1)  # [B] -> [B, 1]
+    timesteps = batch.metadata['timestep_indices'].float().unsqueeze(-1) # Timestep indices are same across all tracks of a protein, though masks are not.
     
     # Prepare inputs
     inputs = (seq_x_t, struct_x_t)
@@ -381,23 +279,19 @@ def validate_step(models: Dict[str, TransformerTrunk], batch_data: Tuple,
         
         with torch.no_grad():
             # Forward pass with time conditioning
-            if model_type in ("GA", "RA"): outputs = model(inputs, coords, coord_mask=coord_mask, timesteps=timesteps)
+            if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, coord_mask=unmasked_coords_elements, timesteps=timesteps)
             else: outputs = model(inputs, timesteps=timesteps)
             seq_logits, struct_logits = outputs
             
             # Compute losses using score entropy loss (main loss)
-            loss_seq = score_entropy_loss(seq_logits, seq_x_0, seq_x_t, cumulative_noise_levels, inst_noise, diffusion_cfg.seq_absorb_token, validation=True)
-            loss_struct = score_entropy_loss(struct_logits, struct_x_0, struct_x_t, cumulative_noise_levels, inst_noise,diffusion_cfg.struct_absorb_token, validation=True)
+            loss_seq = score_entropy_loss(seq_logits, seq_x_0, seq_x_t, batch.metadata['cumulative_noise'], batch.metadata['inst_noise'], diffusion_cfg.seq_absorb_token, valid_mask=batch.beospad['seq'])
+            loss_struct = score_entropy_loss(struct_logits, struct_x_0, struct_x_t, batch.metadata['cumulative_noise'], batch.metadata['inst_noise'], diffusion_cfg.struct_absorb_token, valid_mask=batch.beospad['coords'])
             
             # Total loss
             loss = train_cfg.seq_loss_weight * loss_seq + train_cfg.struct_loss_weight * loss_struct
             
-            # Calculate accuracies
-            seq_acc = calculate_accuracy(seq_logits.view(-1, model_cfg.seq_vocab), seq_x_0.view(-1), diffusion_cfg.seq_absorb_token)
-            struct_acc = calculate_accuracy(struct_logits.view(-1, model_cfg.struct_vocab), struct_x_0.view(-1), diffusion_cfg.struct_absorb_token)
-            
             # Store metrics
-            metrics[model_type] = {'loss': loss.item(), 'loss_seq': loss_seq.item(), 'loss_struct': loss_struct.item(), 'seq_acc': seq_acc, 'struct_acc': struct_acc}
+            metrics[model_type] = {'loss': loss.item(), 'loss_seq': loss_seq.item(), 'loss_struct': loss_struct.item()}
     
     return metrics
 
@@ -422,9 +316,7 @@ def main():
         model_type: {
             'val_loss': np.zeros((train_cfg.num_iter, train_cfg.max_epochs)),
             'val_seq_loss': np.zeros((train_cfg.num_iter, train_cfg.max_epochs)),
-            'val_struct_loss': np.zeros((train_cfg.num_iter, train_cfg.max_epochs)),
-            'val_seq_acc': np.zeros((train_cfg.num_iter, train_cfg.max_epochs)),
-            'val_struct_acc': np.zeros((train_cfg.num_iter, train_cfg.max_epochs))
+            'val_struct_loss': np.zeros((train_cfg.num_iter, train_cfg.max_epochs))
         }
         for model_type in train_cfg.model_types
     }
@@ -458,23 +350,9 @@ def main():
             #TODO also, we should be using os.path.join rather than / wherever possible.
             encoder_checkpoint_path = f"../checkpoints/fsq/{model_type}_stage_1_iter1_{train_cfg.masking_strategy}.pt"
             checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
-            encoder_state = {k.replace('encoder.', ''): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
+            encoder_state = {k.removeprefix('encoder.'): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
             fsq_config = SimpleNamespace(**checkpoint['model_cfg_dict'])
             fsq_encoder = FSQEncoder(fsq_config)
-            
-            # Handle key mapping for Consensus model (token_weight -> token_encoder.weight)
-            if model_type == "C":
-                new_encoder_state = {}
-                for k, v in encoder_state.items():
-                    if 'consensus.token_weight' in k:
-                        new_k = k.replace('consensus.token_weight', 'consensus.token_encoder.weight')
-                        new_encoder_state[new_k] = v
-                    elif 'consensus.token_bias' in k:
-                        new_k = k.replace('consensus.token_bias', 'consensus.token_encoder.bias')
-                        new_encoder_state[new_k] = v
-                    else:
-                        new_encoder_state[k] = v
-                encoder_state = new_encoder_state
             
             fsq_encoder.load_state_dict(encoder_state)
             print(f"Loaded {model_type} encoder weights from: {encoder_checkpoint_path}")
@@ -512,20 +390,16 @@ def main():
         g_val = torch.Generator()
         g_val.manual_seed(data_seed + 5000)
         
-        train_loader = DiffusionDataLoader(
-            train_ds, fsq_encoder=fsq_encoders[train_cfg.model_types[0]], model_cfg=model_cfg, diffusion_cfg=diffusion_cfg, 
-            device=device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn
-        )
-        
-        val_loader = DiffusionDataLoader(
-            val_ds, fsq_encoder=fsq_encoders[train_cfg.model_types[0]], model_cfg=model_cfg, diffusion_cfg=diffusion_cfg, 
-            device=device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn
-        )
+
+        diffusion_tracks = {'seq': True, 'struct': True, 'coords': True}
+        min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
+        train_loader = DiffusionDataLoader(train_ds, model_cfg, train_cfg, diffusion_cfg, diffusion_tracks, fsq_encoder=fsq_encoders[train_cfg.model_types[0]], device=device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
+        val_loader = DiffusionDataLoader(val_ds, model_cfg, train_cfg, diffusion_cfg, diffusion_tracks, fsq_encoder=fsq_encoders[train_cfg.model_types[0]], device=device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
         
         # Initialize tracking
         history = {
-            model_type: {'train_loss': [], 'train_seq_loss': [], 'train_struct_loss': [], 'train_seq_acc': [], 'train_struct_acc': [],
-                'val_loss': [], 'val_seq_loss': [], 'val_struct_loss': [], 'val_seq_acc': [], 'val_struct_acc': []
+            model_type: {'train_loss': [], 'train_seq_loss': [], 'train_struct_loss': [],
+                'val_loss': [], 'val_seq_loss': [], 'val_struct_loss': []
             }
             for model_type in train_cfg.model_types
         }
@@ -533,7 +407,7 @@ def main():
         # -------------------- Training loop -------------------- #
         for epoch in range(train_cfg.max_epochs):
             # Training metrics accumulators
-            train_metrics_sum = {model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0} for model_type in train_cfg.model_types}
+            train_metrics_sum = {model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0} for model_type in train_cfg.model_types}
             num_batches = 0
 
             # Training
@@ -563,12 +437,10 @@ def main():
                 history[model_type]['train_loss'].append(train_metrics_sum[model_type]['loss'])
                 history[model_type]['train_seq_loss'].append(train_metrics_sum[model_type]['loss_seq'])
                 history[model_type]['train_struct_loss'].append(train_metrics_sum[model_type]['loss_struct'])
-                history[model_type]['train_seq_acc'].append(train_metrics_sum[model_type]['seq_acc'])
-                history[model_type]['train_struct_acc'].append(train_metrics_sum[model_type]['struct_acc'])
             
             # -------------------- Validation -------------------- #
             val_metrics_sum = {
-                model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0}
+                model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0}
                 for model_type in train_cfg.model_types
             }
             val_num_batches = 0
@@ -592,15 +464,11 @@ def main():
                 history[model_type]['val_loss'].append(val_metrics_sum[model_type]['loss'])
                 history[model_type]['val_seq_loss'].append(val_metrics_sum[model_type]['loss_seq'])
                 history[model_type]['val_struct_loss'].append(val_metrics_sum[model_type]['loss_struct'])
-                history[model_type]['val_seq_acc'].append(val_metrics_sum[model_type]['seq_acc'])
-                history[model_type]['val_struct_acc'].append(val_metrics_sum[model_type]['struct_acc'])
                 
                 # Store in global metrics arrays
                 all_metrics[model_type]['val_loss'][iteration, epoch] = val_metrics_sum[model_type]['loss']
                 all_metrics[model_type]['val_seq_loss'][iteration, epoch] = val_metrics_sum[model_type]['loss_seq']
                 all_metrics[model_type]['val_struct_loss'][iteration, epoch] = val_metrics_sum[model_type]['loss_struct']
-                all_metrics[model_type]['val_seq_acc'][iteration, epoch] = val_metrics_sum[model_type]['seq_acc']
-                all_metrics[model_type]['val_struct_acc'][iteration, epoch] = val_metrics_sum[model_type]['struct_acc']
             
             # Print epoch summary
             print(f"\nIteration {iteration+1}, Epoch {epoch+1}/{train_cfg.max_epochs}")
@@ -611,21 +479,17 @@ def main():
                 print(f"    Score Entropy Loss: {train_metrics_sum[model_type]['loss']:.4f} "
                       f"(Seq: {train_metrics_sum[model_type]['loss_seq']:.4f}, "
                       f"Struct: {train_metrics_sum[model_type]['loss_struct']:.4f})")
-                print(f"    Accuracy: Seq: {train_metrics_sum[model_type]['seq_acc']:.4f}, "
-                      f"Struct: {train_metrics_sum[model_type]['struct_acc']:.4f}")
                 
                 # Validation metrics
                 print(f"  Val:")
                 print(f"    Score Entropy Loss: {val_metrics_sum[model_type]['loss']:.4f} "
                       f"(Seq: {val_metrics_sum[model_type]['loss_seq']:.4f}, "
                       f"Struct: {val_metrics_sum[model_type]['loss_struct']:.4f})")
-                print(f"    Accuracy: Seq: {val_metrics_sum[model_type]['seq_acc']:.4f}, "
-                      f"Struct: {val_metrics_sum[model_type]['struct_acc']:.4f}")
                     
         # Save final checkpoints only for the first iteration
         if iteration == 0:
             for model_type in train_cfg.model_types:
-                final_checkpoint_path = Path(train_cfg.checkpoint_dir) / f"transformer_trunk/{model_type}_discrete_diffusion_iter{iteration+1}_final.pt"
+                final_checkpoint_path = Path(train_cfg.checkpoint_dir) / f"{model_type}_discrete_diffusion_iter{iteration+1}_final.pt"
                 torch.save({
                     'iteration': iteration + 1,
                     'epoch': train_cfg.max_epochs,

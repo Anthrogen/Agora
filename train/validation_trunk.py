@@ -1,218 +1,162 @@
 """
-Validation script for evaluating models trained with different masking strategies.
+Validation script to benchmark simple, complex, and discrete diffusion trained models.
 
-This script:
-1. Loads all files from a specified path as validation dataset
-2. Evaluates a single model type (SA/GA/RA/C) trained with different masking strategies
-3. Computes both score entropy loss (from discrete diffusion) and cross entropy loss (from MLM)
-4. Uses discrete diffusion dataloader for all evaluations
+This script evaluates models at different masking rates corresponding to specific 
+discrete diffusion time indices. For each time index, we compute the corresponding
+mask probability and evaluate all models with that masking rate.
 """
 import os, sys
 from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader, random_split
+import numpy as np
 from tqdm import tqdm
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, List, Dict
+from typing import Dict, List, Tuple, Optional
 import random
 from types import SimpleNamespace
+import pandas as pd
+import matplotlib.pyplot as plt
 
-# Import the model and data loader from the src directory
+# Import required modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.models.transformer import TransformerTrunk
-from src.models.autoencoder_trunk import FSQEncoder
-from src.dataset_trunk import ProteinBackboneDataset
-from src.dataloader_trunk import DiffusionDataLoader
+from src.models.autoencoder import FSQEncoder
+from src.data_util.dataset import ProteinDataset
+from src.dataloader import DiffusionDataLoader, MaskedBatch, MaskingDataLoader
+from src.losses import score_entropy_loss
 
-# Import utilities from train_transformer_discrete_diffusion
-from train_transformer_discrete_diffusion import (ModelConfig, DiffusionConfig, score_entropy_loss, 
-    calculate_accuracy, create_model_with_config as create_diffusion_model)
+# Import functions from training scripts
+from train_transformer_discrete_diffusion_trunk import (
+    ModelConfig as DiffusionModelConfig, DiffusionConfig,
+    create_model_with_config as create_diffusion_model
+)
+from train_transformer_MLM_trunk import (
+    ModelConfig as MLMModelConfig,
+    create_model_with_config as create_mlm_model
+)
 
-# Import utilities from train_transformer_MLM
-from train_transformer_MLM import (create_model_with_config as create_mlm_model)
-
-# --------------------------------------------------------------------------- #
-#  Configuration                                                               #
-# --------------------------------------------------------------------------- #
 @dataclass
 class ValidationConfig:
-    """Validation configuration."""
-    model_type: str = "SA"  # Single model type: one of ["SA", "GA", "RA", "C"]
-    masking_strategies: List[str] = field(default_factory=lambda: ["simple", "complex", "discrete_diffusion"])
+    """Configuration for validation."""
+    # Model type to evaluate (single selection)
+    model_type: str = "C"  # Options: "SA", "GA", "RA", "C"
     
-    # Data paths
-    validation_data_dir: str = "../data/sample_training_data"  # Path containing all validation files
-    checkpoint_dir: str = "checkpoints"  # Directory containing model checkpoints
+    # Time indices to evaluate (directly specified)
+    time_indices: List[int] = field(default_factory=lambda: [0,9,19,29,39,49,59,69,79,89,99])
     
-    # Evaluation settings
-    batch_size: int = 8
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    # Training methods to evaluate (any combination)
+    training_methods: List[str] = field(default_factory=lambda: ["simple", "complex", "diffusion"])
     
-    # Output
-    output_file: str = "validation_results.txt"
-
-# --------------------------------------------------------------------------- #
-#  Model Creation Helper                                                       #
-# --------------------------------------------------------------------------- #
-def create_model_for_masking_strategy(model_type: str, masking_strategy: str, 
-                                     model_cfg: ModelConfig, device: torch.device) -> TransformerTrunk:
-    """Create a model with the appropriate configuration for the masking strategy."""
-    if masking_strategy == "discrete_diffusion":
-        # For discrete diffusion, use AdaLN (adaptive layer norm for time conditioning)
-        return create_diffusion_model(model_type, model_cfg, device)
-    else:
-        # For simple/complex masking, create model without AdaLN
-        return create_mlm_model(model_type, model_cfg, device)
-
-# --------------------------------------------------------------------------- #
-#  Cross Entropy Loss Computation                                              #
-# --------------------------------------------------------------------------- #
-def compute_cross_entropy_loss(seq_logits: torch.Tensor, struct_logits: torch.Tensor,
-                             seq_labels: torch.Tensor, struct_labels: torch.Tensor,
-                             seq_mask: torch.Tensor, struct_mask: torch.Tensor,
-                             device: torch.device) -> Tuple[float, float]:
-    """Compute cross entropy loss for sequence and structure predictions."""
-    # Flatten tensors
-    seq_logits_flat = seq_logits.view(-1, seq_logits.size(-1))
-    struct_logits_flat = struct_logits.view(-1, struct_logits.size(-1))
-    seq_labels_flat = seq_labels.view(-1)
-    struct_labels_flat = struct_labels.view(-1)
-    seq_mask_flat = seq_mask.view(-1)
-    struct_mask_flat = struct_mask.view(-1)
+    # Data settings
+    data_dir: str = "../sample_data/1k"
+    batch_size: int = 4
     
-    # Compute cross entropy only on masked positions
-    loss_seq = F.cross_entropy(seq_logits_flat[seq_mask_flat], seq_labels_flat[seq_mask_flat].long()) if seq_mask_flat.any() else torch.tensor(0.0, device=device)
-    loss_struct = F.cross_entropy(struct_logits_flat[struct_mask_flat], struct_labels_flat[struct_mask_flat].long()) if struct_mask_flat.any() else torch.tensor(0.0, device=device)
+    # Model paths (models in /scripts/checkpoints)
+    simple_checkpoint_pattern: str = "checkpoints/{}_simple_iter1_final.pt"
+    complex_checkpoint_pattern: str = "checkpoints/{}_complex_iter1_final.pt"
+    diffusion_checkpoint_pattern: str = "../checkpoints/transformer_trunk/{}_discrete_diffusion_iter1_final.pt"
     
-    return loss_seq.item(), loss_struct.item()
-
-# --------------------------------------------------------------------------- #
-#  Validation Function                                                         #
-# --------------------------------------------------------------------------- #
-def validate_model(model: TransformerTrunk, dataloader: DiffusionDataLoader, 
-                  model_cfg: ModelConfig, diffusion_cfg: DiffusionConfig,
-                  model_type: str, device: torch.device, 
-                  masking_strategy: str) -> Dict[str, float]:
-    """Validate a model using the appropriate loss for its training strategy."""
-    model.eval()
+    # FSQ encoder paths (in /checkpoints, not /scripts/checkpoints)
+    fsq_encoder_pattern: str = "../checkpoints/fsq/{}_stage_1_iter1_{}.pt"
     
-    # Determine if we're using time conditioning (only for discrete diffusion)
-    use_time_conditioning = (masking_strategy == "discrete_diffusion")
-    
-    # Metrics accumulators
-    metrics = {'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_accuracy': 0.0, 'struct_accuracy': 0.0}
-    num_batches = 0
-    
-    with torch.no_grad():
-        for batch_data in tqdm(dataloader, desc="Validating", leave=False):
-            # Unpack batch data
-            x_t, x_0, masks, timestep_indices, cumulative_noise_levels, inst_noise, lengths, coords = batch_data
-            seq_x_t, struct_x_t = x_t
-            seq_x_0, struct_x_0 = x_0
-            seq_mask, struct_mask = masks
-            B, L = seq_x_t.shape
-            
-            # Create coord_mask for GA/RA models
-            positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-            valid_start = 1  # After BOS
-            valid_end = lengths.unsqueeze(1) + 1  # Before EOS
-            coord_mask = (positions >= valid_start) & (positions < valid_end)
-            coord_mask = coord_mask & (~struct_mask)
-            
-            # Handle all-masked sequences
-            all_masked = ~coord_mask.any(dim=1)
-            if all_masked.any():
-                for idx in torch.where(all_masked)[0]:
-                    coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)  # N
-                    coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)  # CA  
-                    coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)  # C
-                    coord_mask[idx, 1] = True
-            
-            # Prepare timesteps
-            timesteps = timestep_indices.float().unsqueeze(-1) if use_time_conditioning else None
-            
-            # Forward pass
-            inputs = (seq_x_t, struct_x_t)
-            if model_type in ("GA", "RA"):
-                if use_time_conditioning:
-                    outputs = model(inputs, coords, coord_mask=coord_mask, timesteps=timesteps)
-                else:
-                    outputs = model(inputs, coords, coord_mask=coord_mask)
-            else:
-                if use_time_conditioning:
-                    outputs = model(inputs, timesteps=timesteps)
-                else:
-                    outputs = model(inputs)
-            
-            seq_logits, struct_logits = outputs
-            
-            # Compute appropriate loss based on masking strategy
-            if masking_strategy == "discrete_diffusion":
-                # Compute score entropy losses for discrete diffusion
-                loss_seq = score_entropy_loss(seq_logits, seq_x_0, seq_x_t, cumulative_noise_levels, inst_noise, diffusion_cfg.seq_absorb_token, validation=True)
-                loss_struct = score_entropy_loss(struct_logits, struct_x_0, struct_x_t, cumulative_noise_levels, inst_noise, diffusion_cfg.struct_absorb_token, validation=True)
-            else:
-                # Compute cross entropy losses for simple/complex
-                loss_seq, loss_struct = compute_cross_entropy_loss(seq_logits, struct_logits, seq_x_0, struct_x_0, seq_mask, struct_mask, device)
-            
-            # Calculate accuracies (same for all strategies)
-            seq_acc = calculate_accuracy(seq_logits.view(-1, model_cfg.seq_vocab), seq_x_0.view(-1), diffusion_cfg.seq_absorb_token)
-            struct_acc = calculate_accuracy(struct_logits.view(-1, model_cfg.struct_vocab), struct_x_0.view(-1), diffusion_cfg.struct_absorb_token)
-            
-            # Accumulate metrics
-            metrics['loss_seq'] += loss_seq.item() if torch.is_tensor(loss_seq) else loss_seq
-            metrics['loss_struct'] += loss_struct.item() if torch.is_tensor(loss_struct) else loss_struct
-            metrics['seq_accuracy'] += seq_acc
-            metrics['struct_accuracy'] += struct_acc
-            num_batches += 1
-    
-    # Average metrics
-    for key in metrics:
-        metrics[key] /= num_batches
-    
-    return metrics
-
-# --------------------------------------------------------------------------- #
-#  Main Validation Loop                                                        #
-# --------------------------------------------------------------------------- #
-def main():
-    # Initialize configuration
-    val_cfg = ValidationConfig()
-    model_cfg = ModelConfig()
-    diffusion_cfg = DiffusionConfig()
-    
-    device = torch.device(val_cfg.device)
-    
-    print(f"Validation Configuration:")
-    print(f"  Model type: {val_cfg.model_type}")
-    print(f"  Masking strategies: {val_cfg.masking_strategies}")
-    print(f"  Validation data directory: {val_cfg.validation_data_dir}")
-    print(f"  Device: {device}")
-    print()
-    
-    # Load validation dataset (all files in the directory)
-    dataset = ProteinBackboneDataset(val_cfg.validation_data_dir, max_length=model_cfg.max_len - 2)
-    print(f"Loaded {len(dataset)} validation samples")
-    
-    # Results storage
-    results = {}
-    
-    # Validate each masking strategy
-    for masking_strategy in val_cfg.masking_strategies:
-        print(f"\n{'='*60}")
-        print(f"Evaluating {val_cfg.model_type} with {masking_strategy} masking")
-        print(f"{'='*60}")
+    def __post_init__(self):
+        # Validate model type
+        valid_types = {"SA", "GA", "RA", "C"}
+        if self.model_type not in valid_types:
+            raise ValueError(f"Invalid model_type: {self.model_type}. Must be one of {valid_types}")
         
-        # Load FSQ encoder for this masking strategy
-        encoder_checkpoint_path = f"../checkpoints/{val_cfg.model_type}_stage_1_iter1_{masking_strategy}.pt"
-        checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
-        encoder_state = {k.replace('encoder.', ''): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
-        fsq_config = SimpleNamespace(**checkpoint['model_cfg_dict'])
-        fsq_encoder = FSQEncoder(fsq_config)
+        # Validate training methods
+        valid_methods = {"simple", "complex", "diffusion"}
+        for method in self.training_methods:
+            if method not in valid_methods:
+                raise ValueError(f"Invalid training method: {method}. Must be one of {valid_methods}")
+
+def compute_mask_prob_for_time(t: int, diffusion_cfg: DiffusionConfig) -> float:
+    """Compute mask probability for a given time index using the diffusion schedule."""
+    from src.dataloader import get_noise_levels
+    
+    # Get noise levels
+    inst_noise_levels, cumulative_noise_levels = get_noise_levels(
+        diffusion_cfg.sigma_min,
+        diffusion_cfg.sigma_max,
+        diffusion_cfg.num_timesteps,
+        schedule_type=diffusion_cfg.noise_schedule
+    )
+    
+    # Get cumulative noise at time t
+    cumulative_noise = cumulative_noise_levels[t]
+    
+    # Compute mask probability
+    mask_prob = 1 - torch.exp(-cumulative_noise)
+    
+    return mask_prob.item()
+
+def load_model_checkpoint(checkpoint_path: str, model_type: str, training_method: str, device: torch.device, 
+                         fsq_encoder_pattern: str = None) -> Tuple[TransformerTrunk, Optional[FSQEncoder]]:
+    """Load a model from checkpoint."""
+    # Check if this is a diffusion model based on the training method
+    is_diffusion = training_method == 'diffusion'
+    
+    # Fix pickle loading by temporarily setting ModelConfig in global namespace
+    import __main__
+    # Import the configs to ensure they're available in this scope
+    from train_transformer_discrete_diffusion_trunk import ModelConfig as DiffusionModelConfig_local, DiffusionConfig as DiffusionConfig_local
+    from train_transformer_MLM_trunk import ModelConfig as MLMModelConfig_local
+    
+    if is_diffusion:
+        __main__.ModelConfig = DiffusionModelConfig_local
+        __main__.DiffusionConfig = DiffusionConfig_local
+    else: 
+        __main__.ModelConfig = MLMModelConfig_local
+    
+    # ---------------------------------------
+    # Load checkpoint weights first
+    # ---------------------------------------
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    if is_diffusion:
+        cfg_obj = ckpt.get('model_config', None)
+        cfg_dict = cfg_obj.__dict__ if hasattr(cfg_obj, '__dict__') else cfg_obj
+        model_cfg = DiffusionModelConfig(**{k: v for k, v in cfg_dict.items() if k in DiffusionModelConfig.__dataclass_fields__})
+        model = create_diffusion_model(model_type, model_cfg, device)
+    else:
+        cfg_obj = ckpt.get('model_config', None)
+        cfg_dict = cfg_obj.__dict__ if hasattr(cfg_obj, '__dict__') else cfg_obj
+        model_cfg = MLMModelConfig(**{k: v for k, v in cfg_dict.items() if k in MLMModelConfig.__dataclass_fields__})
+        model = create_mlm_model(model_type, model_cfg, device)
+
+    # Now load weights
+    model.load_state_dict(ckpt['model_state_dict'])
+    model.eval()
+        
+    # Clean up global namespace
+    if hasattr(__main__, 'ModelConfig'): 
+        delattr(__main__, 'ModelConfig')
+    if hasattr(__main__, 'DiffusionConfig'): 
+        delattr(__main__, 'DiffusionConfig')
+    
+    # Load FSQ encoder using the correct training method
+    fsq_encoder = None
+    if fsq_encoder_pattern:
+        # Map training method to the FSQ encoder suffix
+        if training_method == 'diffusion':
+            encoder_suffix = 'discrete_diffusion'
+        else:
+            encoder_suffix = training_method  # 'simple' or 'complex'
+        
+        encoder_checkpoint_path = fsq_encoder_pattern.format(model_type, encoder_suffix)
+        
+        if not os.path.exists(encoder_checkpoint_path):
+            raise FileNotFoundError(f"FSQ encoder not found at: {encoder_checkpoint_path}")
+        
+        encoder_checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
+        encoder_state = {k.removeprefix('encoder.'): v for k, v in encoder_checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
         
         # Handle key mapping for Consensus model
-        if val_cfg.model_type == "C":
+        if model_type == "C":
             new_encoder_state = {}
             for k, v in encoder_state.items():
                 if 'consensus.token_weight' in k:
@@ -225,85 +169,392 @@ def main():
                     new_encoder_state[k] = v
             encoder_state = new_encoder_state
         
+        fsq_config = SimpleNamespace(**encoder_checkpoint['model_cfg_dict']) 
+        fsq_encoder = FSQEncoder(fsq_config)
+        
         fsq_encoder.load_state_dict(encoder_state)
         fsq_encoder.eval()
         fsq_encoder.requires_grad_(False)
         fsq_encoder = fsq_encoder.to(device)
-        print(f"Loaded FSQ encoder from: {encoder_checkpoint_path}")
+    
+    return model, fsq_encoder
+
+def evaluate_mlm_model(model: TransformerTrunk, dataloader: DataLoader, model_type: str, device: torch.device) -> Dict[str, float]:
+    """Evaluate an MLM model using cross-entropy loss over all valid positions."""
+    total_loss = 0.0
+    total_seq_loss = 0.0
+    total_struct_loss = 0.0
+    num_batches = 0
+    
+    with torch.no_grad():
+        for batch in dataloader:
+            # Unpack batch using new MaskedBatch structure
+            seq_x_t = batch.masked_data['seq']
+            struct_x_t = batch.masked_data['struct']
+            coords_x_t = batch.masked_data['coords']
+            
+            seq_tokens = batch.unmasked_data['seq']
+            struct_tokens = batch.unmasked_data['struct']
+            
+            B, L = seq_x_t.shape
+            
+            # Use beospad mask for valid positions (excluding BOS/EOS/PAD)
+            valid_mask = ~batch.beospad['seq']
+            
+            # Create coord_mask for GA/RA models
+            unmasked_coords_elements = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
+            
+            # Ensure at least one position is valid in coord_mask for each sequence
+            assert unmasked_coords_elements.any(dim=1).all()
+            
+            # Forward pass
+            if model_type in ("GA", "RA"):
+                outputs = model((seq_x_t, struct_x_t), coords_x_t, unmasked_coords_elements)
+            else:
+                outputs = model((seq_x_t, struct_x_t))
+            
+            seq_logits, struct_logits = outputs
+            
+            # Flatten tensors for loss computation
+            seq_logits_flat = seq_logits.reshape(-1, seq_logits.size(-1))
+            struct_logits_flat = struct_logits.reshape(-1, struct_logits.size(-1))
+            seq_labels_flat = seq_tokens.reshape(-1)
+            struct_labels_flat = struct_tokens.reshape(-1)
+            valid_mask_flat = valid_mask.reshape(-1)
+            
+            # Compute cross-entropy loss over all valid positions (matching training)
+            seq_loss = F.cross_entropy(
+                seq_logits_flat[valid_mask_flat],
+                seq_labels_flat[valid_mask_flat].long(),
+                reduction='mean'
+            )
+            
+            struct_loss = F.cross_entropy(
+                struct_logits_flat[valid_mask_flat],
+                struct_labels_flat[valid_mask_flat].long(),
+                reduction='mean'
+            )
+            
+            total_loss += (seq_loss + struct_loss).item()
+            total_seq_loss += seq_loss.item()
+            total_struct_loss += struct_loss.item()
+            num_batches += 1
+    
+    return {
+        'loss': total_loss / num_batches,
+        'seq_loss': total_seq_loss / num_batches,
+        'struct_loss': total_struct_loss / num_batches
+    }
+
+def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, timestep: int, 
+                           diffusion_cfg: DiffusionConfig, model_cfg: DiffusionModelConfig,
+                           model_type: str, device: torch.device) -> Dict[str, float]:
+    """Evaluate a diffusion model using score entropy loss on a single batch."""
+    # Unpack batch using new MaskedBatch structure
+    seq_x_t = batch.masked_data['seq']
+    struct_x_t = batch.masked_data['struct']
+    coords_x_t = batch.masked_data['coords']
+    
+    seq_x_0 = batch.unmasked_data['seq']
+    struct_x_0 = batch.unmasked_data['struct']
+    
+    B, L = seq_x_t.shape
+    
+    # Create timestep tensors
+    timestep_indices = torch.full((B,), timestep, dtype=torch.long, device=device)
+    timesteps = timestep_indices.float().unsqueeze(-1)
+    
+    # Get noise levels for this timestep
+    from src.dataloader import get_noise_levels
+    inst_noise_levels, cumulative_noise_levels = get_noise_levels(
+        diffusion_cfg.sigma_min,
+        diffusion_cfg.sigma_max,
+        diffusion_cfg.num_timesteps,
+        schedule_type=diffusion_cfg.noise_schedule
+    )
+    cumulative_noise = cumulative_noise_levels[timestep].unsqueeze(0).unsqueeze(1).to(device)
+    inst_noise = inst_noise_levels[timestep].unsqueeze(0).unsqueeze(1).to(device)
+    
+    # Use beospad mask for valid positions
+    valid_mask = batch.beospad['seq']
+    
+    # Create coord_mask for GA/RA models
+    unmasked_coords_elements = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
+    
+    # Ensure at least one position is valid in coord_mask for each sequence
+    assert unmasked_coords_elements.any(dim=1).all()
+    
+    with torch.no_grad():
+        # Forward pass
+        if model_type in ("GA", "RA"):
+            outputs = model((seq_x_t, struct_x_t), coords_x_t, unmasked_coords_elements, timesteps)
+        else:
+            outputs = model((seq_x_t, struct_x_t), timesteps=timesteps)
         
-        # Create dataloader with this masking strategy's encoder
-        g_val = torch.Generator()
-        g_val.manual_seed(42)  # Fixed seed for reproducibility
+        seq_logits, struct_logits = outputs
         
-        val_loader = DiffusionDataLoader(
-            dataset, fsq_encoder=fsq_encoder, model_cfg=model_cfg, diffusion_cfg=diffusion_cfg,
-            device=device, batch_size=val_cfg.batch_size, shuffle=False, generator=g_val
+        # Compute score entropy loss
+        seq_loss = score_entropy_loss(
+            seq_logits, seq_x_0, seq_x_t, cumulative_noise, inst_noise,
+            diffusion_cfg.seq_absorb_token, valid_mask=valid_mask
         )
         
-        # Determine checkpoint path - same pattern for all masking strategies
-        checkpoint_path = Path(val_cfg.checkpoint_dir) / f"{val_cfg.model_type}_{masking_strategy}_iter1_final.pt"
+        struct_loss = score_entropy_loss(
+            struct_logits, struct_x_0, struct_x_t, cumulative_noise, inst_noise,
+            diffusion_cfg.struct_absorb_token, valid_mask=batch.beospad['coords']
+        )
         
-        if not checkpoint_path.exists():
-            print(f"WARNING: Checkpoint not found: {checkpoint_path}")
-            continue
-        
-        # Load model
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        model = create_model_for_masking_strategy(val_cfg.model_type, masking_strategy, model_cfg, device)
-        
-        # Load state dict
-        if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
-        else:
-            # For older checkpoints that might store the state directly
-            model.load_state_dict(checkpoint)
-        
-        print(f"Loaded checkpoint from: {checkpoint_path}")
-        
-        # Validate
-        metrics = validate_model(model, val_loader, model_cfg, diffusion_cfg, val_cfg.model_type, device, masking_strategy)
-        
-        # Store results
-        results[masking_strategy] = metrics
-        
-        # Print results
-        print(f"\nResults for {masking_strategy}:")
-        print(f"  Loss:")
-        print(f"    - Sequence: {metrics['loss_seq']:.4f}")
-        print(f"    - Structure: {metrics['loss_struct']:.4f}")
-        print(f"  Accuracy:")
-        print(f"    - Sequence: {metrics['seq_accuracy']:.4f}")
-        print(f"    - Structure: {metrics['struct_accuracy']:.4f}")
+        total_loss = seq_loss + struct_loss
     
-    # Save results to file
-    output_path = Path(val_cfg.output_file)
-    with open(output_path, 'w') as f:
-        f.write(f"Validation Results\n")
-        f.write(f"Model Type: {val_cfg.model_type}\n")
-        f.write(f"Dataset: {val_cfg.validation_data_dir}\n")
-        f.write(f"Number of samples: {len(dataset)}\n")
-        f.write(f"\n")
+    return {
+        'loss': total_loss.item(),
+        'seq_loss': seq_loss.item(),
+        'struct_loss': struct_loss.item()
+    }
+
+# Custom validation dataloader classes
+class FixedTimestepDiffusionDataLoader(DiffusionDataLoader):
+    """DiffusionDataLoader that uses a fixed timestep for validation."""
+    
+    def __init__(self, dataset, model_cfg, train_cfg, diffusion_cfg, tracks, fixed_timestep: int,
+                 fsq_encoder=None, device=None, min_unmasked=None, **kwargs):
+        super().__init__(dataset, model_cfg, train_cfg, diffusion_cfg, tracks, 
+                        fsq_encoder=fsq_encoder, device=device, min_unmasked=min_unmasked, **kwargs)
+        self.fixed_timestep = fixed_timestep
+    
+    def sample_masks(self, batch):
+        # Use fixed timestep instead of random sampling
+        timestep_indices = torch.full((batch.B,), self.fixed_timestep, dtype=torch.long, device=self.device)
         
-        for masking_strategy, metrics in results.items():
-            f.write(f"\n{masking_strategy.upper()} MASKING:\n")
-            f.write(f"  Loss:\n")
-            f.write(f"    - Sequence: {metrics['loss_seq']:.4f}\n")
-            f.write(f"    - Structure: {metrics['loss_struct']:.4f}\n")
-            f.write(f"  Accuracy:\n")
-            f.write(f"    - Sequence: {metrics['seq_accuracy']:.4f}\n")
-            f.write(f"    - Structure: {metrics['struct_accuracy']:.4f}\n")
+        # Get corresponding noise levels
+        cumulative_noise_level = self.cumulative_noise_levels[timestep_indices].unsqueeze(1)  # [B, 1]
+        inst_noise_levels = self.inst_noise_levels[timestep_indices].unsqueeze(1)
+
+        batch.metadata = {'timestep_indices': timestep_indices, 'cumulative_noise': cumulative_noise_level, 'inst_noise': inst_noise_levels}
+
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:
+            mask_prob = 1 - torch.exp(-cumulative_noise_level)
+            mask_prob_expanded = mask_prob.expand(batch.B, batch.L)
+            desired_masks = torch.rand(batch.B, batch.L, device=self.device) < mask_prob_expanded
+            desired_masks = desired_masks.bool()
+
+            batch.masks[track] = desired_masks
+
+class FixedMaskProbDataLoader(MaskingDataLoader):
+    """MaskingDataLoader that uses a fixed mask probability for MLM validation."""
     
-    print(f"\nResults saved to: {output_path}")
+    def __init__(self, dataset, model_cfg, train_cfg, tracks, fixed_mask_prob: float,
+                 fsq_encoder=None, device=None, min_unmasked=None, **kwargs):
+        super().__init__(dataset, model_cfg, train_cfg, tracks,
+                        fsq_encoder=fsq_encoder, device=device, min_unmasked=min_unmasked, **kwargs)
+        self.fixed_mask_prob = fixed_mask_prob
     
-    # Print summary comparison
-    print(f"\n{'='*60}")
-    print("SUMMARY COMPARISON")
-    print(f"{'='*60}")
-    print(f"{'Masking':<20} {'Loss Type':<15} {'Seq Acc':<10} {'Struct Acc':<10}")
-    print("-" * 67)
-    for masking_strategy, metrics in results.items():
-        loss_type = "Score Entropy" if masking_strategy == "discrete_diffusion" else "Cross Entropy"
-        print(f"{masking_strategy:<20} {loss_type:<15} {metrics['seq_accuracy']:<10.4f} {metrics['struct_accuracy']:<10.4f}")
+    def sample_masks(self, batch):
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:
+            # Create masks with fixed probability
+            mask = torch.rand(batch.B, batch.L, device=self.device) < self.fixed_mask_prob
+            batch.masks[track] = mask.bool()
+
+def main(custom_config: Optional[ValidationConfig] = None):
+    # Initialize configuration
+    val_cfg = custom_config if custom_config is not None else ValidationConfig()
+    mlm_model_cfg = MLMModelConfig()
+    diffusion_model_cfg = DiffusionModelConfig()
+    diffusion_cfg = DiffusionConfig()
+    
+    # Create dummy training config for dataloader compatibility
+    @dataclass
+    class DummyTrainingConfig:
+        masking_strategy: str = "simple"
+        
+    train_cfg = DummyTrainingConfig()
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    # Load dataset (use max_len from either config, they should be the same)
+    dataset = ProteinDataset(val_cfg.data_dir, max_length=mlm_model_cfg.max_len - 2)
+    
+    print(f"\nValidation dataset size: {len(dataset)}")
+    print(f"Time indices to evaluate: {val_cfg.time_indices}")
+    print(f"Model type to evaluate: {val_cfg.model_type}")
+    print(f"Training methods to evaluate: {val_cfg.training_methods}")
+    
+    # Results storage
+    results = {
+        'time_index': [],
+        'mask_prob': [],
+        'model_type': [],
+        'training_method': [],
+        'loss': [],
+        'seq_loss': [],
+        'struct_loss': []
+    }
+    
+    # Evaluate each time index
+    for t_idx in val_cfg.time_indices:
+        # Compute mask probability for this time index
+        mask_prob = compute_mask_prob_for_time(t_idx, diffusion_cfg)
+        print(f"\n{'='*60}")
+        print(f"Time index t={t_idx}, mask probability={mask_prob:.3f}")
+        print(f"{'='*60}")
+        
+        print(f"\nEvaluating {val_cfg.model_type} models...")
+        
+        # Evaluate all configured training methods
+        for training_method in val_cfg.training_methods:
+            # Get checkpoint path
+            checkpoint_pattern = f"{training_method}_checkpoint_pattern"
+            checkpoint_path = getattr(val_cfg, checkpoint_pattern).format(val_cfg.model_type)
+            
+            if not os.path.exists(checkpoint_path):
+                print(f"  Checkpoint not found: {checkpoint_path}")
+                continue
+            
+            print(f"  Loading {training_method} model from {checkpoint_path}")
+            
+            # Load model and FSQ encoder
+            model, fsq_encoder = load_model_checkpoint(checkpoint_path, val_cfg.model_type, training_method, device, val_cfg.fsq_encoder_pattern)
+            
+            # Use appropriate model config for dataloader
+            if training_method in ['simple', 'complex']:
+                model_cfg_for_loader = mlm_model_cfg
+            else:
+                model_cfg_for_loader = diffusion_model_cfg
+            
+            # Create dataloader with fixed mask probability
+            if training_method == 'diffusion':
+                # Use custom fixed timestep dataloader for diffusion models
+                diffusion_tracks = {'seq': True, 'struct': True, 'coords': True}
+                min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
+                
+                val_loader = FixedTimestepDiffusionDataLoader(
+                    dataset, model_cfg_for_loader, train_cfg, diffusion_cfg, diffusion_tracks,
+                    fixed_timestep=t_idx, fsq_encoder=fsq_encoder, device=device, 
+                    min_unmasked=min_unmasked, batch_size=val_cfg.batch_size, shuffle=False
+                )
+            else:
+                # For MLM models, use custom fixed mask probability dataloader
+                diffusion_tracks = {'seq': True, 'struct': True, 'coords': False}
+                min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
+                
+                val_loader = FixedMaskProbDataLoader(
+                    dataset, model_cfg_for_loader, train_cfg, diffusion_tracks,
+                    fixed_mask_prob=mask_prob, fsq_encoder=fsq_encoder, device=device,
+                    min_unmasked=min_unmasked, batch_size=val_cfg.batch_size, shuffle=False
+                )
+            
+            # Evaluate based on training method
+            if training_method in ['simple', 'complex']:
+                # MLM models use cross-entropy loss
+                metrics = evaluate_mlm_model(model, val_loader, val_cfg.model_type, device)
+            else:
+                # Diffusion models use score entropy loss
+                all_metrics = {'loss': 0.0, 'seq_loss': 0.0, 'struct_loss': 0.0}
+                num_batches = 0
+                
+                for batch in val_loader:
+                    batch_metrics = evaluate_diffusion_model(
+                        model, batch, t_idx, diffusion_cfg, diffusion_model_cfg, val_cfg.model_type, device
+                    )
+                    for key in all_metrics:
+                        all_metrics[key] += batch_metrics[key]
+                    num_batches += 1
+                
+                # Average metrics
+                metrics = {key: all_metrics[key] / num_batches for key in all_metrics}
+            
+            # Store results
+            results['time_index'].append(t_idx)
+            results['mask_prob'].append(mask_prob)
+            results['model_type'].append(val_cfg.model_type)
+            results['training_method'].append(training_method)
+            results['loss'].append(metrics['loss'])
+            results['seq_loss'].append(metrics['seq_loss'])
+            results['struct_loss'].append(metrics['struct_loss'])
+            
+            # Print results
+            loss_type = "Score Entropy" if training_method == 'diffusion' else "Cross Entropy"
+            print(f"    {training_method.capitalize()} - {loss_type} Loss: {metrics['loss']:.4f} "
+                  f"(Seq: {metrics['seq_loss']:.4f}, Struct: {metrics['struct_loss']:.4f})")
+    
+    # Save results to CSV
+    results_df = pd.DataFrame(results)
+    results_path = "validation_results.csv"
+    results_df.to_csv(results_path, index=False)
+    print(f"\nResults saved to {results_path}")
+    
+    # Create visualization plots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Define colors and markers for each training method
+    method_styles = {
+        'simple': {'color': 'blue', 'marker': 'o', 'label': 'Simple MLM'},
+        'complex': {'color': 'green', 'marker': 's', 'label': 'Complex MLM'},
+        'diffusion': {'color': 'red', 'marker': '^', 'label': 'Discrete Diffusion'}
+    }
+    
+    # Plot 1: Mask Percentage vs Sequence Loss
+    ax1.set_title(f'Mask Percentage vs Sequence Loss ({val_cfg.model_type} Model)', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Mask Percentage (%)', fontsize=12)
+    ax1.set_ylabel('Sequence Loss', fontsize=12)
+    ax1.grid(True, alpha=0.3)
+    
+    for training_method in val_cfg.training_methods:
+        method_data = results_df[results_df['training_method'] == training_method]
+        if not method_data.empty:
+            mask_percentages = method_data['mask_prob'].values * 100  # Convert to percentage
+            seq_losses = method_data['seq_loss'].values
+            
+            style = method_styles.get(training_method, {'color': 'black', 'marker': 'x', 'label': training_method})
+            ax1.plot(mask_percentages, seq_losses, 
+                    color=style['color'], marker=style['marker'], 
+                    linewidth=2, markersize=8, label=style['label'])
+    
+    ax1.legend(fontsize=11)
+    ax1.set_xlim(0, 100)
+    
+    # Plot 2: Mask Percentage vs Structure Loss
+    ax2.set_title(f'Mask Percentage vs Structure Loss ({val_cfg.model_type} Model)', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('Mask Percentage (%)', fontsize=12)
+    ax2.set_ylabel('Structure Loss', fontsize=12)
+    ax2.grid(True, alpha=0.3)
+    
+    for training_method in val_cfg.training_methods:
+        method_data = results_df[results_df['training_method'] == training_method]
+        if not method_data.empty:
+            mask_percentages = method_data['mask_prob'].values * 100  # Convert to percentage
+            struct_losses = method_data['struct_loss'].values
+            
+            style = method_styles.get(training_method, {'color': 'black', 'marker': 'x', 'label': training_method})
+            ax2.plot(mask_percentages, struct_losses, 
+                    color=style['color'], marker=style['marker'], 
+                    linewidth=2, markersize=8, label=style['label'])
+    
+    ax2.legend(fontsize=11)
+    ax2.set_xlim(0, 100)
+    
+    # Adjust layout and save
+    plt.tight_layout()
+    plot_path = f"mask_percentage_vs_losses_{val_cfg.model_type}.png"
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"Plots saved to {plot_path}")
+    
+    # Show the plot
+    plt.show()
+    
+    # Print summary
+    print("\n" + "="*80)
+    print("SUMMARY - Average losses across all time indices")
+    print("="*80)
+    
+    print(f"\n{val_cfg.model_type}:")
+    for training_method in ['simple', 'complex', 'diffusion']:
+        mask = (results_df['model_type'] == val_cfg.model_type) & (results_df['training_method'] == training_method)
+        if mask.any():
+            avg_loss = results_df[mask]['loss'].mean()
+            loss_type = "Score Entropy" if training_method == 'diffusion' else "Cross Entropy"
+            print(f"  {training_method.capitalize():10s} - Avg {loss_type} Loss: {avg_loss:.4f}")
 
 if __name__ == "__main__":
     main() 

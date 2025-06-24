@@ -1,8 +1,96 @@
 # loss_functions.py
-
 import torch
 import torch.nn.functional as F
 
+# --------------------------------------------------------------------------- #
+#  Discrete Diffusion Utilities                                                #
+# --------------------------------------------------------------------------- #
+def score_entropy_loss(output, x_0, x_t, cumulative_noise_levels, inst_noise_levels, mask_token, valid_mask):
+    """
+    Score entropy loss from SEDD paper.
+    
+    Args:
+        output: Model predictions of shape (B, L, V)
+        x_0: Original tokens of shape (B, L)
+        x_t: Noisy tokens of shape (B, L)
+        cumulative_noise_levels: Cumulative noise at time t, shape (B, 1)
+        inst_noise_levels: Instantaneous noise at time t, shape (B, 1)
+        mask_token: Index of the absorbing/mask token
+        valid_mask: Mask for valid positions (excluding BOS/EOS/Padding), shape (B, L).
+    
+    Returns:
+        Loss value
+    """
+
+    B, L, V = output.shape
+    
+    # Output represents log score ratios, apply exp to get ratios p_t(y)/p_t(x^i)
+    # This ensures the ratios are positive
+    output = torch.exp(output)
+
+    # Create one-hot encoding of x_t
+    # x_t shape: [B, L] with values in [0, V-1]
+    x_t_onecold = 1.0 - F.one_hot(x_t, num_classes=V).float()  # [B, L, V]
+    
+    # Calculate delta = output @ (1 - one_hot_{x_t})
+    # This computes the dot product along the vocabulary dimension
+    # (1 - x_t_onehot) zeros out the position corresponding to x_t
+    #x_t_onecold = 1.0 - x_t_onehot  # [B, L, V]
+    
+    # Compute dot product: sum over vocabulary dimension
+    # delta[b, l] = sum_v output[b, l, v] * x_t_onecold[b, l, v]
+    delta = (output * x_t_onecold).sum(dim=-1)  # [B, L]
+    
+    # The delta tensor now has shape [B, L] where:
+    # delta[b, l] = sum of all output[b, l, v] except where v == x_t[b, l]
+
+    # More numerically stable computation of base
+    # base = (1 - exp(-σ)) / exp(-σ) = exp(σ) - 1
+    base = torch.exp(cumulative_noise_levels) - 1.0
+    base = base.unsqueeze(1)
+    masked_positions = x_t == mask_token
+    alpha = 1.0 - 2.0 * masked_positions.float()
+
+    # Define "opposite": if x_t is masked, opposite is x_0; if x_t is not masked, opposite is mask_token
+    opposite = torch.where(masked_positions, x_0, torch.full_like(x_t, mask_token))
+    
+    # epsilon_1[b, l] = output[b, l, opposite[b, l]]
+    # Gather values from output at opposite positions
+    # batch_indices = torch.arange(B, device=output.device).unsqueeze(1).expand(B, L)  # [B, L]
+    # position_indices = torch.arange(L, device=output.device).unsqueeze(0).expand(B, L)  # [B, L]
+    
+    #epsilon_1 = output[batch_indices, position_indices, opposite]  # [B, L]
+    epsilon_1 = torch.gather(output, dim=2, index=opposite.unsqueeze(-1)).squeeze(-1)
+    
+    # epsilon_2: base^alpha
+    # base has shape [B, 1, 1] after unsqueeze, alpha has shape [B, L]
+    # We need to squeeze base back to [B, 1] for proper broadcasting
+    base = base.squeeze(-1)  # [B, 1, 1] -> [B, 1]
+    epsilon_2 = torch.pow(base, alpha)  # [B, L]
+    epsilon_2 = torch.clamp(epsilon_2, min=1e-10)
+
+    # Clip epsilon_1 to prevent log of very small numbers
+    epsilon_1 = torch.clamp(epsilon_1, min=1e-10)
+    epsilon = epsilon_2 * torch.log(epsilon_1)
+
+    gamma = (delta - epsilon) # Gamma is (B, L)
+    K = epsilon_2 * (torch.log(epsilon_2) - 1) # (B, L)
+    gamma += K # now >= 0 element-wise
+    
+    # inst_noise_levels has shape [B, 1], we want to broadcast with gamma [B, L]
+    # We should NOT unsqueeze, as [B, 1] will broadcast correctly to [B, L]
+    per_residue = gamma * inst_noise_levels  # [B, L] * [B, 1] -> [B, L]
+
+    # Apply mask to per_residue losses and compute average over valid positions only
+    per_residue_masked = per_residue * valid_mask.float()  # [B, L]
+    valid_counts = valid_mask.sum(dim=1).float()  # [B]
+    per_protein = per_residue_masked.sum(dim=1) / valid_counts  # (B,)
+
+    return per_protein.mean(0) # scalar
+
+# --------------------------------------------------------------------------- #
+#  FSQ and MLM Utilities                                                      #
+# --------------------------------------------------------------------------- #
 def mse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """
     Mean-squared error between pred and target.

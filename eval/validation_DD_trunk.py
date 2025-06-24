@@ -1,0 +1,403 @@
+"""
+Validation script to benchmark simple, complex, and discrete diffusion trained models
+using the discrete diffusion dataloader for all evaluations.
+
+This script evaluates all models using the same discrete diffusion data processing,
+but only passes timesteps as additional input to diffusion models.
+"""
+import os, sys
+from pathlib import Path
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader, random_split
+import numpy as np
+from tqdm import tqdm
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple, Optional
+import random
+from types import SimpleNamespace
+
+# Import required modules
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from src.models.transformer import TransformerTrunk
+from src.models.autoencoder_trunk import FSQEncoder
+from src.dataset_trunk import ProteinBackboneDataset
+from src.dataloader_trunk import DiffusionDataLoader, get_noise_levels
+from src.vocabulary_trunk import SEQUENCE_TOKENS, SPECIAL_TOKENS
+
+# Import functions from training scripts
+from train_transformer_discrete_diffusion_trunk import (
+    ModelConfig as DiffusionModelConfig, DiffusionConfig, score_entropy_loss, 
+    create_model_with_config as create_diffusion_model
+)
+from train_transformer_MLM_trunk import (
+    ModelConfig as MLMModelConfig,
+    create_model_with_config as create_mlm_model
+)
+
+@dataclass
+class ValidationConfig:
+    """Configuration for validation."""
+    # Model type to evaluate (single selection)
+    model_type: str = "C"  # Options: "SA", "GA", "RA", "C"
+    
+    # Training methods to evaluate (any combination)
+    training_methods: List[str] = field(default_factory=lambda: ["simple", "diffusion"])
+    
+    # Data settings
+    data_dir: str = "../data/sample_training_data"
+    batch_size: int = 4
+    
+    # Model paths (models in /scripts/checkpoints)
+    simple_checkpoint_pattern: str = "checkpoints/{}_simple_iter1_final.pt"
+    complex_checkpoint_pattern: str = "checkpoints/{}_complex_iter1_final.pt"
+    diffusion_checkpoint_pattern: str = "checkpoints/{}_discrete_diffusion_iter1_final.pt"
+    
+    # FSQ encoder paths (in /checkpoints, not /scripts/checkpoints)
+    fsq_encoder_pattern: str = "../checkpoints/{}_stage_1_iter1_{}.pt"
+    
+    def __post_init__(self):
+        # Validate model type
+        valid_types = {"SA", "GA", "RA", "C"}
+        if self.model_type not in valid_types:
+            raise ValueError(f"Invalid model_type: {self.model_type}. Must be one of {valid_types}")
+        
+        # Validate training methods
+        valid_methods = {"simple", "complex", "diffusion"}
+        for method in self.training_methods:
+            if method not in valid_methods:
+                raise ValueError(f"Invalid training method: {method}. Must be one of {valid_methods}")
+
+def load_model_checkpoint(checkpoint_path: str, model_type: str, training_method: str, device: torch.device, 
+                         fsq_encoder_pattern: str = None) -> Tuple[TransformerTrunk, Optional[FSQEncoder]]:
+    """Load a model from checkpoint."""
+    # Check if this is a diffusion model based on the training method
+    is_diffusion = training_method == 'diffusion'
+    
+    # Fix pickle loading by temporarily setting ModelConfig in global namespace
+    import __main__
+    # Import the configs to ensure they're available in this scope
+    from train_transformer_discrete_diffusion_trunk import ModelConfig as DiffusionModelConfig_local, DiffusionConfig as DiffusionConfig_local
+    from train_transformer_MLM_trunk import ModelConfig as MLMModelConfig_local
+    
+    if is_diffusion:
+        __main__.ModelConfig = DiffusionModelConfig_local
+        __main__.DiffusionConfig = DiffusionConfig_local
+    else: 
+        __main__.ModelConfig = MLMModelConfig_local
+    
+    # ---------------------------------------
+    # Load checkpoint weights first
+    # ---------------------------------------
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    if is_diffusion:
+        cfg_obj = ckpt.get('model_config', None)
+        cfg_dict = cfg_obj.__dict__ if hasattr(cfg_obj, '__dict__') else cfg_obj
+        model_cfg = DiffusionModelConfig(**{k: v for k, v in cfg_dict.items() if k in DiffusionModelConfig.__dataclass_fields__})
+        model = create_diffusion_model(model_type, model_cfg, device)
+    else:
+        cfg_obj = ckpt.get('model_config', None)
+        cfg_dict = cfg_obj.__dict__ if hasattr(cfg_obj, '__dict__') else cfg_obj
+        model_cfg = MLMModelConfig(**{k: v for k, v in cfg_dict.items() if k in MLMModelConfig.__dataclass_fields__})
+        model = create_mlm_model(model_type, model_cfg, device)
+
+    # Now load weights
+    model.load_state_dict(ckpt['model_state_dict'])
+    model.eval()
+        
+    # Clean up global namespace
+    if hasattr(__main__, 'ModelConfig'): 
+        delattr(__main__, 'ModelConfig')
+    if hasattr(__main__, 'DiffusionConfig'): 
+        delattr(__main__, 'DiffusionConfig')
+    
+    # Load FSQ encoder using the correct training method
+    # Map training method to the FSQ encoder suffix
+    if training_method == 'diffusion':
+        encoder_suffix = 'discrete_diffusion'
+    else:
+        encoder_suffix = training_method  # 'simple' or 'complex'
+    
+    encoder_checkpoint_path = fsq_encoder_pattern.format(model_type, encoder_suffix)
+    
+    if not os.path.exists(encoder_checkpoint_path):
+        raise FileNotFoundError(f"FSQ encoder not found at: {encoder_checkpoint_path}")
+    
+    encoder_checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
+    encoder_state = {k.replace('encoder.', ''): v for k, v in encoder_checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
+    fsq_config = SimpleNamespace(**encoder_checkpoint['model_cfg_dict'])
+    
+    fsq_encoder = FSQEncoder(fsq_config)
+    
+    # Handle key mapping for Consensus model
+    if model_type == "C":
+        new_encoder_state = {}
+        for k, v in encoder_state.items():
+            if 'consensus.token_weight' in k:
+                new_k = k.replace('consensus.token_weight', 'consensus.token_encoder.weight')
+                new_encoder_state[new_k] = v
+            elif 'consensus.token_bias' in k:
+                new_k = k.replace('consensus.token_bias', 'consensus.token_encoder.bias')
+                new_encoder_state[new_k] = v
+            else:
+                new_encoder_state[k] = v
+        encoder_state = new_encoder_state
+    
+    fsq_encoder.load_state_dict(encoder_state)
+    fsq_encoder.eval()
+    fsq_encoder.requires_grad_(False)
+    fsq_encoder = fsq_encoder.to(device)
+    
+    return model, fsq_encoder
+
+def evaluate_mlm_model_with_diffusion_data(model: TransformerTrunk, batch_data: Tuple, 
+                                         model_type: str, device: torch.device) -> Dict[str, float]:
+    """Evaluate an MLM model using cross-entropy loss on diffusion dataloader batch."""
+    # Unpack batch data from DiffusionDataLoader
+    # Format: (x_t, x_0, masks, timestep_indices, cumulative_noise_levels, inst_noise, lengths, coords)
+    x_t, x_0, masks, timestep_indices, cumulative_noise_levels, inst_noise, lengths, coords = batch_data
+    seq_x_t, struct_x_t = x_t
+    seq_x_0, struct_x_0 = x_0
+    seq_mask, struct_mask = masks
+    
+    B, L = seq_x_t.shape
+    
+    # Create valid_mask (positions excluding BOS/EOS/PAD)
+    positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+    valid_mask = (positions >= 1) & (positions < lengths.unsqueeze(1) + 1)
+    
+    # Create coord_mask for GA/RA models
+    coord_mask = valid_mask & (~struct_mask)
+    
+    # Handle all-masked sequences
+    all_masked = ~coord_mask.any(dim=1)
+    if all_masked.any():
+        for idx in torch.where(all_masked)[0]:
+            coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)
+            coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)
+            coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)
+            coord_mask[idx, 1] = True
+    
+    with torch.no_grad():
+        # Forward pass (NO timesteps for MLM models)
+        if model_type in ("GA", "RA"):
+            outputs = model((seq_x_t, struct_x_t), coords, coord_mask)
+        else:
+            outputs = model((seq_x_t, struct_x_t))
+        
+        seq_logits, struct_logits = outputs
+        
+        # Flatten tensors for loss computation
+        seq_logits_flat = seq_logits.reshape(-1, seq_logits.size(-1))
+        struct_logits_flat = struct_logits.reshape(-1, struct_logits.size(-1))
+        seq_labels_flat = seq_x_0.reshape(-1)
+        struct_labels_flat = struct_x_0.reshape(-1)
+        valid_mask_flat = valid_mask.reshape(-1)
+        
+        # Compute cross-entropy loss over all valid positions (matching training)
+        seq_loss = F.cross_entropy(
+            seq_logits_flat[valid_mask_flat],
+            seq_labels_flat[valid_mask_flat].long(),
+            reduction='mean'
+        )
+        
+        struct_loss = F.cross_entropy(
+            struct_logits_flat[valid_mask_flat],
+            struct_labels_flat[valid_mask_flat].long(),
+            reduction='mean'
+        )
+        
+        total_loss = seq_loss + struct_loss
+    
+    return {
+        'loss': total_loss.item(),
+        'seq_loss': seq_loss.item(),
+        'struct_loss': struct_loss.item()
+    }
+
+def evaluate_diffusion_model_with_diffusion_data(model: TransformerTrunk, batch_data: Tuple, 
+                                               diffusion_cfg: DiffusionConfig, model_cfg: DiffusionModelConfig,
+                                               model_type: str, device: torch.device) -> Dict[str, float]:
+    """Evaluate a diffusion model using score entropy loss on diffusion dataloader batch."""
+    # Unpack batch data from DiffusionDataLoader  
+    # Format: (x_t, x_0, masks, timestep_indices, cumulative_noise_levels, inst_noise, lengths, coords)
+    x_t, x_0, masks, timestep_indices, cumulative_noise_levels, inst_noise, lengths, coords = batch_data
+    seq_x_t, struct_x_t = x_t
+    seq_x_0, struct_x_0 = x_0
+    seq_mask, struct_mask = masks
+    
+    B, L = seq_x_t.shape
+    
+    # Create timestep tensors for diffusion model
+    timesteps = timestep_indices.float().unsqueeze(-1)
+    
+    # Create valid mask
+    positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+    valid_mask = (positions >= 1) & (positions < lengths.unsqueeze(1) + 1)
+    
+    # Create coord_mask for GA/RA models
+    coord_mask = valid_mask & (~struct_mask)
+    
+    # Handle all-masked sequences
+    all_masked = ~coord_mask.any(dim=1)
+    if all_masked.any():
+        for idx in torch.where(all_masked)[0]:
+            coords[idx, 1, 0, :] = torch.tensor([0., 0., 0.], device=device)
+            coords[idx, 1, 1, :] = torch.tensor([1.5, 0., 0.], device=device)
+            coords[idx, 1, 2, :] = torch.tensor([2.4, 1.3, 0.], device=device)
+            coord_mask[idx, 1] = True
+    
+    with torch.no_grad():
+        # Forward pass with timesteps for diffusion model
+        if model_type in ("GA", "RA"):
+            outputs = model((seq_x_t, struct_x_t), coords, coord_mask, timesteps)
+        else:
+            outputs = model((seq_x_t, struct_x_t), timesteps=timesteps)
+        
+        seq_logits, struct_logits = outputs
+        
+        # Compute score entropy loss
+        seq_loss = score_entropy_loss(
+            seq_logits, seq_x_0, seq_x_t, cumulative_noise_levels, inst_noise,
+            diffusion_cfg.seq_absorb_token, validation=True, valid_mask=valid_mask
+        )
+        
+        struct_loss = score_entropy_loss(
+            struct_logits, struct_x_0, struct_x_t, cumulative_noise_levels, inst_noise,
+            diffusion_cfg.struct_absorb_token, validation=True, valid_mask=valid_mask
+        )
+        
+        total_loss = seq_loss + struct_loss
+    
+    return {
+        'loss': total_loss.item(),
+        'seq_loss': seq_loss.item(),
+        'struct_loss': struct_loss.item()
+    }
+
+def main(custom_config: Optional[ValidationConfig] = None):
+    # Initialize configuration
+    val_cfg = custom_config if custom_config is not None else ValidationConfig()
+    diffusion_model_cfg = DiffusionModelConfig()
+    diffusion_cfg = DiffusionConfig()
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    
+    # Load dataset (use max_len from diffusion config for consistency)
+    dataset = ProteinBackboneDataset(val_cfg.data_dir, max_length=diffusion_model_cfg.max_len - 2)
+    
+    print(f"\nValidation dataset size: {len(dataset)}")
+    print(f"Model type to evaluate: {val_cfg.model_type}")
+    print(f"Training methods to evaluate: {val_cfg.training_methods}")
+    print("Using discrete diffusion dataloader for all evaluations")
+    print(f"Diffusion config: {diffusion_cfg.noise_schedule} schedule, "
+          f"sigma_min={diffusion_cfg.sigma_min}, sigma_max={diffusion_cfg.sigma_max}, "
+          f"num_timesteps={diffusion_cfg.num_timesteps}")
+    
+    # Results storage
+    results = {
+        'model_type': [],
+        'training_method': [],
+        'loss': [],
+        'seq_loss': [],
+        'struct_loss': []
+    }
+    
+    print(f"\nEvaluating {val_cfg.model_type} models...")
+    
+    # Evaluate all configured training methods
+    for training_method in val_cfg.training_methods:
+        # Get checkpoint path
+        checkpoint_pattern = f"{training_method}_checkpoint_pattern"
+        checkpoint_path = getattr(val_cfg, checkpoint_pattern).format(val_cfg.model_type)
+        
+        if not os.path.exists(checkpoint_path):
+            print(f"  Checkpoint not found: {checkpoint_path}")
+            continue
+        
+        print(f"\n  Loading {training_method} model from {checkpoint_path}")
+        
+        # Load model and FSQ encoder
+        model, fsq_encoder = load_model_checkpoint(
+            checkpoint_path, val_cfg.model_type, training_method, device,
+            fsq_encoder_pattern=val_cfg.fsq_encoder_pattern
+        )
+        
+        # Create DiffusionDataLoader (same for all methods)
+        # Use diffusion config for the dataloader to ensure consistent processing
+        val_loader = DiffusionDataLoader(
+            dataset, fsq_encoder=fsq_encoder, model_cfg=diffusion_model_cfg, diffusion_cfg=diffusion_cfg,
+            device=device, batch_size=val_cfg.batch_size, shuffle=False
+        )
+        
+        # Evaluate all batches
+        all_metrics = {'loss': 0.0, 'seq_loss': 0.0, 'struct_loss': 0.0}
+        num_batches = 0
+        
+        print(f"  Evaluating {training_method} model...")
+        with tqdm(val_loader, desc=f"Validating {training_method}", ascii=True, leave=True) as pbar:
+            for batch_data in pbar:
+                # Evaluate based on training method
+                if training_method in ['simple', 'complex']:
+                    # MLM models use cross-entropy loss (no timesteps)
+                    batch_metrics = evaluate_mlm_model_with_diffusion_data(
+                        model, batch_data, val_cfg.model_type, device
+                    )
+                else:
+                    # Diffusion models use score entropy loss (with timesteps)
+                    batch_metrics = evaluate_diffusion_model_with_diffusion_data(
+                        model, batch_data, diffusion_cfg, diffusion_model_cfg, val_cfg.model_type, device
+                    )
+                
+                # Accumulate metrics
+                for key in all_metrics:
+                    all_metrics[key] += batch_metrics[key]
+                num_batches += 1
+                
+                # Update progress bar
+                pbar.set_postfix({
+                    'loss': f"{batch_metrics['loss']:.3f}",
+                    'seq_loss': f"{batch_metrics['seq_loss']:.3f}",
+                    'struct_loss': f"{batch_metrics['struct_loss']:.3f}"
+                })
+        
+        # Average metrics
+        metrics = {key: all_metrics[key] / num_batches for key in all_metrics}
+        
+        # Store results
+        results['model_type'].append(val_cfg.model_type)
+        results['training_method'].append(training_method)
+        results['loss'].append(metrics['loss'])
+        results['seq_loss'].append(metrics['seq_loss'])
+        results['struct_loss'].append(metrics['struct_loss'])
+        
+        # Print results
+        loss_type = "Score Entropy" if training_method == 'diffusion' else "Cross Entropy"
+        print(f"  {training_method.capitalize()} - {loss_type} Loss: {metrics['loss']:.4f} "
+              f"(Seq: {metrics['seq_loss']:.4f}, Struct: {metrics['struct_loss']:.4f})")
+    
+    # Save results to CSV
+    import pandas as pd
+    results_df = pd.DataFrame(results)
+    results_path = "validation_results_DD.csv"
+    results_df.to_csv(results_path, index=False)
+    print(f"\nResults saved to {results_path}")
+    
+    # Print summary
+    print("\n" + "="*80)
+    print("SUMMARY - Validation Results (Discrete Diffusion Dataloader)")
+    print("="*80)
+    
+    print(f"\n{val_cfg.model_type}:")
+    for training_method in ['simple', 'complex', 'diffusion']:
+        mask = (results_df['model_type'] == val_cfg.model_type) & (results_df['training_method'] == training_method)
+        if mask.any():
+            avg_loss = results_df[mask]['loss'].iloc[0]  # Should only be one result per method
+            loss_type = "Score Entropy" if training_method == 'diffusion' else "Cross Entropy"
+            print(f"  {training_method.capitalize():10s} - {loss_type} Loss: {avg_loss:.4f}")
+
+if __name__ == "__main__":
+    main() 
