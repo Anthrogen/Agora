@@ -31,11 +31,13 @@ from src.dataloader import _get_noise_levels
 
 # Import functions from training scripts
 from train_transformer_discrete_diffusion_trunk import (
-    ModelConfig as DiffusionModelConfig, DiffusionConfig, validate_step as diffusion_validate_step,
+    ModelConfig as DiffusionModelConfig, DiffusionConfig, 
+    validate_step as diffusion_validate_step,
     create_model_with_config as create_diffusion_model
 )
 from train_transformer_MLM_trunk import (
     ModelConfig as MLMModelConfig,
+    validate_step as mlm_validate_step,
     create_model_with_config as create_mlm_model
 )
 
@@ -63,6 +65,11 @@ class TrainingConfig:
     # Loss weights
     seq_loss_weight: float = 1.0
     struct_loss_weight: float = 1.0
+
+    # Cross-entropy loss function: which elements should contribute to the loss?
+    # "masked": only masked positions
+    # "non_beospad": all non-BOS/EOS/PAD positions, including masks
+    ce_loss_function_elements: str = "non_beospad"
     
     # Model paths (models in /scripts/checkpoints)
     simple_checkpoint_pattern: str = "../checkpoints/transformer_trunk/{}_simple_iter1_final.pt"
@@ -175,57 +182,10 @@ def load_model_checkpoint(checkpoint_path: str, model_type: str, training_method
 def evaluate_mlm_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, train_cfg: TrainingConfig) -> Dict[str, float]:
     """Evaluate an MLM model using cross-entropy loss on a single batch."""
     with torch.no_grad():
-        # Unpack batch using new MaskedBatch structure
-        seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
-        seq_x_0, struct_x_0 = batch.unmasked_data['seq'], batch.unmasked_data['struct']
-        seq_valid, struct_valid = ~batch.beospad['seq'], ~batch.beospad['struct']
-        coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
-        B, L = seq_x_t.shape
-        
-        unmasked_coords_elements = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
-        # Ensure at least one position is valid in coord_mask for each sequence
-        assert unmasked_coords_elements.any(dim=1).all() # Need at least one real residue in each sequence
+        retval = mlm_validate_step({model_type : model}, batch, train_cfg)
+        return retval[model_type]
 
-        # Prepare inputs
-        inputs = (seq_x_t, struct_x_t)
-        
-        # Forward pass
-        if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, unmasked_coords_elements)
-        else: outputs = model(inputs)
-        
-        seq_logits, struct_logits = outputs
-        
-        # Flatten tensors for loss computation
-        seq_logits_flat = seq_logits.reshape(-1, seq_logits.size(-1))
-        struct_logits_flat = struct_logits.reshape(-1, struct_logits.size(-1))
-        seq_x0_flat = seq_x_0.reshape(-1)
-        struct_x0_flat = struct_x_0.reshape(-1)
-        seq_valid_flat = seq_valid.reshape(-1)
-        struct_valid_flat = struct_valid.reshape(-1)
-        
-        # Compute cross-entropy loss over all valid positions (matching training)
-        seq_loss = F.cross_entropy(
-            seq_logits_flat[seq_valid_flat],
-            seq_x0_flat[seq_valid_flat].long(),
-            reduction='mean'
-        )
-        
-        struct_loss = F.cross_entropy(
-            struct_logits_flat[struct_valid_flat],
-            struct_x0_flat[struct_valid_flat].long(),
-            reduction='mean'
-        )
-        
-        total_loss = seq_loss * train_cfg.seq_loss_weight + struct_loss * train_cfg.struct_loss_weight
-        
-    return {
-        'loss': total_loss.item(),
-        'loss_seq': seq_loss.item(),
-        'loss_struct': struct_loss.item()
-    }
-
-def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, timestep: int, 
-                           diffusion_cfg: DiffusionConfig,
+def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, timestep: int, diffusion_cfg: DiffusionConfig,
                            train_cfg: TrainingConfig, device: torch.device) -> Dict[str, float]:
     """Evaluate a diffusion model using score entropy loss on a single batch."""
 
@@ -245,66 +205,10 @@ def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, timest
     batch.metadata['pseudo_cumulative_noise'] = pseudo_cumulative_noise.to(device)
     batch.metadata['pseudo_inst_noise'] = pseudo_inst_noise.to(device)
 
-    retval = diffusion_validate_step({'0': model}, batch, diffusion_cfg, train_cfg)
-    
-    return retval['0']
+    with torch.no_grad():
+        retval = diffusion_validate_step({model_type: model}, batch, diffusion_cfg, train_cfg)
+        return retval[model_type]
 
-    # # Unpack batch using new MaskedBatch structure
-    # seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
-    # seq_x_0, struct_x_0 = batch.unmasked_data['seq'], batch.unmasked_data['struct']
-    # seq_valid, struct_valid = ~batch.beospad['seq'], ~batch.beospad['struct']
-    # coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
-    # B, L = seq_x_t.shape
-
-    # unmasked_coords_elements = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
-    # # Ensure at least one position is valid in coord_mask for each sequence
-    # #assert not (~unmasked_coords_elements.any(dim=1).any()) # Dataloader should have gauranteed this.
-    # assert unmasked_coords_elements.any(dim=1).all() # Need at least one real residue in each sequence
-    
-    # # Pass raw timestep indices following DiT convention
-    # timestep_indices = torch.full((B,), timestep, dtype=torch.long, device=device)
-    # timesteps = timestep_indices.float().unsqueeze(-1)    
-    
-    # # Prepare inputs
-    # inputs = (seq_x_t, struct_x_t)
-    
-    # # Get noise levels for this timestep
-    # inst_noise_levels, cumulative_noise_levels = get_noise_levels(
-    #     diffusion_cfg.sigma_min,
-    #     diffusion_cfg.sigma_max,
-    #     diffusion_cfg.num_timesteps,
-    #     schedule_type=diffusion_cfg.noise_schedule
-    # )
-    # cumulative_noise = cumulative_noise_levels[timestep].unsqueeze(0).unsqueeze(1).to(device)
-    # inst_noise = inst_noise_levels[timestep].unsqueeze(0).unsqueeze(1).to(device)
-    
-    # with torch.no_grad():
-    #     # Forward pass
-    #     if model_type in ("GA", "RA"):
-    #         outputs = model(inputs, coords_x_t, unmasked_coords_elements, timesteps)
-    #     else:
-    #         outputs = model(inputs, timesteps=timesteps)
-        
-    #     seq_logits, struct_logits = outputs
-        
-    #     # Compute score entropy loss
-    #     seq_loss = score_entropy_loss(
-    #         seq_logits, seq_x_0, seq_x_t, cumulative_noise, inst_noise,
-    #         diffusion_cfg.seq_absorb_token, valid_mask=seq_valid
-    #     )
-        
-    #     struct_loss = score_entropy_loss(
-    #         struct_logits, struct_x_0, struct_x_t, cumulative_noise, inst_noise,
-    #         diffusion_cfg.struct_absorb_token, valid_mask=struct_valid
-    #     )
-        
-    #     total_loss = seq_loss + struct_loss
-    
-    # return {
-    #     'loss': total_loss.item(),
-    #     'seq_loss': seq_loss.item(),
-    #     'struct_loss': struct_loss.item()
-    # }
 
 def main(custom_config: Optional[TrainingConfig] = None):
     # Initialize configuration
@@ -401,7 +305,7 @@ def main(custom_config: Optional[TrainingConfig] = None):
                     batch_metrics = evaluate_mlm_model(model, batch, train_cfg.model_type, train_cfg)
                 else:
                     # Diffusion models use score entropy loss
-                    batch_metrics = evaluate_diffusion_model(model, batch, t_idx, diffusion_cfg, train_cfg, device)
+                    batch_metrics = evaluate_diffusion_model(model, batch, train_cfg.model_type, t_idx, diffusion_cfg, train_cfg, device)
                 
                 # Accumulate metrics
                 for key in all_metrics:

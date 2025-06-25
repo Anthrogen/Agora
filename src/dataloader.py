@@ -275,7 +275,6 @@ class DiffusionDataLoader(MaskingDataLoader):
         self.inst_noise_levels = self.inst_noise_levels.to(self.device)
         self.cumulative_noise_levels = self.cumulative_noise_levels.to(self.device)
 
-
     def sample_masks(self, batch):
         # Sample timestep indices uniformly from [0, T-1]
         timestep_indices = torch.randint(0, self.diffusion_cfg.num_timesteps, (batch.B,), device=self.device)

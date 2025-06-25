@@ -2,11 +2,11 @@ from enum import Enum
 
 class SPECIAL_TOKENS(Enum):
     # Note= you cannot do something like <PAD> in an Enum environment.
-    PAD= 0     # Padding token
-    MASK= 1    # Mask token for MLM
-    UNK= 2     # Unknown amino acid
-    BOS= 3     # Beginning of sequence
-    EOS= 4     # End of sequence
+    PAD  = 0     # Padding token
+    MASK = 1    # Mask token for MLM
+    UNK  = 2     # Unknown amino acid
+    BOS  = 3     # Beginning of sequence
+    EOS  = 4     # End of sequence
 
 
 class SEQUENCE_TOKENS(Enum):

@@ -41,6 +41,7 @@ from src.models.autoencoder import FSQEncoder
 from src.dataloader import _get_training_dataloader, MaskedBatch
 from src.dataset import ProteinDataset
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from src.losses import cross_entropy_loss
 
 # --------------------------------------------------------------------------- #
 #  Configurations                                                              #
@@ -68,9 +69,9 @@ class ModelConfig:
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_types: List[str] = field(default_factory=lambda: ["SA", "GA", "RA", "C"]) # Models to train - can be any subset of ["SA", "GA", "RA", "C"]
+    model_types: List[str] = field(default_factory=lambda: ["C"]) # Models to train - can be any subset of ["SA", "GA", "RA", "C"]
     batch_size: int = 4  # Training hyperparameters
-    max_epochs: int = 25
+    max_epochs: int = 100
     learning_rate: float = 1e-5
     num_iter: int = 5  # Number of iterations to repeat training
     masking_strategy: str = "simple" # Masking strategy: 'simple' or 'complex'
@@ -83,6 +84,11 @@ class TrainingConfig:
     elif masking_strategy == "complex":
         seq_loss_weight: float = 1.0  # sequence loss weight - complex: 1.0
         struct_loss_weight: float = 0.5  # structure loss weight - complex: 0.5
+
+    # Cross-entropy loss function: which elements should contribute to the loss?
+    # "masked": only masked positions
+    # "non_beospad": all non-BOS/EOS/PAD positions, including masks
+    ce_loss_function_elements: str = "masked"
 
     data_dir: str = "../sample_data/1k/"  # Data paths
     checkpoint_dir: str = "../checkpoints/transformer_trunk"  # Checkpointing
@@ -152,12 +158,16 @@ def ensure_identical_parameters_all_models(models: Dict[str, TransformerTrunk], 
 # --------------------------------------------------------------------------- #
 #  Training utilities                                                          #
 # --------------------------------------------------------------------------- #
-def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Tensor) -> float:
+def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, loss_elements: torch.Tensor) -> float:
     """Calculate accuracy for masked positions only."""
-    if not mask.any(): return 0.0
-    predictions = torch.argmax(logits, dim=-1)
-    correct = (predictions == labels) & mask
-    return (correct.sum().float() / mask.sum().float()).item()
+    B, L, V = logits.shape
+    content_logits = logits[:,:,:V-len(SPECIAL_TOKENS)]
+    predictions = torch.argmax(content_logits, dim=-1)
+    correct = (predictions == labels) & loss_elements
+
+    # Just return the unconditioned sample mean.
+    # Not everything has to be complicated.
+    return torch.mean(correct.float())
 
 def worker_init_fn(worker_id):
     """Initialize each worker with a deterministic seed."""
@@ -192,41 +202,23 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
         else: outputs = model(inputs)
         seq_logits, struct_logits = outputs
 
-        
-        # Flatten for loss computation
-        #TODO: double-check the relative weighting between residues of different proteins within a common batch.
-        seq_logits_flat = seq_logits.view(-1, model_cfg.seq_vocab)
-        struct_logits_flat = struct_logits.view(-1, model_cfg.struct_vocab)
-        seq_labels_flat = seq_tokens.view(-1)
-        struct_labels_flat = struct_tokens.view(-1)
-        seq_mask_flat = mask_seq.view(-1)
-        struct_mask_flat = mask_struct.view(-1)
-        
-        # # Compute losses
-        # loss_seq = F.cross_entropy(seq_logits_flat[seq_mask_flat], seq_labels_flat[seq_mask_flat].long()) if seq_mask_flat.any() else torch.tensor(0.0, device=device)
-        # loss_struct = F.cross_entropy(struct_logits_flat[struct_mask_flat], struct_labels_flat[struct_mask_flat].long()) if struct_mask_flat.any() else torch.tensor(0.0, device=device)
+        if train_cfg.ce_loss_function_elements == "masked":
+            loss_elements_seq = batch.masks['seq']
+            loss_elements_struct = batch.masks['struct']
+        elif train_cfg.ce_loss_function_elements == "non_beospad":
+            # Compute loss over all non-BOS/EOS/PAD positions, including masks.
+            loss_elements_seq = ~batch.beospad['seq']
+            loss_elements_struct = ~batch.beospad['struct']
+        else:
+            raise ValueError(f"What is {train_cfg.ce_loss_function_elements}?")
 
-        # Compute losses
-        if seq_mask_flat.any():
-            loss_seq = F.cross_entropy(seq_logits_flat[seq_mask_flat], seq_labels_flat[seq_mask_flat].long())
-        else:
-            # Use a small regularization loss to maintain gradient flow
-            loss_seq = 0.0 * seq_logits.sum()
-            print(f"Warning: No sequence positions masked for {model_type}")
-        
-        if struct_mask_flat.any():
-            loss_struct = F.cross_entropy(struct_logits_flat[struct_mask_flat], struct_labels_flat[struct_mask_flat].long())
-        else:
-            # Use a small regularization loss to maintain gradient flow
-            loss_struct = 0.0 * struct_logits.sum()
-            print(f"Warning: No structure positions masked for {model_type}")
+        loss_seq = cross_entropy_loss(seq_logits, batch.unmasked_data['seq'], loss_elements_seq)
+        loss_struct = cross_entropy_loss(struct_logits, batch.unmasked_data['struct'], loss_elements_struct)
 
         loss = train_cfg.seq_loss_weight * loss_seq + train_cfg.struct_loss_weight * loss_struct
-        
 
-        # Calculate accuracies
-        seq_acc = calculate_accuracy(seq_logits_flat, seq_labels_flat, seq_mask_flat)
-        struct_acc = calculate_accuracy(struct_logits_flat, struct_labels_flat, struct_mask_flat)
+        seq_acc = calculate_accuracy(seq_logits, batch.unmasked_data['seq'], loss_elements_seq)
+        struct_acc = calculate_accuracy(struct_logits, batch.unmasked_data['struct'], loss_elements_struct)
         
         # Backward pass
         optimizer.zero_grad()
@@ -238,7 +230,7 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
     
     return metrics
 
-def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch, train_cfg: TrainingConfig, model_cfg: ModelConfig, device: torch.device) -> Dict[str, Dict[str, float]]:
+def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch, train_cfg: TrainingConfig) -> Dict[str, Dict[str, float]]:
     """Perform a single validation step for all models with the same batch."""
     masked_seq, masked_struct, masked_coords = batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords']
     mask_seq, mask_struct = batch.masks['seq'], batch.masks['struct']
@@ -263,22 +255,23 @@ def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch, train
             else: outputs = model(inputs)  
             seq_logits, struct_logits = outputs
             
-            # Flatten for loss computation
-            seq_logits_flat = seq_logits.view(-1, model_cfg.seq_vocab)
-            struct_logits_flat = struct_logits.view(-1, model_cfg.struct_vocab)
-            seq_labels_flat = seq_tokens.view(-1)
-            struct_labels_flat = struct_tokens.view(-1)
-            seq_mask_flat = mask_seq.view(-1)
-            struct_mask_flat = mask_struct.view(-1)
-            
-            # Compute losses
-            loss_seq = F.cross_entropy(seq_logits_flat[seq_mask_flat], seq_labels_flat[seq_mask_flat].long()) if seq_mask_flat.any() else torch.tensor(0.0, device=device)
-            loss_struct = F.cross_entropy(struct_logits_flat[struct_mask_flat], struct_labels_flat[struct_mask_flat].long()) if struct_mask_flat.any() else torch.tensor(0.0, device=device)
+            if train_cfg.ce_loss_function_elements == "masked":
+                loss_elements_seq = batch.masks['seq']
+                loss_elements_struct = batch.masks['struct']
+            elif train_cfg.ce_loss_function_elements == "non_beospad":
+                # Compute loss over all non-BOS/EOS/PAD positions, including masks.
+                loss_elements_seq = ~batch.beospad['seq']
+                loss_elements_struct = ~batch.beospad['struct']
+            else:
+                raise ValueError(f"What is {train_cfg.ce_loss_function_elements}?")
+
+            loss_seq = cross_entropy_loss(seq_logits, batch.unmasked_data['seq'], loss_elements_seq)
+            loss_struct = cross_entropy_loss(struct_logits, batch.unmasked_data['struct'], loss_elements_struct)
+
             loss = train_cfg.seq_loss_weight * loss_seq + train_cfg.struct_loss_weight * loss_struct
-            
-            # Calculate accuracies
-            seq_acc = calculate_accuracy(seq_logits_flat, seq_labels_flat, seq_mask_flat)
-            struct_acc = calculate_accuracy(struct_logits_flat, struct_labels_flat, struct_mask_flat)
+
+            seq_acc = calculate_accuracy(seq_logits, batch.unmasked_data['seq'], loss_elements_seq)
+            struct_acc = calculate_accuracy(struct_logits, batch.unmasked_data['struct'], loss_elements_struct)
             
             # Store metrics
             metrics[model_type] = {'loss': loss.item(), 'loss_seq': loss_seq.item(), 'loss_struct': loss_struct.item(), 'seq_acc': seq_acc, 'struct_acc': struct_acc}
@@ -450,7 +443,7 @@ def main():
             
             for batch in val_loader:
                 # Validate all models on the same batch
-                batch_metrics = validate_step(models, batch, train_cfg, model_cfg, device)
+                batch_metrics = validate_step(models, batch, train_cfg)
                 
                 # Accumulate metrics
                 for model_type in train_cfg.model_types:

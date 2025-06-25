@@ -102,8 +102,8 @@ class StructureTokenizer():
         self.fsq_num_atoms = fsq_num_atoms
 
         self.full_length = full_length
-        #self.mapping = {name: member.value + self.fsq_output_max + 1 for name, member in SPECIAL_TOKENS.__members__.items()}
-        self.mapping = {name: member.value + self.fsq_output_max for name, member in SPECIAL_TOKENS.__members__.items()} #off by one?
+        self.mapping = {name: member.value + self.fsq_output_max + 1 for name, member in SPECIAL_TOKENS.__members__.items()}
+        #self.mapping = {name: member.value + self.fsq_output_max for name, member in SPECIAL_TOKENS.__members__.items()} #off by one?
 
         self.coordinates_tokenizer = CoordinatesTokenizer(full_length)
         self.reapply_bos_eos_pad = reapply_bos_eos_pad
@@ -146,7 +146,7 @@ class StructureTokenizer():
         # ------------------------------------------------------------------ #
         # Sanity checks                                                    #
         # ------------------------------------------------------------------ #
-        assert torch.max(padded_struct_tokens) < self.fsq_output_max + len(self.mapping), f"Structure Tokenization failed! Max token = {torch.max(padded_struct_tokens)}"
+        assert torch.max(padded_struct_tokens) < self.fsq_output_max + 1 + len(self.mapping), f"Structure Tokenization failed! Max token = {torch.max(padded_struct_tokens)}"
         assert torch.min(padded_struct_tokens) >= 0, f"Structure Tokenization failed! Min token = {torch.min(padded_struct_tokens)}"
         assert padded_coords.shape[0] == self.full_length, "Structure padding length mismatch!"
 

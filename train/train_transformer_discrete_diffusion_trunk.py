@@ -46,7 +46,7 @@ class ModelConfig:
     n_heads: int = 8 # 12
     n_layers: int = 3 # 12
     seq_vocab: int = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)  # Sequence tokens + special tokens
-    struct_vocab: int = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
+    struct_vocab: int = 7*5*5*5*5 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
     max_len: int = 2048
     dropout: float = 0.1  # Other architecture params
     ff_mult: int = 4
@@ -174,9 +174,9 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
     coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
     B, L = seq_x_t.shape
 
-    unmasked_coords_elements = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
+    nonspecial_elements_coords = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
     #assert not (~unmasked_coords_elements.any(dim=1).any()) # Dataloader should have gauranteed this.
-    assert unmasked_coords_elements.any(dim=1).all() # Need at least one real residue in each sequence
+    assert nonspecial_elements_coords.any(dim=1).all() # Need at least one real residue in each sequence
     
     # Pass raw timestep indices following DiT convention
     timesteps = batch.metadata['timestep_indices'].float().unsqueeze(-1) # Timesteps shoudl be the same across all tracks of a protein, though masks are not.
@@ -191,7 +191,7 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
         optimizer = optimizers[model_type]
         
         # Forward pass with time conditioning
-        if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, unmasked_coords_elements, timesteps)
+        if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, nonspecial_elements_coords, timesteps)
         else: outputs = model(inputs, timesteps=timesteps)
         seq_logits, struct_logits = outputs
         
@@ -222,9 +222,9 @@ def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch,
     coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
     B, L = seq_x_t.shape
 
-    unmasked_coords_elements = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
+    nonspecial_elements_coords = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
     #assert not (~unmasked_coords_elements.any(dim=1).any()) # Dataloader should gaurantee this.
-    assert unmasked_coords_elements.any(dim=1).all()
+    assert nonspecial_elements_coords.any(dim=1).all()
 
     timesteps = batch.metadata['timestep_indices'] if 'timestep_indices' in batch.metadata else batch.metadata['pseudo_timestep_indices']
     cumulative_noise = batch.metadata['cumulative_noise'] if 'cumulative_noise' in batch.metadata else batch.metadata['pseudo_cumulative_noise']
@@ -242,7 +242,7 @@ def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch,
         
         with torch.no_grad():
             # Forward pass with time conditioning
-            if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, coord_mask=unmasked_coords_elements, timesteps=timesteps)
+            if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, coord_mask=nonspecial_elements_coords, timesteps=timesteps)
             else: outputs = model(inputs, timesteps=timesteps)
             seq_logits, struct_logits = outputs
             
