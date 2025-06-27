@@ -68,8 +68,8 @@ class TrainingConfig:
 
     # Cross-entropy loss function: which elements should contribute to the loss?
     # "masked": only masked positions
-    # "non_beospad": all non-BOS/EOS/PAD positions, including masks
-    ce_loss_function_elements: str = "non_beospad"
+    # "non_beospank": all non-BOS/EOS/PAD positions, including masks
+    ce_loss_function_elements: str = "non_beospank"
     
     # Model paths (models in /scripts/checkpoints)
     simple_checkpoint_pattern: str = "../checkpoints/transformer_trunk/{}_simple_iter1_final.pt"

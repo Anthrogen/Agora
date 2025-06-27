@@ -125,6 +125,7 @@ class Consensus(nn.Module):
         # Create offset pattern (excluding 0 for self-connections)
         offsets = torch.arange(-window, window + 1, device=device)
         offsets = offsets[offsets != 0]  # Remove self-connections
+        print("Made it")
         
         # Broadcast to get all (position, offset) pairs
         pos_expanded = positions.unsqueeze(1)  # [L, 1]
@@ -238,6 +239,7 @@ class Consensus(nn.Module):
             for t in range(self.num_iterations):
                 # Get per-residue step sizes for this iteration
                 step_sizes_t = F.softplus(self.step_sizes[t].unsqueeze(0).unsqueeze(-1).expand(B, -1, -1))  # [B, L, 1]
+                print(step_sizes_t.shape)
                 u = self.consensus_step(u, edge_i, edge_j, alphas, step_sizes_t, Lambda)
         
         else:

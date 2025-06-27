@@ -216,7 +216,7 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
             optimizer = optimizers[model_type]
 
             #indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-            unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
+            unmasked_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
             assert unmasked_elements.any(dim=1).all()
             #unmasked_indices = indices[unmasked_elements]
             
@@ -270,7 +270,7 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
         
         # Create coord_mask for GA/RA models
         # indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-        unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
+        unmasked_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
         assert unmasked_elements.any(dim=1).all()
         #unmasked_indices = indices[unmasked_elements]
         
@@ -288,7 +288,7 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
                 else: z_q, _ = model.encoder(three_atom)
             
             # Zero out BOS/EOS/PAD positions in z_q
-            z_q[batch.beospad['coords']] = 0.0
+            z_q[batch.beospank['coords']] = 0.0
             
             # Concatenate z_q with seq_tokens along last dimension
             # z_q: [B, L, fsq_dim], seq_tokens: [B, L] -> [B, L, 1]
@@ -345,7 +345,7 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
         
         # Create coord_mask for GA/RA models (valid positions that are not masked)
         # indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-        unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
+        unmasked_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
         assert unmasked_elements.any(dim=1).all()
         # unmasked_indices = indices[unmasked_elements]
         
@@ -393,7 +393,7 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
         
         # Create coord_mask for GA/RA models
         # indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-        unmasked_elements = ~batch.masks['coords'] & ~batch.beospad['coords']
+        unmasked_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
         assert unmasked_elements.any(dim=1).all()
         # unmasked_indices = indices[unmasked_elements]
         
@@ -409,7 +409,7 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
                 else: z_q, _ = model.encoder(three_atoms)
                 
                 # Zero out BOS/EOS/PAD positions in z_q
-                z_q[batch.beospad['coords']] = 0.0
+                z_q[batch.beospank['coords']] = 0.0
                 
                 # Concatenate z_q with seq_tokens along last dimension
                 # z_q: [B, L, fsq_dim], seq_tokens: [B, L] -> [B, L, 1]

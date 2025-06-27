@@ -43,17 +43,20 @@ class SequenceTokenizer():
         ret = torch.full((self.full_length,), self.mapping["PAD"], dtype=torch.long)
         ret[:content_len] = content[:content_len]
 
-        # Create beospad mask: 1s for BOS/EOS/PAD, 0s for real content
-        beospad = torch.ones(self.full_length, dtype=torch.bool)
+        # Create beospank mask: 1s for BOS/EOS/PAD/UNK, 0s for real content
+        beospank = torch.ones(self.full_length, dtype=torch.bool)
         if len(seq_tokens) > 0:  # Only if there's actual sequence content
-            beospad[1:1+len(seq_tokens)] = 0  # Mark real content as 0, keep BOS/EOS/PAD as 1
+            beospank[1:1+len(seq_tokens)] = 0  # Mark real content as 0, keep BOS/EOS/PAD as 1
+            
+        # Also mark UNK tokens as 1s
+        beospank[ret == self.mapping["UNK"]] = 1
 
         # Sanity checks – ensure indices are within vocabulary bounds.
         assert torch.max(ret) < len(self.mapping), "Sequence Tokenization failed!"
         assert torch.min(ret) >= 0, "Sequence Tokenization failed!"
         assert ret.numel() == self.full_length, "Sequence Tokenization failed!"
 
-        return ret, beospad
+        return ret, beospank.bool()
     
 
 class CoordinatesTokenizer():
@@ -77,16 +80,17 @@ class CoordinatesTokenizer():
         pad_coords = torch.zeros((self.full_length - content_len, H, 3), dtype=dtype, device=device)
         padded_coords = torch.cat([content_coords, pad_coords], dim=0)  # [self.full_length, H, 3]
 
-        # Create beospad mask: 1s for BOS/EOS/PAD, 0s for real content
-        beospad = torch.ones(self.full_length, dtype=torch.bool)
+        # Create beospank mask: 1s for BOS/EOS/PAD, 0s for real content
+        beospank = torch.ones(self.full_length, dtype=torch.bool)
         actual_content_len = coords.shape[0]  # Length before BOS/EOS were added
         if actual_content_len > 0:  # Only if there's actual coordinate content
-            beospad[1:1+actual_content_len] = 0  # Mark real content as 0, keep BOS/EOS/PAD as 1
+            beospank[1:1+actual_content_len] = 0  # Mark real content as 0, keep BOS/EOS/PAD as 1
+            
 
         # Sanity Checks
         assert padded_coords.shape == (self.full_length, H, 3), "Structure padding length mismatch!"
 
-        return padded_coords, beospad
+        return padded_coords, beospank.bool()
         
 class StructureTokenizer():
     """
@@ -114,10 +118,10 @@ class StructureTokenizer():
         # Coordinates tensor: [M, H, 3]
         # M is at most full_length.  H is number of atoms per residue.
 
-        # Pass through coordinates tokenizer to get padded coords and beospad.
-        padded_coords, coords_beospad = self.coordinates_tokenizer.tokenize(coords)
+        # Pass through coordinates tokenizer to get padded coords and beospank.
+        padded_coords, coords_beospank = self.coordinates_tokenizer.tokenize(coords)
         bos_position = 0
-        eos_position = coords_beospad.numel() - coords_beospad.sum() + 1 
+        eos_position = coords_beospank.numel() - coords_beospank.sum() + 1 
 
         with torch.no_grad():
             # FSQ encoder expects [B, L, 3, 3]; if coords contain 4 atoms use first 3
@@ -136,12 +140,12 @@ class StructureTokenizer():
 
         if self.reapply_bos_eos_pad:        
             # Apply BOS, EOS, and PAD tokens to structure tokens, copying from corresponding special tokens of the coords.
-            padded_struct_tokens[coords_beospad] = self.mapping['PAD']
+            padded_struct_tokens[coords_beospank] = self.mapping['PAD']
             padded_struct_tokens[bos_position] = self.mapping['BOS']
             padded_struct_tokens[eos_position] = self.mapping['EOS']
-            struct_boespad = coords_beospad.clone()
+            struct_beospank = coords_beospank.clone()
         else:
-            struct_boespad = torch.zeros(self.full_length, dtype=torch.bool)
+            struct_beospank = torch.zeros(self.full_length, dtype=torch.bool)
 
         # ------------------------------------------------------------------ #
         # Sanity checks                                                    #
@@ -150,4 +154,4 @@ class StructureTokenizer():
         assert torch.min(padded_struct_tokens) >= 0, f"Structure Tokenization failed! Min token = {torch.min(padded_struct_tokens)}"
         assert padded_coords.shape[0] == self.full_length, "Structure padding length mismatch!"
 
-        return padded_coords, coords_beospad, padded_struct_tokens, struct_boespad
+        return padded_coords, coords_beospank.bool(), padded_struct_tokens, struct_beospank.bool()

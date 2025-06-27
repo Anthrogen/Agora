@@ -33,10 +33,11 @@ class SEQUENCE_TOKENS(Enum):
     V= 19  # Valine
     
     # 4 non-standard amino acids as used in Odyssey
-    B= 20  # Asparagine (Odyssey interpretation)
+    B= 20  # Asparagine or Aspartic acid (ambiguous)
     U= 21  # Selenocysteine  
-    Z= 22  # Glutamic acid (Odyssey interpretation)
-    O= 23  # Ornithine (Odyssey interpretation)
+    Z= 22  # Glutamic acid or Glutamine (ambiguous)
+    O= 23  # Ornithine
     J= 24  # Leucine or Isoleucine (ambiguous)
+    X= 25  # Unknown amino acid
 
     # X= SPECIAL_TOKENS[__UNK__] # Unknown amino acid sometimes denoted by X in JSON files.

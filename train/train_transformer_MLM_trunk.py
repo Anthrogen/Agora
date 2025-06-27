@@ -41,7 +41,7 @@ from src.models.autoencoder import FSQEncoder
 from src.dataloader import _get_training_dataloader, MaskedBatch
 from src.dataset import ProteinDataset
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from src.losses import cross_entropy_loss
+from src.losses import cross_entropy_loss, calculate_accuracy
 
 # --------------------------------------------------------------------------- #
 #  Configurations                                                              #
@@ -71,7 +71,7 @@ class TrainingConfig:
     """Training process configuration."""
     model_types: List[str] = field(default_factory=lambda: ["C"]) # Models to train - can be any subset of ["SA", "GA", "RA", "C"]
     batch_size: int = 4  # Training hyperparameters
-    max_epochs: int = 100
+    max_epochs: int = 10
     learning_rate: float = 1e-5
     num_iter: int = 5  # Number of iterations to repeat training
     masking_strategy: str = "simple" # Masking strategy: 'simple' or 'complex'
@@ -87,7 +87,7 @@ class TrainingConfig:
 
     # Cross-entropy loss function: which elements should contribute to the loss?
     # "masked": only masked positions
-    # "non_beospad": all non-BOS/EOS/PAD positions, including masks
+    # "non_beospank": all non-BOS/EOS/PAD positions, including masks
     ce_loss_function_elements: str = "masked"
 
     data_dir: str = "../sample_data/1k/"  # Data paths
@@ -158,16 +158,7 @@ def ensure_identical_parameters_all_models(models: Dict[str, TransformerTrunk], 
 # --------------------------------------------------------------------------- #
 #  Training utilities                                                          #
 # --------------------------------------------------------------------------- #
-def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, loss_elements: torch.Tensor) -> float:
-    """Calculate accuracy for masked positions only."""
-    B, L, V = logits.shape
-    content_logits = logits[:,:,:V-len(SPECIAL_TOKENS)]
-    predictions = torch.argmax(content_logits, dim=-1)
-    correct = (predictions == labels) & loss_elements
 
-    # Just return the unconditioned sample mean.
-    # Not everything has to be complicated.
-    return torch.mean(correct.float())
 
 def worker_init_fn(worker_id):
     """Initialize each worker with a deterministic seed."""
@@ -185,7 +176,7 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
     assert torch.all(mask_coords == mask_struct), f"mask_coords and mask_struct differ in some positions:\nmask_coords:\n{mask_coords}\nmask_struct:\n{mask_struct}"
 
     # Create coord_mask for GA/RA models
-    nonspecial_elements_coords = (~batch.beospad['coords']) & (~mask_struct)
+    nonspecial_elements_coords = (~batch.beospank['coords']) & (~mask_struct)
     # We need one non-special element in coords for GA/RA models.
     assert nonspecial_elements_coords.any(dim=1).all()
     
@@ -205,10 +196,13 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
         if train_cfg.ce_loss_function_elements == "masked":
             loss_elements_seq = batch.masks['seq']
             loss_elements_struct = batch.masks['struct']
-        elif train_cfg.ce_loss_function_elements == "non_beospad":
+        elif train_cfg.ce_loss_function_elements == "non_beospank":
             # Compute loss over all non-BOS/EOS/PAD positions, including masks.
-            loss_elements_seq = ~batch.beospad['seq']
-            loss_elements_struct = ~batch.beospad['struct']
+            loss_elements_seq = ~batch.beospank['seq']
+            loss_elements_struct = ~batch.beospank['struct']
+        elif train_cfg.ce_loss_function_elements == "non_special":
+            loss_elements_seq = ~batch.beospank['seq'] & ~batch.masks['seq']
+            loss_elements_struct = ~batch.beospank['struct'] & ~batch.masks['struct']
         else:
             raise ValueError(f"What is {train_cfg.ce_loss_function_elements}?")
 
@@ -238,7 +232,7 @@ def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch, train
     B, L = masked_seq.shape
 
     # Create coord_mask for GA/RA models
-    nonspecial_elements = (~batch.beospad['coords']) & (~mask_struct) # boolean tensor of shape (B,L), True for all positions corresponding to non-BOS/EOS/PAD and non-MASK tokens.
+    nonspecial_elements = (~batch.beospank['coords']) & (~mask_struct) # boolean tensor of shape (B,L), True for all positions corresponding to non-BOS/EOS/PAD and non-MASK tokens.
     # We need one non-special element in coords for GA/RA models.
     assert nonspecial_elements.any(dim=1).all()
     
@@ -258,10 +252,13 @@ def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch, train
             if train_cfg.ce_loss_function_elements == "masked":
                 loss_elements_seq = batch.masks['seq']
                 loss_elements_struct = batch.masks['struct']
-            elif train_cfg.ce_loss_function_elements == "non_beospad":
+            elif train_cfg.ce_loss_function_elements == "non_beospank":
                 # Compute loss over all non-BOS/EOS/PAD positions, including masks.
-                loss_elements_seq = ~batch.beospad['seq']
-                loss_elements_struct = ~batch.beospad['struct']
+                loss_elements_seq = ~batch.beospank['seq']
+                loss_elements_struct = ~batch.beospank['struct']
+            elif train_cfg.ce_loss_function_elements == "non_special":
+                loss_elements_seq = ~batch.beospank['seq'] & ~batch.masks['seq']
+                loss_elements_struct = ~batch.beospank['struct'] & ~batch.masks['struct']
             else:
                 raise ValueError(f"What is {train_cfg.ce_loss_function_elements}?")
 
@@ -281,7 +278,8 @@ def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch, train
 def main():
     # Initialize configurations
     model_cfg, train_cfg = ModelConfig(), TrainingConfig()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device('cpu')
     os.makedirs(train_cfg.checkpoint_dir, exist_ok=True)
     
     # Validate model types
@@ -404,7 +402,7 @@ def main():
         for epoch in range(train_cfg.max_epochs):
             # Training metrics accumulators
             train_metrics_sum = {model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0} for model_type in train_cfg.model_types}
-            num_batches = 0
+            train_metrics_num_batches = {model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0} for model_type in train_cfg.model_types}
 
             # Training
             with tqdm(train_loader, desc=f"Iter {iteration+1}/{train_cfg.num_iter}, Epoch {epoch+1}/{train_cfg.max_epochs} [Train]", 
@@ -416,8 +414,9 @@ def main():
                     # Accumulate metrics
                     for model_type in train_cfg.model_types:
                         for key in train_metrics_sum[model_type]:
-                            train_metrics_sum[model_type][key] += batch_metrics[model_type][key]
-                    num_batches += 1
+                            if batch_metrics[model_type][key] is not None: # Some metrics (e.g. accuracy) may be None if there are no loss_elements.
+                                train_metrics_sum[model_type][key] += batch_metrics[model_type][key]
+                                train_metrics_num_batches[model_type][key] += 1
                     
                     # Update progress bar with metrics from all models
                     postfix = {}
@@ -428,7 +427,7 @@ def main():
             # Calculate epoch averages for training
             for model_type in train_cfg.model_types:
                 for key in train_metrics_sum[model_type]:
-                    train_metrics_sum[model_type][key] /= num_batches
+                    train_metrics_sum[model_type][key] /= train_metrics_num_batches[model_type][key]
                 
                 history[model_type]['train_loss'].append(train_metrics_sum[model_type]['loss'])
                 history[model_type]['train_seq_acc'].append(train_metrics_sum[model_type]['seq_acc'])
@@ -439,7 +438,10 @@ def main():
                 model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0}
                 for model_type in train_cfg.model_types
             }
-            val_num_batches = 0
+            val_metrics_num_batches = {
+                model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0}
+                for model_type in train_cfg.model_types
+            }
             
             for batch in val_loader:
                 # Validate all models on the same batch
@@ -448,13 +450,14 @@ def main():
                 # Accumulate metrics
                 for model_type in train_cfg.model_types:
                     for key in val_metrics_sum[model_type]:
-                        val_metrics_sum[model_type][key] += batch_metrics[model_type][key]
-                val_num_batches += 1
+                        if batch_metrics[model_type][key] is not None: # Some metrics (e.g. accuracy) may be None if there are no loss_elements.
+                            val_metrics_sum[model_type][key] += batch_metrics[model_type][key]
+                            val_metrics_num_batches[model_type][key] += 1
             
             # Calculate epoch averages for validation
             for model_type in train_cfg.model_types:
                 for key in val_metrics_sum[model_type]:
-                    val_metrics_sum[model_type][key] /= val_num_batches
+                    val_metrics_sum[model_type][key] /= val_metrics_num_batches[model_type][key]
                 
                 # Store in history
                 history[model_type]['val_loss'].append(val_metrics_sum[model_type]['loss'])
@@ -495,7 +498,7 @@ def main():
                     'model_state_dict': models[model_type].state_dict(),
                     'optimizer_state_dict': optimizers[model_type].state_dict(),
                     'history': history[model_type],
-                    'model_cfg': model_cfg,
+                    'model_config': model_cfg,
                 }, final_checkpoint_path)
             print(f"\nSaved final checkpoints for iteration {iteration+1}")
         else:

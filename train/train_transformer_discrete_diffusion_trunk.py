@@ -87,7 +87,7 @@ class TrainingConfig:
     struct_loss_weight: float = 1.0
 
     data_dir: str = "../sample_data/1k"  # Data paths
-    checkpoint_dir: str = "../checkpoints/transformer_trunk_tmp"  # Checkpointing
+    checkpoint_dir: str = "../checkpoints/transformer_trunk"  # Checkpointing
     reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization
 
 def create_model_with_config(model_type: str, base_config: ModelConfig, device: torch.device) -> TransformerTrunk:
@@ -170,11 +170,11 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
     """Perform a single training step for all models with discrete diffusion."""
     seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
     seq_x_0, struct_x_0 = batch.unmasked_data['seq'], batch.unmasked_data['struct']
-    seq_valid, struct_valid = ~batch.beospad['seq'], ~batch.beospad['struct']
+    seq_valid, struct_valid = ~batch.beospank['seq'], ~batch.beospank['struct']
     coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
     B, L = seq_x_t.shape
 
-    nonspecial_elements_coords = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
+    nonspecial_elements_coords = (~batch.masks['coords'] & ~batch.beospank['coords']).bool()
     #assert not (~unmasked_coords_elements.any(dim=1).any()) # Dataloader should have gauranteed this.
     assert nonspecial_elements_coords.any(dim=1).all() # Need at least one real residue in each sequence
     
@@ -218,11 +218,11 @@ def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch,
     """Perform a single validation step for all models."""
     seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
     seq_x_0, struct_x_0 = batch.unmasked_data['seq'], batch.unmasked_data['struct']
-    seq_valid, struct_valid = ~batch.beospad['seq'], ~batch.beospad['struct']
+    seq_valid, struct_valid = ~batch.beospank['seq'], ~batch.beospank['struct']
     coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
     B, L = seq_x_t.shape
 
-    nonspecial_elements_coords = (~batch.masks['coords'] & ~batch.beospad['coords']).bool()
+    nonspecial_elements_coords = (~batch.masks['coords'] & ~batch.beospank['coords']).bool()
     #assert not (~unmasked_coords_elements.any(dim=1).any()) # Dataloader should gaurantee this.
     assert nonspecial_elements_coords.any(dim=1).all()
 

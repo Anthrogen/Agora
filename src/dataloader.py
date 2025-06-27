@@ -315,7 +315,7 @@ class MaskedBatch():
         self.masked_data = {'seq': None, 'struct': None, 'coords': None}
         self.unmasked_data = {'seq': None, 'struct': None, 'coords': None}
         self.masks = {'seq': None, 'struct': None, 'coords': None}
-        self.beospad = {'seq': None, 'struct': None, 'coords': None}
+        self.beospank = {'seq': None, 'struct': None, 'coords': None}
         self.metadata = {}
 
         seq_list, coords_list, _ = zip(*data)
@@ -331,11 +331,9 @@ class MaskedBatch():
             seq_data = []
             for seq in seq_list:
                 seq_data.append(sequence_tokenizer.tokenize(seq))
-            self.unmasked_data['seq'], self.beospad['seq'] = zip(*seq_data)
+            self.unmasked_data['seq'], self.beospank['seq'] = zip(*seq_data)
             self.unmasked_data['seq'] = torch.stack(self.unmasked_data['seq'], dim=0).to(self.device)
-            self.beospad['seq'] = torch.stack(self.beospad['seq'], dim=0).to(self.device).bool()
-
-
+            self.beospank['seq'] = torch.stack(self.beospank['seq'], dim=0).to(self.device).bool()
 
         if tracks['coords'] or tracks['struct']:
             tok = structure_tokenizer if tracks['struct'] else coordinates_tokenizer
@@ -346,23 +344,23 @@ class MaskedBatch():
             # Unpack the 4-tuple returned by tokenize_from_coords
             coords_results = list(zip(*coords_data))
             self.unmasked_data['coords'] = torch.stack(coords_results[0], dim=0).to(self.device)
-            self.beospad['coords'] = torch.stack(coords_results[1], dim=0).to(self.device).bool()
+            self.beospank['coords'] = torch.stack(coords_results[1], dim=0).to(self.device).bool()
             if tracks['struct']:
                 self.unmasked_data['struct'] = torch.stack(coords_results[2], dim=0).to(self.device)
-                self.beospad['struct'] = torch.stack(coords_results[3], dim=0).to(self.device).bool()
+                self.beospank['struct'] = torch.stack(coords_results[3], dim=0).to(self.device).bool()
 
 
     def apply_mask(self, track, desired_mask):
         # The following function will take as input self.masks and OVERWRITE these masks
         # This happens if a mask is sampled in a BOS/EOS/PAD position.
         #print(f"Applying mask to track {track}")
-        self.masked_data[track], self.masks[track] = self.attempt_mask(self.unmasked_data[track], self.beospad[track], desired_mask, track)
+        self.masked_data[track], self.masks[track] = self.attempt_mask(self.unmasked_data[track], self.beospank[track], desired_mask, track)
 
-    def attempt_mask(self, unmasked, beospad, desired_mask, track):
+    def attempt_mask(self, unmasked, beospank, desired_mask, track):
         #print(f"Unmasked Data: {unmasked}")
         B, L = unmasked.shape[0], unmasked.shape[1]
 
-        actual_mask = desired_mask & ~beospad
+        actual_mask = desired_mask & ~beospank
         actual_mask = actual_mask.bool()
 
         #########################################################################
@@ -370,13 +368,13 @@ class MaskedBatch():
         # This is extremely important for some applications -- such as KABSCH and for having nonsingular geometric matrices for geometric/reflexive attn.
         # If you want to 'skip over' this then set min_unmasked to 0 for all tracks.
         for row in range(B):
-            # Count positions that are NOT masked AND NOT beospad
-            real_residues = (~actual_mask[row] & ~beospad[row]).sum()
+            # Count positions that are NOT masked AND NOT beospank
+            real_residues = (~actual_mask[row] & ~beospank[row]).sum()
             if real_residues < self.min_unmasked[track]:
                 num_to_unmask = self.min_unmasked[track] - real_residues
                 
-                # Find positions that are currently masked but NOT beospad (candidates for unmasking)
-                candidate_positions = (actual_mask[row] & ~beospad[row]).nonzero(as_tuple=False).squeeze(-1)
+                # Find positions that are currently masked but NOT beospank (candidates for unmasking)
+                candidate_positions = (actual_mask[row] & ~beospank[row]).nonzero(as_tuple=False).squeeze(-1)
                 
                 if candidate_positions.numel() < num_to_unmask:
                     raise ValueError(f"Need {self.min_unmasked[track]} unmasked residues, but only have {real_residues} residues in entire protein.")
