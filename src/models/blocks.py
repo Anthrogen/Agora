@@ -2,7 +2,7 @@
 from src.attention.GeometricAttention import GeometricAttention
 from src.attention.SelfAttention import SelfAttention
 from src.attention.ReflexiveAttention import ReflexiveAttention
-from src.attention.Consensus import Consensus
+from src.attention.SelfConsensus import SelfConsensus
 
 import torch
 from torch import nn
@@ -246,14 +246,14 @@ class ReflexiveTransformerBlock(nn.Module):
         return x
 
 class ConsensusTransformerBlock(nn.Module):
-    """Consensus transformer block: LayerNorm + Consensus + LayerNorm + FeedForward."""
+    """Consensus transformer block: LayerNorm + SelfConsensus + LayerNorm + FeedForward."""
 
     def __init__(self, cfg, use_adaln: bool = False, time_embed_dim: int = None):
         super().__init__()
         self.use_adaln = use_adaln
-        # Use Consensus instead of SelfAttention
-        self.consensus = Consensus(dim=cfg.d_model, dropout=cfg.dropout, num_iterations=cfg.consensus_num_iterations, connectivity_type=cfg.consensus_connectivity_type, 
-                                   w=cfg.consensus_w, r=cfg.consensus_r, edge_hidden_dim=cfg.consensus_edge_hidden_dim, max_len=cfg.max_len)
+        # Use SelfConsensus instead of SelfAttention
+        self.consensus = SelfConsensus(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, num_iterations=cfg.consensus_num_iterations, connectivity_type=cfg.consensus_connectivity_type, 
+                                       w=cfg.consensus_w, r=cfg.consensus_r, edge_hidden_dim=cfg.consensus_edge_hidden_dim, max_len=cfg.max_len)
         self.ff = FeedForward(cfg.d_model, hidden_dim=cfg.ff_hidden_dim, dropout=cfg.dropout)
         
         if use_adaln:

@@ -53,7 +53,7 @@ class ModelConfig:
     model_type: Optional[str] = None # Placeholder for model type
     d_model: int = 128 # 768  # Model dimensions
     latent_dim: int = 32
-    n_heads: int = 1 # 12
+    n_heads: int = 4 # 12
     n_layers: int = 3 # 12
     seq_vocab: int = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)  # Sequence tokens + special tokens
     struct_vocab: int = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
@@ -63,10 +63,10 @@ class ModelConfig:
     ff_hidden_dim: int = d_model * ff_mult
     
     # Consensus-specific parameters
-    consensus_num_iterations: int = 5  # Number of consensus gradient iterations
+    consensus_num_iterations: int = 1  # Number of consensus gradient iterations
     consensus_connectivity_type: str = "local_window"  # "local_window" or "top_w"
     consensus_w: int = 2  # Window size for local_window, or w value for top_w
-    consensus_r: int = 12  # Rank of Lambda_ij matrices
+    consensus_r: int = 8  # Rank of Lambda_ij matrices
     consensus_edge_hidden_dim: int = 24  # Hidden dim for edge networks
 
 @dataclass
@@ -85,18 +85,18 @@ class DiffusionConfig:
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_types: List[str] = field(default_factory=lambda: ["SA", "GA", "RA", "C"]) # Models to train - can be any subset of ["SA", "GA", "RA", "C"]
+    model_types: List[str] = field(default_factory=lambda: ["SA","GA","RA","SC"]) # Models to train - can be any subset of ["SA", "GA", "RA", "SC"]
     batch_size: int = 4  # Training hyperparameters
     max_epochs: int = 70
     learning_rate: float = 1e-5
     num_iter: int = 3  # Number of iterations to repeat training
-    masking_strategy: str = "simple" # Masking strategy: 'simple' or 'complex' or 'discrete_diffusion'
+    masking_strategy: str = "discrete_diffusion" # Masking strategy: 'simple' or 'complex' or 'discrete_diffusion'
     
     if masking_strategy == "simple":
         mask_prob_seq: float = 0.2 # Masking probability for sequence tokens
         mask_prob_coords: float = 0.2 # Masking probability for structure tokens
 
-    data_dir: str = "../sample_data/1k"  # Data paths
+    data_dir: str = "../sample_data/1k/index.csv"  # Data paths
     checkpoint_dir: str = "../checkpoints/fsq"  # Checkpointing
     reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization across architectures
 
@@ -215,28 +215,18 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
             model.train()
             optimizer = optimizers[model_type]
 
-            #indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
             unmasked_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
             assert unmasked_elements.any(dim=1).all()
-            #unmasked_indices = indices[unmasked_elements]
             
             # Forward pass - use only first 3 atoms for standard coordinates
             three_atom_masked_coords = batch.masked_data['coords'][:, :, :3, :]  # [B, L, 3, 3]
             if model_type in ("GA", "RA"): x_rec, _ = model(three_atom_masked_coords, batch.masked_data['coords'], unmasked_elements)
             else: x_rec, _ = model(three_atom_masked_coords)
 
-
-            
             # In order to run KABSCH, we need to isolate only unmasked residues into a [U, 3, 3] tensor for each protein in the batch, where U is number of unmasked residues in a given protein.
             pts_pred = []; pts_true = []
             for batch_idx in range(B):
-
                 real_residues = torch.arange(L, device=device)[unmasked_elements[batch_idx]]
-                
-                # real_residues = unmasked_indices[batch_idx]
-                #assert real_residues.any() # This should have been gauranteed by dataloader
-                # assert real_residues.numel() > 0
-                
                 pred_coords = x_rec[batch_idx][real_residues]  # [U, 3, 3]
                 true_coords = batch.masked_data['coords'][batch_idx, real_residues, :3, :]  # [U, 3, 3] - only first 3 atoms!
 
@@ -261,18 +251,14 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
             
             # Store metrics
             metrics[model_type] = {'loss': loss.item(), 'rmsd': rmsd.item()}
-
-
     
     elif model_cfg.stage == "stage_2":
         # Stage 2: Full structure reconstruction from frozen encoder
         B, L, H, _ = batch.masked_data['coords'].shape
         
         # Create coord_mask for GA/RA models
-        # indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
         unmasked_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
         assert unmasked_elements.any(dim=1).all()
-        #unmasked_indices = indices[unmasked_elements]
         
         # Train each model on the same batch
         for model_type, model in models.items():
@@ -303,14 +289,11 @@ def train_step(models: Dict[str, Autoencoder], optimizers: Dict[str, torch.optim
             # Compute loss on all valid positions (no masking in stage 2)
             pts_pred = []; pts_true = []
             for batch_idx in range(B):
-
                 # real_residues = unmasked_indices[batch_idx]
                 real_residues = torch.arange(L, device=device)[unmasked_elements[batch_idx]]
-                # assert real_residues.any() # This should have been gauranteed by dataloader.
-                # assert real_residues.numel() > 0
-
                 pred_coords = x_rec[batch_idx][real_residues]  # [M, 14, 3] 
                 true_coords = batch.masked_data['coords'][batch_idx][real_residues]  # [M, 14, 3]
+
                 # Flatten to [1, M*14, 3]
                 pts_pred.append(pred_coords.reshape(1, -1, 3))
                 pts_true.append(true_coords.reshape(1, -1, 3))
@@ -344,10 +327,8 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
         B, L, H, _ = batch.masked_data['coords'].shape
         
         # Create coord_mask for GA/RA models (valid positions that are not masked)
-        # indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
         unmasked_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
         assert unmasked_elements.any(dim=1).all()
-        # unmasked_indices = indices[unmasked_elements]
         
         # Evaluate each model on the same batch
         for model_type, model in models.items():
@@ -365,13 +346,10 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
                 # Extract valid (unmasked) coordinates
                 pts_pred = []; pts_true = []
                 for batch_idx in range(B):
-                    # real_residues = unmasked_indices[batch_idx]  # Valid and unmasked positions
                     real_residues = torch.arange(L, device=device)[unmasked_elements[batch_idx]]
-                    # assert real_residues.any() # Dataloader should have guaranteed this.
-                    # assert real_residues.numel() > 0
-
                     pred_coords = x_rec[batch_idx][real_residues]  # [M, 3, 3]
                     true_coords = batch.masked_data['coords'][batch_idx, real_residues, :3, :]  # [M, 3, 3] - only first 3 atoms!
+
                     # Flatten to [1, M*3, 3]
                     pts_pred.append(pred_coords.reshape(1, -1, 3))
                     pts_true.append(true_coords.reshape(1, -1, 3))
@@ -392,10 +370,8 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
         B, L, H, _ = batch.masked_data['coords'].shape
         
         # Create coord_mask for GA/RA models
-        # indices = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
         unmasked_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
         assert unmasked_elements.any(dim=1).all()
-        # unmasked_indices = indices[unmasked_elements]
         
         # Evaluate each model on the same batch
         for model_type, model in models.items():
@@ -424,13 +400,10 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
                 # Compute loss on all valid positions (no masking in stage 2)
                 pts_pred = []; pts_true = []
                 for batch_idx in range(B):
-                    # real_residues = unmasked_indices[batch_idx]
                     real_residues = torch.arange(L, device=device)[unmasked_elements[batch_idx]]
-                    # assert real_residues.any()
-                    # assert real_residues.numel() > 0
-                    
                     pred_coords = x_rec[batch_idx][real_residues]  # [M, 14, 3] 
                     true_coords = batch.masked_data['coords'][batch_idx][real_residues]  # [M, 14, 3]
+
                     # Flatten to [1, M*14, 3]
                     pts_pred.append(pred_coords.reshape(1, -1, 3))
                     pts_true.append(true_coords.reshape(1, -1, 3))
@@ -460,7 +433,7 @@ def main():
     os.makedirs(train_cfg.checkpoint_dir, exist_ok=True)
     
     # Validate model types
-    valid_types = {"SA", "GA", "RA", "C"}
+    valid_types = {"SA", "GA", "RA", "SC"}
     for mt in train_cfg.model_types:
         if mt not in valid_types:
             raise ValueError(f"Invalid model type: {mt}. Must be one of {valid_types}")
@@ -483,10 +456,8 @@ def main():
         print(f"Will load encoders from stage 1 checkpoints")
     
     # Determine dataset mode based on stage
-    if model_cfg.stage == "stage_1":
-        dataset_mode = "backbone"  # 4 atoms: N, CA, C, CB
-    elif model_cfg.stage == "stage_2":
-        dataset_mode = "side_chain"  # 14 atoms
+    if model_cfg.stage == "stage_1": dataset_mode = "backbone"  # 4 atoms: N, CA, C, CB
+    elif model_cfg.stage == "stage_2": dataset_mode = "side_chain"  # 14 atoms
     
     # -------------------- Iteration loop -------------------- #
     for iteration in range(train_cfg.num_iter):
@@ -588,6 +559,9 @@ def main():
             with tqdm(train_loader, desc=f"Iter {iteration+1}/{train_cfg.num_iter}, Epoch {epoch+1}/{train_cfg.max_epochs} [Train]", 
                      ascii=True, leave=True, ncols=150, position=0) as pbar:
                 for batch_data in pbar:
+                    # Skip empty/None batches
+                    if batch_data is None: continue
+                    
                     # Train all models on the same batch
                     batch_metrics = train_step(models, optimizers, batch_data, model_cfg, device)
                     
@@ -619,6 +593,9 @@ def main():
             val_num_batches = 0
             
             for batch_data in val_loader:
+                # Skip empty/None batches
+                if batch_data is None: continue
+                
                 # Validate all models on the same batch
                 batch_metrics = validate_step(models, batch_data, model_cfg, device)
                 

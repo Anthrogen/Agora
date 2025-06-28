@@ -150,6 +150,9 @@ class MaskingDataLoader(DataLoader):
         self.min_unmasked = min_unmasked
 
     def _mask_collate(self, data):
+        data = [item for item in data if item is not None]
+        if len(data)==0: return None # Return None if all items were filtered out
+
         batch = MaskedBatch(data, self.tracks, self.sequence_tokenizer, self.structure_tokenizer, self.coordinates_tokenizer, 
                           device=self.device, min_unmasked=self.min_unmasked, generator=self.generator)
     

@@ -47,14 +47,14 @@ class TransformerTrunk(nn.Module):
             self.layers.append(StandardTransformerBlock(cfg, use_adaln, time_embed_dim))
         elif cfg.model_type == "RA":
             self.layers.append(ReflexiveTransformerBlock(cfg, use_adaln, time_embed_dim))
-        elif cfg.model_type == "C":
+        elif cfg.model_type == "SC":
             self.layers.append(ConsensusTransformerBlock(cfg, use_adaln, time_embed_dim))
         else:
             raise ValueError(f"Invalid model_type type: {cfg.model_type}")
         
         # Remaining blocks
-        if cfg.model_type == "C":
-            # For Consensus, all blocks are ConsensusTransformerBlocks
+        if cfg.model_type == "SC":
+            # For SelfConsensus, all blocks are ConsensusTransformerBlocks
             for _ in range(cfg.n_layers - 1):
                 self.layers.append(ConsensusTransformerBlock(cfg, use_adaln, time_embed_dim))
         else:

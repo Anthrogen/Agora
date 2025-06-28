@@ -44,7 +44,7 @@ def calculate_confidence_interval(data, confidence=0.95):
 
 
 def plot_validation_losses(checkpoint_dir: str = "checkpoints", 
-                         model_types: list = ["SA", "GA", "RA", "C"],
+                         model_types: list = ["SA", "GA", "RA", "SC"],
                          stage: str = "stage_1",
                          output_file: str = None,
                          masking_strategy: str = "simple"):
@@ -61,7 +61,7 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
         "SA": "#1f77b4",  # blue
         "GA": "#ff7f0e",  # orange
         "RA": "#2ca02c",  # green
-        "C": "#d62728"    # red for Consensus
+        "SC": "#d62728"   # red for SelfConsensus
     }
     
     # Full names for model types
@@ -69,7 +69,7 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
         "SA": "Self Attention",
         "GA": "Geometric Attention",
         "RA": "Reflexive Attention",
-        "C": "Self Consensus"
+        "SC": "Self Consensus"
     }
     
     # Initialize num_epochs to avoid UnboundLocalError
@@ -129,8 +129,8 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
 
 if __name__ == "__main__":
     # Default parameters - can be modified as needed
-    checkpoint_dir = "../checkpoints"  # Relative to scripts folder
-    model_types = ["SA", "GA", "RA", "C"]  # Including C for Consensus
+    checkpoint_dir = "../checkpoints/fsq"  # Relative to train folder
+    model_types = ["SA", "GA", "RA", "SC"]  # Including SC for SelfConsensus
     stage = "stage_1"  # Can be "stage_1" or "stage_2"
     masking_strategy = "simple"  # Can be "simple", "complex", or "discrete_diffusion"
     loss_output_file = f"validation_losses_{stage}_{masking_strategy}.png"

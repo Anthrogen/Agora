@@ -64,9 +64,6 @@ class ModelConfig:
     seq_absorb_token: int = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS)
     struct_absorb_token: int = SPECIAL_TOKENS.MASK.value + 4375
 
-
-
-
 @dataclass
 class DiffusionConfig:
     """Discrete diffusion configuration."""
@@ -76,14 +73,10 @@ class DiffusionConfig:
     sigma_max: float = 5.68  # Maximum noise level
     num_timesteps: int = 100  # Number of discrete timesteps for training
 
-
-    
-
-
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_types: List[str] = field(default_factory=lambda: ["SA"]) # Models to train - can be any subset of ["SA", "GA", "RA", "C"]
+    model_types: List[str] = field(default_factory=lambda: ["SA"]) # Models to train - can be any subset of ["SA", "GA", "RA", "SC"]
     batch_size: int = 4  # Training hyperparameters
     max_epochs: int = 2
     learning_rate: float = 1e-5
@@ -275,7 +268,7 @@ def main():
     os.makedirs(train_cfg.checkpoint_dir, exist_ok=True)
     
     # Validate model types
-    valid_types = {"SA", "GA", "RA", "C"}
+    valid_types = {"SA", "GA", "RA", "SC"}
     for mt in train_cfg.model_types:
         if mt not in valid_types:
             raise ValueError(f"Invalid model type: {mt}. Must be one of {valid_types}")
@@ -383,6 +376,9 @@ def main():
             with tqdm(train_loader, desc=f"Iter {iteration+1}/{train_cfg.num_iter}, Epoch {epoch+1}/{train_cfg.max_epochs} [Train]",
                      ascii=True, leave=True, ncols=150) as pbar:
                 for batch_data in pbar:
+                    # Skip empty/None batches
+                    if batch_data is None: continue
+                    
                     # Train all models on the same batch
                     batch_metrics = train_step(models, optimizers, batch_data, model_cfg, train_cfg)
                     
@@ -415,6 +411,9 @@ def main():
             val_num_batches = 0
             
             for batch_data in val_loader:
+                # Skip empty/None batches
+                if batch_data is None: continue
+                
                 # Validate all models on the same batch
                 batch_metrics = validate_step(models, batch_data, model_cfg, train_cfg)
                 

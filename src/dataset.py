@@ -1,10 +1,12 @@
 import os
 import json
+import mmap
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 from typing import Optional
 from enum import Enum
+import array
 
 class Chirality(Enum):
     D = 1   # Dextrorotatory amino acid
@@ -224,44 +226,86 @@ class Protein():
         return chirality_vector
 
     
+# JSON at /workspace/cmu_vqvae_data/single_chain_clusters_full.csv
+# See development at tmp_csv_parser.py
 class ProteinDataset(Dataset):
-    def __init__(self, root_dir: str, center: bool = True, mode: str = "backbone", max_length: int = 2048):
-        self.root_dir = root_dir
+    """
+    Test me in shell:
+    ProteinDataset("/workspace/demo/Odyssey/sample_data/100/index.csv")
+    """
+    MEMBER_JSON_PATH_COL = 3 # Within the index.csv file, this is the colun (0-indexed) that points ot member Json Path 
+    def __init__(self, index_csv_path: str, center: bool = True, mode: str = "backbone", max_length: int = 2048, eager: bool = False, verbose: bool = False):
+        """
+        Eager: if true, check for malformed files up front. Otherwise, do so on the fly and potentially return None from __getitem__.
+        """
+        self.index_csv_path = index_csv_path
+        self.index_csv_dir = os.path.dirname(index_csv_path)
 
         # Maximum sequence length for padding/truncation
         # Proteins longer than this will be truncated
         self.max_length = max_length
         self.mode = mode
-        
-        # Gather and validate JSONs, discarding any that fail sanity checks
-        # This ensures all data loaded during training will be valid
-        all_files = sorted(fn for fn in os.listdir(root_dir) if fn.lower().endswith(".json"))
-        valid_paths = []
-        
-        for fn in all_files:
-            path = os.path.join(root_dir, fn)
-            try:
-                protein = Protein(path, mode=self.mode)
-                valid_paths.append(path)
-   
-            except Exception as e:
-                print(f"Warning: skipping malformed file {fn}: {e}")
-                      
-        assert len(valid_paths) > 0, f"No valid JSON Paths found in {root_dir}!"
-            
-        self.file_paths = valid_paths
         self.center = center
+        self.verbose = verbose
+
+        # Itearte through the CSV file.
+        # For each row, record the offset (number of bytes from the beginning of the file) of the row.
+        self.offsets = array.array("Q", [0])
+        with open(self.index_csv_path, "rb") as f:
+            f.readline()                         
+            pos = f.tell()                      
+
+            for line in f:                      
+                self.offsets.append(pos)
+                pos = f.tell()
+
+        self.offsets.pop(0) # Get rid of header row.
+        assert len(self.offsets) > 0, f"No valid JSON Paths found in {self.index_csv_path}!"
+        
+        # Create a memory map into the index.csv file.
+        # This allows us to read the file without re-loading it into memory at each invocation of __getitem__.
+        fd = os.open(self.index_csv_path, os.O_RDONLY)
+        self.mm = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
+        os.close(fd)
+
+        if eager:
+            self.offsets = array.array("Q", [off for idx, off in enumerate(self.offsets) if self.__getitem__(idx) is not None])
+            
 
     def __len__(self):
         """Return the total number of protein structures in the dataset"""
-        return len(self.file_paths)
+        return len(self.offsets)
+
+
 
     def __getitem__(self, idx: int) -> torch.Tensor:
 
-        # 1) Load protein structure from JSON file
-        path = self.file_paths[idx]
+        assert idx >= 0 and idx < len(self.offsets), f"Index {idx} out of bounds for dataset of length {len(self.offsets)}"
 
-        protein = Protein(path, mode=self.mode)
+        start = self.offsets[idx]
+        end = self.mm.find(b"\n", start)
+        if end == -1:
+            end = len(self.mm)
+
+        rel_path_to_json = (
+            self.mm[start:end]
+            .decode()
+            .split(",")[self.MEMBER_JSON_PATH_COL]
+            .strip()  # remove any whitespace/newline characters
+        )
+
+        # 1) Load protein structure from JSON file
+        json_path = os.path.join(self.index_csv_dir, rel_path_to_json)
+        # print(json_path)
+        # assert os.path.exists(json_path)
+
+        try:
+            protein = Protein(json_path, mode=self.mode)
+        except (AssertionError, ValueError) as e:
+            if self.verbose:
+                print(f"Warning: encountered malformed file {json_path}: {e}")
+            return None
+
         coords = protein.coords[:self.max_length]
         seq = protein.seq[:self.max_length]
         l = torch.tensor(min(protein.len, self.max_length))

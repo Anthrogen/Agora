@@ -69,12 +69,12 @@ class ModelConfig:
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_types: List[str] = field(default_factory=lambda: ["SA"]) # Models to train - can be any subset of ["SA", "GA", "RA", "C"]
+    model_types: List[str] = field(default_factory=lambda: ["SC"]) # Models to train - can be any subset of ["SA", "GA", "RA", "SC"]
     batch_size: int = 4  # Training hyperparameters
     max_epochs: int = 5
     learning_rate: float = 1e-5
     num_iter: int = 1  # Number of iterations to repeat training
-    masking_strategy: str = "complex" # Masking strategy: 'simple' or 'complex'
+    masking_strategy: str = "simple" # Masking strategy: 'simple' or 'complex'
     
     if masking_strategy == "simple":
         seq_loss_weight: float = 1.0  # sequence loss weight - simple: 1.0
@@ -91,7 +91,7 @@ class TrainingConfig:
     # "non_special": all non-special tokens, including masks
     ce_loss_function_elements: str = "masked"
 
-    data_dir: str = "../sample_data/1k/"  # Data paths
+    data_dir: str = "../sample_data/1k/index.csv"  # Data paths
     checkpoint_dir: str = "../checkpoints/transformer_trunk"  # Checkpointing
     reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization across architectures
 
@@ -283,7 +283,7 @@ def main():
     os.makedirs(train_cfg.checkpoint_dir, exist_ok=True)
     
     # Validate model types
-    valid_types = {"SA", "GA", "RA", "C"}
+    valid_types = {"SA", "GA", "RA", "SC"}
     for mt in train_cfg.model_types:
         if mt not in valid_types:
             raise ValueError(f"Invalid model type: {mt}. Must be one of {valid_types}")
@@ -408,6 +408,9 @@ def main():
             with tqdm(train_loader, desc=f"Iter {iteration+1}/{train_cfg.num_iter}, Epoch {epoch+1}/{train_cfg.max_epochs} [Train]", 
                      ascii=True, leave=True, ncols=150, position=0) as pbar:
                 for batch in pbar:
+                    # Skip empty/None batches
+                    if batch is None: continue
+                    
                     # Train all models on the same batch
                     batch_metrics = train_step(models, optimizers, batch, train_cfg, model_cfg, device)
                     
@@ -444,6 +447,9 @@ def main():
             }
             
             for batch in val_loader:
+                # Skip empty/None batches
+                if batch is None: continue
+                
                 # Validate all models on the same batch
                 batch_metrics = validate_step(models, batch, train_cfg)
                 

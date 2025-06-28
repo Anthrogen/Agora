@@ -45,7 +45,7 @@ from train_transformer_MLM_trunk import (
 class TrainingConfig:
     """Configuration for validation."""
     # Model type to evaluate (single selection)
-    model_type: str = "SA"  # Options: "SA", "GA", "RA", "C"
+    model_type: str = "SA"  # Options: "SA", "GA", "RA", "SC"
     
     # Masking strategy and parameters
     masking_strategy: str = "simple"
@@ -82,7 +82,7 @@ class TrainingConfig:
     
     def __post_init__(self):
         # Validate model type
-        valid_types = {"SA", "GA", "RA", "C"}
+        valid_types = {"SA", "GA", "RA", "SC"}
         if self.model_type not in valid_types:
             raise ValueError(f"Invalid model_type: {self.model_type}. Must be one of {valid_types}")
         

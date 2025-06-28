@@ -51,7 +51,7 @@ def calculate_confidence_interval(data, confidence=0.95):
 
 
 def plot_validation_losses(checkpoint_dir: str = "checkpoints", 
-                         first_layers: list = ["SA", "GA", "RA", "C"],
+                         first_layers: list = ["SA", "GA", "RA", "SC"],
                          output_file: str = "validation_losses.png"):
     """Create validation loss plots with confidence intervals."""
     
@@ -63,7 +63,7 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
         "SA": "#1f77b4",  # blue
         "GA": "#ff7f0e",  # orange
         "RA": "#2ca02c",  # green
-        "C": "#d62728"    # red for Consensus
+        "SC": "#d62728"   # red for SelfConsensus
     }
     
     # Label mapping for display
@@ -71,7 +71,7 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
         "SA": "Self Attention",
         "GA": "Geometric Attention", 
         "RA": "Reflexive Attention",
-        "C": "Self Consensus"
+        "SC": "Self Consensus"
     }
     
     # Initialize data_found to track if any data was found
@@ -152,7 +152,7 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
 if __name__ == "__main__":
     # Default parameters - can be modified as needed
     checkpoint_dir = "checkpoints"  # Relative to scripts folder
-    first_layers = ["SA", "GA", "RA", "C"]  # Including C for Consensus
+    first_layers = ["SA", "GA", "RA", "SC"]  # Including SC for SelfConsensus
     loss_output_file = "validation_losses.png"
     
     # Create the plots

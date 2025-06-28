@@ -39,7 +39,7 @@ def calculate_confidence_interval(data, confidence=0.95):
 
 
 def plot_diffusion_validation_losses(checkpoint_dir: str = "checkpoints_diffusion", 
-                                   layer_types: list = ["SA", "GA", "RA", "C"],
+                                   layer_types: list = ["SA", "GA", "RA", "SC"],
                                    output_file: str = "diffusion_validation_losses.png"):
     """Create validation loss plots with confidence intervals for diffusion models."""
     
@@ -51,7 +51,7 @@ def plot_diffusion_validation_losses(checkpoint_dir: str = "checkpoints_diffusio
         "SA": "#1f77b4",  # blue
         "GA": "#ff7f0e",  # orange
         "RA": "#2ca02c",  # green
-        "C": "#d62728"    # red for Consensus
+        "SC": "#d62728"   # red for SelfConsensus
     }
     
     # Label mapping for display
@@ -59,7 +59,7 @@ def plot_diffusion_validation_losses(checkpoint_dir: str = "checkpoints_diffusio
         "SA": "Self Attention",
         "GA": "Geometric Attention", 
         "RA": "Reflexive Attention",
-        "C": "Self Consensus"
+        "SC": "Self Consensus"
     }
     
     # Initialize data_found to track if any data was found
@@ -114,8 +114,7 @@ def plot_diffusion_validation_losses(checkpoint_dir: str = "checkpoints_diffusio
     ax1.set_title('Sequence Prediction Loss', fontsize=14)
     ax1.legend(fontsize=11)
     ax1.grid(True, which="both", alpha=0.3)
-    if num_epochs is not None:
-    ax1.set_xlim(1, num_epochs)
+    if num_epochs is not None: ax1.set_xlim(1, num_epochs)
     # ax1.set_yscale('log')
     
     # Customize structure subplot
@@ -124,8 +123,7 @@ def plot_diffusion_validation_losses(checkpoint_dir: str = "checkpoints_diffusio
     ax2.set_title('Structure Prediction Loss', fontsize=14)
     ax2.legend(fontsize=11)
     ax2.grid(True, which="both", alpha=0.3)
-    if num_epochs is not None:
-    ax2.set_xlim(1, num_epochs)
+    if num_epochs is not None: ax2.set_xlim(1, num_epochs)
     ax2.set_yscale('log')
     
     # Add overall title
@@ -140,7 +138,7 @@ def plot_diffusion_validation_losses(checkpoint_dir: str = "checkpoints_diffusio
 if __name__ == "__main__":
     # Default parameters - can be modified as needed
     checkpoint_dir = "checkpoints_diffusion"  # Relative to scripts folder
-    layer_types = ["SA", "GA", "RA", "C"]  # Including C for Consensus
+    layer_types = ["SA", "GA", "RA", "SC"]  # Including SC for SelfConsensus
     loss_output_file = "diffusion_validation_losses.png"
     
     # Create the plots

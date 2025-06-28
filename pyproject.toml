@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "odyssey"
+version = "0"
+description = "Odyssey"
+authors = [{ name="Sean Moushegian", email="sean@anthrogen.com" }, {name="Shyam Venkatasubramanian", email="shyam@anthrogen.com"}]
+requires-python = ">=3.8"
+
+[tool.setuptools.packages.find]
+where = ["src"]

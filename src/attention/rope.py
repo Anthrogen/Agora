@@ -1,8 +1,7 @@
 """
 Rotary Position Embeddings (RoPE) implementation.
 
-Based on the paper "RoFormer: Enhanced Transformer with Rotary Position Embedding"
-and as used in ESM3.
+Based on the paper "RoFormer: Enhanced Transformer with Rotary Position Embedding".
 """
 import torch
 import torch.nn as nn
@@ -50,25 +49,36 @@ class RotaryEmbedding(nn.Module):
         x2 = x[..., x.shape[-1] // 2 :]
         return torch.cat((-x2, x1), dim=-1)
     
-    def forward(
-        self, 
-        q: torch.Tensor, 
-        k: torch.Tensor, 
-        seq_len: Optional[int] = None,
-        offset: int = 0
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, q: Optional[torch.Tensor] = None, k: Optional[torch.Tensor] = None, 
+                u_i: Optional[torch.Tensor] = None, model_type: str = "SA",
+                edge_i: Optional[torch.Tensor] = None, edge_j: Optional[torch.Tensor] = None, 
+                seq_len: Optional[int] = None, offset: int = 0):
         """
-        Apply rotary embeddings to query and key tensors.
+        Apply rotary embeddings for different model types.
         
         Args:
-            q: Query tensor of shape [batch, heads, seq_len, head_dim]
-            k: Key tensor of shape [batch, heads, seq_len, head_dim]
+            q: For SA: Query tensor [batch, heads, seq_len, head_dim]
+            k: For SA: Key tensor [batch, heads, seq_len, head_dim]
+            u_i: For C: Source node features [batch, heads, num_edges, head_dim] (already gathered)
+            model_type: Either "SA" (self-attention) or "SC" (self-consensus)
+            edge_i: For C: Source node indices [batch, num_edges]
+            edge_j: For C: Target node indices [batch, num_edges]
             seq_len: Sequence length (if different from cached length)
             offset: Position offset for generation tasks
             
         Returns:
-            Tuple of rotated (query, key) tensors
+            For SA: Tuple of rotated (query, key) tensors
+            For C: Rotated source node features [batch, heads, num_edges, head_dim]
         """
+        if model_type == "SA":
+            return self._forward_self_attention(q, k, seq_len, offset)
+        elif model_type == "SC":
+            return self._forward_consensus(u_i, edge_i, edge_j)
+        else:
+            raise ValueError(f"Unknown model_type: {model_type}. Must be 'SA' or 'C'")
+    
+    def _forward_self_attention(self, q: torch.Tensor, k: torch.Tensor, seq_len: Optional[int] = None,offset: int = 0) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Apply rotary embeddings to query and key tensors for self-attention."""
         if seq_len is None:
             seq_len = q.shape[-2]
             
@@ -85,43 +95,28 @@ class RotaryEmbedding(nn.Module):
         k_embed = (k * cos) + (self._rotate_half(k) * sin)
         
         return q_embed, k_embed
-
-
-def apply_rotary_pos_emb(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    position_ids: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Apply rotary position embeddings to query and key tensors.
     
-    This is a functional version that can be used without the RotaryEmbedding module.
-    
-    Args:
-        q: Query tensor [batch, heads, seq_len, head_dim]
-        k: Key tensor [batch, heads, seq_len, head_dim]
-        cos: Cosine values [1, 1, seq_len, dim]
-        sin: Sine values [1, 1, seq_len, dim]
-        position_ids: Optional custom position indices
+    def _forward_consensus(self, u_i: torch.Tensor, edge_i: torch.Tensor, edge_j: torch.Tensor) -> torch.Tensor:
+        """Apply relative RoPE rotations for Consensus layer."""
+        # Compute position differences
+        pos_diff = edge_i - edge_j  # [B, E]
         
-    Returns:
-        Tuple of rotated (query, key) tensors
-    """
-    def rotate_half(x):
-        x1 = x[..., : x.shape[-1] // 2]
-        x2 = x[..., x.shape[-1] // 2 :]
-        return torch.cat((-x2, x1), dim=-1)
-    
-    if position_ids is not None:
-        # Gather cos/sin values based on position_ids
-        cos = cos.squeeze(0).squeeze(0)  # [seq_len, dim]
-        sin = sin.squeeze(0).squeeze(0)  # [seq_len, dim]
-        cos = cos[position_ids].unsqueeze(1)  # [batch, 1, seq_len, dim]
-        sin = sin[position_ids].unsqueeze(1)  # [batch, 1, seq_len, dim]
-    
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-    
-    return q_embed, k_embed 
+        # Get cos/sin tables
+        cos_table = self.cos_cached.squeeze(0).squeeze(0)  # [max_len, D]
+        sin_table = self.sin_cached.squeeze(0).squeeze(0)  # [max_len, D]
+        
+        # Handle relative positions
+        abs_diff = pos_diff.abs()  # [B, E]
+        sign = pos_diff.sign().unsqueeze(-1).type_as(u_i)  # [B, E, 1]
+        
+        cos_rel = cos_table[abs_diff]  # [B, E, D]
+        sin_rel = sin_table[abs_diff] * sign  # [B, E, D]
+        
+        # Reshape for broadcasting with heads
+        cos_rel = cos_rel.unsqueeze(1)  # [B, 1, E, D]
+        sin_rel = sin_rel.unsqueeze(1)  # [B, 1, E, D]
+        
+        # Apply rotation
+        u_i_rot = u_i * cos_rel + self._rotate_half(u_i) * sin_rel
+        
+        return u_i_rot

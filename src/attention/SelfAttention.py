@@ -36,7 +36,7 @@ class SelfAttention(nn.Module):
         v = self.v(x).reshape(B, L, self.heads, self.head_dim).permute(0, 2, 1, 3)  # [B, heads, L, head_dim]
         
         # Apply rotary position embeddings
-        q, k = self.rotary_emb(q, k)
+        q, k = self.rotary_emb(q=q, k=k, model_type="SA")
         
         # Attention
         attn = (q @ k.transpose(-2, -1)) * (self.head_dim ** -0.5)  # [B, heads, L, L]

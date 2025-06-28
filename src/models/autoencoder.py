@@ -36,14 +36,14 @@ class FSQEncoder(nn.Module):
             self.layers.append(StandardTransformerBlock(cfg))
         elif cfg.model_type == "RA":
             self.layers.append(ReflexiveTransformerBlock(cfg))
-        elif cfg.model_type == "C":
+        elif cfg.model_type == "SC":
             self.layers.append(ConsensusTransformerBlock(cfg))
         else:
             raise ValueError(f"Invalid model_type type: {cfg.model_type}")
         
         # Remaining blocks
-        if cfg.model_type == "C":
-            # For Consensus, all blocks are ConsensusTransformerBlocks
+        if cfg.model_type == "SC":
+            # For SelfConsensus, all blocks are ConsensusTransformerBlocks
             for _ in range(cfg.n_layers - 1):
                 self.layers.append(ConsensusTransformerBlock(cfg))
         else:
@@ -152,14 +152,14 @@ class FSQDecoder(nn.Module):
             self.layers.append(StandardTransformerBlock(cfg))
         elif cfg.model_type == "RA":
             self.layers.append(ReflexiveTransformerBlock(cfg))
-        elif cfg.model_type == "C":
+        elif cfg.model_type == "SC":
             self.layers.append(ConsensusTransformerBlock(cfg))
         else:
             raise ValueError(f"Invalid model_type type: {cfg.model_type}")
         
         # Remaining blocks
-        if cfg.model_type == "C":
-            # For Consensus, all blocks are ConsensusTransformerBlocks
+        if cfg.model_type == "SC":
+            # For SelfConsensus, all blocks are ConsensusTransformerBlocks
             for _ in range(cfg.n_layers - 1):
                 self.layers.append(ConsensusTransformerBlock(cfg))
         else:
