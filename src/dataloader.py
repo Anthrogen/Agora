@@ -19,7 +19,7 @@ def _get_noise_levels(s_min, s_max, T, schedule_type="linear"):
         s_min: Minimum noise level (sigma_min)
         s_max: Maximum noise level (sigma_max)
         T: Number of timesteps
-        schedule_type: "linear", "inverted_u", or "skewed_rectangular"
+        schedule_type: "linear", "inverted_u", or "uniform"
         
     Returns:
         inst_noise_levels: Tensor of shape (T,) with instantaneous noise at each timestep
@@ -72,59 +72,21 @@ def _get_noise_levels(s_min, s_max, T, schedule_type="linear"):
         # Clamp instantaneous noise for return
         inst_noise_levels = torch.clamp(inst_noise_levels, s_min, s_max)
         
-    elif schedule_type == "skewed_rectangular":
-        # Compound rectangular schedule: monotonic but with more time at lower mask percentages
-        # Creates more density at lower percentages while maintaining monotonicity
-        
-        # Distribution of timesteps:
-        # - 5% of timesteps: [5%, 15%] mask (transition region)
-        # - 60% of timesteps: [15%, 45%] mask (extended lower range - slow progression)
-        # - 30% of timesteps: [45%, 85%] mask (faster progression through upper range)  
-        # - 5% of timesteps: [85%, 95%] mask (transition region)
-        
-        # This maintains monotonicity while giving more training time to lower mask percentages
-        
-        timesteps = torch.arange(T, dtype=torch.float32)
-        normalized_timesteps = timesteps / (T - 1) if T > 1 else timesteps
-        
-        mask_probs = torch.zeros(T)
-        
-        for i in range(T):
-            t_normalized = i / (T - 1) if T > 1 else 0.5
-            
-            if t_normalized <= 0.05:
-                # First 5% of timesteps -> [5%, 15%] mask range
-                local_progress = t_normalized / 0.05
-                mask_probs[i] = 0.05 + 0.10 * local_progress
-            elif t_normalized <= 0.65:
-                # Next 60% of timesteps (5% to 65%) -> [15%, 45%] mask range (slow progression)
-                local_progress = (t_normalized - 0.05) / 0.60
-                mask_probs[i] = 0.15 + 0.30 * local_progress
-            elif t_normalized <= 0.95:
-                # Next 30% of timesteps (65% to 95%) -> [45%, 85%] mask range (faster progression)
-                local_progress = (t_normalized - 0.65) / 0.30
-                mask_probs[i] = 0.45 + 0.40 * local_progress
-            else:
-                # Last 5% of timesteps (95% to 100%) -> [85%, 95%] mask range
-                local_progress = (t_normalized - 0.95) / 0.05
-                mask_probs[i] = 0.85 + 0.10 * local_progress
+
+    elif schedule_type == "uniform":
+        # Uniform schedule: equal time spent at all mask percentages
+        # Linear progression from 5% to 95% mask probability
+        mask_probs = 0.05 + 0.9 * normalized_t  # Maps [0,1] to [0.05, 0.95]
         
         # Convert to cumulative noise levels
         cumulative_noise_levels = -torch.log(1 - mask_probs + 1e-8)
         
-        # Compute instantaneous noise levels as derivatives
-        inst_noise_levels = torch.zeros_like(cumulative_noise_levels)
-        inst_noise_levels[0] = cumulative_noise_levels[0]
-        
-        for i in range(1, T):
-            dt = 1.0 / (T - 1)
-            inst_noise_levels[i] = (cumulative_noise_levels[i] - cumulative_noise_levels[i-1]) / dt
-        
-        # Clamp instantaneous noise for return
-        inst_noise_levels = torch.clamp(inst_noise_levels, s_min, s_max)
+        # For uniform schedule, instantaneous noise is constant
+        # (equal time spent at each mask percentage)
+        inst_noise_levels = torch.full_like(cumulative_noise_levels, (s_max - s_min) / T)
         
     else:
-        raise ValueError(f"Unknown schedule type: {schedule_type}. Must be 'linear', 'inverted_u', 'rectangular', or 'skewed_rectangular'")
+        raise ValueError(f"Unknown schedule type: {schedule_type}. Must be 'linear', 'inverted_u', or 'uniform'")
     
     return inst_noise_levels, cumulative_noise_levels
 
@@ -226,7 +188,7 @@ class SimpleDataLoader(MaskingDataLoader):
     
 class ComplexDataLoader(MaskingDataLoader):
     def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-        super(ComplexDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, device=device, min_unmasked=min_unmasked, **kwargs)
+        super(ComplexDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, min_unmasked=min_unmasked, **kwargs)
 
     def sample_masks(self, batch):
         """
@@ -250,7 +212,7 @@ class ComplexDataLoader(MaskingDataLoader):
 
 class NoMaskDataLoader(MaskingDataLoader):
     def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-        super(NoMaskDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, device=device, min_unmasked=min_unmasked, **kwargs)
+        super(NoMaskDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, min_unmasked=min_unmasked, **kwargs)
     
     def sample_masks(self, batch):
         for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:
@@ -269,7 +231,8 @@ class DiffusionDataLoader(MaskingDataLoader):
         self.inst_noise_levels, self.cumulative_noise_levels = _get_noise_levels(
             diffusion_cfg.sigma_min, 
             diffusion_cfg.sigma_max, 
-            diffusion_cfg.num_timesteps
+            diffusion_cfg.num_timesteps,
+            diffusion_cfg.noise_schedule
         )
         # Move to device
         self.inst_noise_levels = self.inst_noise_levels.to(self.device)

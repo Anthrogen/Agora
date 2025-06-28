@@ -69,12 +69,12 @@ class ModelConfig:
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_types: List[str] = field(default_factory=lambda: ["C"]) # Models to train - can be any subset of ["SA", "GA", "RA", "C"]
+    model_types: List[str] = field(default_factory=lambda: ["SA"]) # Models to train - can be any subset of ["SA", "GA", "RA", "C"]
     batch_size: int = 4  # Training hyperparameters
-    max_epochs: int = 10
+    max_epochs: int = 5
     learning_rate: float = 1e-5
-    num_iter: int = 5  # Number of iterations to repeat training
-    masking_strategy: str = "simple" # Masking strategy: 'simple' or 'complex'
+    num_iter: int = 1  # Number of iterations to repeat training
+    masking_strategy: str = "complex" # Masking strategy: 'simple' or 'complex'
     
     if masking_strategy == "simple":
         seq_loss_weight: float = 1.0  # sequence loss weight - simple: 1.0
@@ -88,6 +88,7 @@ class TrainingConfig:
     # Cross-entropy loss function: which elements should contribute to the loss?
     # "masked": only masked positions
     # "non_beospank": all non-BOS/EOS/PAD positions, including masks
+    # "non_special": all non-special tokens, including masks
     ce_loss_function_elements: str = "masked"
 
     data_dir: str = "../sample_data/1k/"  # Data paths
@@ -278,8 +279,7 @@ def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch, train
 def main():
     # Initialize configurations
     model_cfg, train_cfg = ModelConfig(), TrainingConfig()
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device('cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(train_cfg.checkpoint_dir, exist_ok=True)
     
     # Validate model types

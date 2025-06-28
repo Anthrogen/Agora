@@ -102,6 +102,7 @@ class StructureTokenizer():
 
         # TODO: Calculate fsq_output_max automatically from the fsq_encoder object
         self.fsq_encoder = fsq_encoder
+        # TODO: get this automatically from FsqEncoder object model configuration, which could be a feature of the model object.
         self.fsq_output_max = fsq_output_max
         self.fsq_num_atoms = fsq_num_atoms
 

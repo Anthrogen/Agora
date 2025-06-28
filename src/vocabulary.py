@@ -38,6 +38,5 @@ class SEQUENCE_TOKENS(Enum):
     Z= 22  # Glutamic acid or Glutamine (ambiguous)
     O= 23  # Ornithine
     J= 24  # Leucine or Isoleucine (ambiguous)
-    X= 25  # Unknown amino acid
 
     # X= SPECIAL_TOKENS[__UNK__] # Unknown amino acid sometimes denoted by X in JSON files.

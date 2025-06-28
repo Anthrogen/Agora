@@ -51,6 +51,7 @@ class ModelConfig:
     dropout: float = 0.1  # Other architecture params
     ff_mult: int = 4
     ff_hidden_dim: int = d_model * ff_mult
+
     
     # Consensus-specific parameters
     consensus_num_iterations: int = 5  # Number of Consensus gradient iterations
@@ -59,34 +60,40 @@ class ModelConfig:
     consensus_r: int = 24  # Rank of Lambda_ij matrices
     consensus_edge_hidden_dim: int = 12  # Hidden dim for edge networks
 
+    # Absorbing state tokens (using MASK token index)
+    seq_absorb_token: int = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS)
+    struct_absorb_token: int = SPECIAL_TOKENS.MASK.value + 4375
+
+
+
 
 @dataclass
 class DiffusionConfig:
     """Discrete diffusion configuration."""
     # Noise schedule parameters
-    noise_schedule: str = "skewed_rectangular"  # Type of noise schedule ("linear", "inverted_u", or "skewed_rectangular")
+    noise_schedule: str = "uniform"  # Type of noise schedule ("linear", "inverted_u", or "uniform")
     sigma_min: float = 0.31  # Minimum noise level
     sigma_max: float = 5.68  # Maximum noise level
     num_timesteps: int = 100  # Number of discrete timesteps for training
+
+
     
-    # Absorbing state tokens (using MASK token index)
-    seq_absorb_token: int = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS)
-    struct_absorb_token: int = SPECIAL_TOKENS.MASK.value + 4375
+
 
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_types: List[str] = field(default_factory=lambda: ["C"]) # Models to train - can be any subset of ["SA", "GA", "RA", "C"]
+    model_types: List[str] = field(default_factory=lambda: ["SA"]) # Models to train - can be any subset of ["SA", "GA", "RA", "C"]
     batch_size: int = 4  # Training hyperparameters
-    max_epochs: int = 200
+    max_epochs: int = 2
     learning_rate: float = 1e-5
-    num_iter: int = 3  # Number of iterations to repeat training
+    num_iter: int = 1  # Number of iterations to repeat training
 
     # Loss weights
     seq_loss_weight: float = 1.0
     struct_loss_weight: float = 1.0
 
-    data_dir: str = "../sample_data/1k"  # Data paths
+    data_dir: str = "../sample_data/100/"  # Data paths
     checkpoint_dir: str = "../checkpoints/transformer_trunk"  # Checkpointing
     reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization
 
@@ -165,7 +172,7 @@ def worker_init_fn(worker_id):
     random.seed(worker_seed)
 
 def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.optim.Optimizer], 
-               batch: MaskedBatch, diffusion_cfg: DiffusionConfig,
+               batch: MaskedBatch, model_cfg: ModelConfig,
                train_cfg: TrainingConfig) -> Dict[str, Dict[str, float]]:
     """Perform a single training step for all models with discrete diffusion."""
     seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
@@ -196,8 +203,8 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
         seq_logits, struct_logits = outputs
         
         # Compute losses using score entropy loss (for training)
-        loss_seq = score_entropy_loss(seq_logits, seq_x_0, seq_x_t, batch.metadata['cumulative_noise'], batch.metadata['inst_noise'], diffusion_cfg.seq_absorb_token, valid_mask=seq_valid)
-        loss_struct = score_entropy_loss(struct_logits, struct_x_0, struct_x_t, batch.metadata['cumulative_noise'], batch.metadata['inst_noise'], diffusion_cfg.struct_absorb_token, valid_mask=struct_valid)
+        loss_seq = score_entropy_loss(seq_logits, seq_x_0, seq_x_t, batch.metadata['cumulative_noise'], batch.metadata['inst_noise'], model_cfg.seq_absorb_token, valid_mask=seq_valid)
+        loss_struct = score_entropy_loss(struct_logits, struct_x_0, struct_x_t, batch.metadata['cumulative_noise'], batch.metadata['inst_noise'], model_cfg.struct_absorb_token, valid_mask=struct_valid)
         
         # Total loss (what we train on)
         loss = train_cfg.seq_loss_weight * loss_seq + train_cfg.struct_loss_weight * loss_struct
@@ -213,7 +220,7 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
     return metrics
 
 def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch, 
-                 diffusion_cfg: DiffusionConfig, 
+                 model_cfg: ModelConfig,
                  train_cfg: TrainingConfig) -> Dict[str, Dict[str, float]]:
     """Perform a single validation step for all models."""
     seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
@@ -223,7 +230,6 @@ def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch,
     B, L = seq_x_t.shape
 
     nonspecial_elements_coords = (~batch.masks['coords'] & ~batch.beospank['coords']).bool()
-    #assert not (~unmasked_coords_elements.any(dim=1).any()) # Dataloader should gaurantee this.
     assert nonspecial_elements_coords.any(dim=1).all()
 
     timesteps = batch.metadata['timestep_indices'] if 'timestep_indices' in batch.metadata else batch.metadata['pseudo_timestep_indices']
@@ -247,8 +253,8 @@ def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch,
             seq_logits, struct_logits = outputs
             
             # Compute losses using score entropy loss (main loss)
-            loss_seq = score_entropy_loss(seq_logits, seq_x_0, seq_x_t, cumulative_noise, inst_noise, diffusion_cfg.seq_absorb_token, valid_mask=seq_valid)
-            loss_struct = score_entropy_loss(struct_logits, struct_x_0, struct_x_t, cumulative_noise, inst_noise, diffusion_cfg.struct_absorb_token, valid_mask=struct_valid)
+            loss_seq = score_entropy_loss(seq_logits, seq_x_0, seq_x_t, cumulative_noise, inst_noise, model_cfg.seq_absorb_token, valid_mask=seq_valid)
+            loss_struct = score_entropy_loss(struct_logits, struct_x_0, struct_x_t, cumulative_noise, inst_noise, model_cfg.struct_absorb_token, valid_mask=struct_valid)
             
             # Total loss
             loss = train_cfg.seq_loss_weight * loss_seq + train_cfg.struct_loss_weight * loss_struct
@@ -378,7 +384,7 @@ def main():
                      ascii=True, leave=True, ncols=150) as pbar:
                 for batch_data in pbar:
                     # Train all models on the same batch
-                    batch_metrics = train_step(models, optimizers, batch_data, diffusion_cfg, train_cfg)
+                    batch_metrics = train_step(models, optimizers, batch_data, model_cfg, train_cfg)
                     
                     # Accumulate metrics
                     for model_type in train_cfg.model_types:
@@ -410,7 +416,7 @@ def main():
             
             for batch_data in val_loader:
                 # Validate all models on the same batch
-                batch_metrics = validate_step(models, batch_data, diffusion_cfg, train_cfg)
+                batch_metrics = validate_step(models, batch_data, model_cfg, train_cfg)
                 
                 # Accumulate metrics
                 for model_type in train_cfg.model_types:

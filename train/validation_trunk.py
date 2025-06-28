@@ -45,7 +45,7 @@ from train_transformer_MLM_trunk import (
 class TrainingConfig:
     """Configuration for validation."""
     # Model type to evaluate (single selection)
-    model_type: str = "C"  # Options: "SA", "GA", "RA", "C"
+    model_type: str = "SA"  # Options: "SA", "GA", "RA", "C"
     
     # Masking strategy and parameters
     masking_strategy: str = "simple"
@@ -59,7 +59,7 @@ class TrainingConfig:
     training_methods: List[str] = field(default_factory=lambda: ["simple", "complex", "diffusion"])
     
     # Data settings
-    data_dir: str = "../sample_data/1k"
+    data_dir: str = "../sample_data/100"
     batch_size: int = 4
 
     # Loss weights
@@ -69,7 +69,8 @@ class TrainingConfig:
     # Cross-entropy loss function: which elements should contribute to the loss?
     # "masked": only masked positions
     # "non_beospank": all non-BOS/EOS/PAD positions, including masks
-    ce_loss_function_elements: str = "non_beospank"
+    # "non_special": all non-special tokens, including masks
+    ce_loss_function_elements: str = "masked"
     
     # Model paths (models in /scripts/checkpoints)
     simple_checkpoint_pattern: str = "../checkpoints/transformer_trunk/{}_simple_iter1_final.pt"
@@ -185,7 +186,7 @@ def evaluate_mlm_model(model: TransformerTrunk, batch: MaskedBatch, model_type: 
         retval = mlm_validate_step({model_type : model}, batch, train_cfg)
         return retval[model_type]
 
-def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, timestep: int, diffusion_cfg: DiffusionConfig,
+def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, timestep: int, model_cfg_for_eval: DiffusionModelConfig, diffusion_cfg: DiffusionConfig,
                            train_cfg: TrainingConfig, device: torch.device) -> Dict[str, float]:
     """Evaluate a diffusion model using score entropy loss on a single batch."""
 
@@ -206,7 +207,7 @@ def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, model_
     batch.metadata['pseudo_inst_noise'] = pseudo_inst_noise.to(device)
 
     with torch.no_grad():
-        retval = diffusion_validate_step({model_type: model}, batch, diffusion_cfg, train_cfg)
+        retval = diffusion_validate_step({model_type: model}, batch, model_cfg_for_eval, train_cfg)
         return retval[model_type]
 
 
@@ -305,7 +306,7 @@ def main(custom_config: Optional[TrainingConfig] = None):
                     batch_metrics = evaluate_mlm_model(model, batch, train_cfg.model_type, train_cfg)
                 else:
                     # Diffusion models use score entropy loss
-                    batch_metrics = evaluate_diffusion_model(model, batch, train_cfg.model_type, t_idx, diffusion_cfg, train_cfg, device)
+                    batch_metrics = evaluate_diffusion_model(model, batch, train_cfg.model_type, t_idx, model_cfg_for_eval, diffusion_cfg, train_cfg, device)
                 
                 # Accumulate metrics
                 for key in all_metrics:

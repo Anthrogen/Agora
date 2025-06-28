@@ -53,7 +53,7 @@ class ModelConfig:
     model_type: Optional[str] = None # Placeholder for model type
     d_model: int = 128 # 768  # Model dimensions
     latent_dim: int = 32
-    n_heads: int = 8 # 12
+    n_heads: int = 1 # 12
     n_layers: int = 3 # 12
     seq_vocab: int = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)  # Sequence tokens + special tokens
     struct_vocab: int = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
