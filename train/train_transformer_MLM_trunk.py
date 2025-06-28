@@ -91,7 +91,7 @@ class TrainingConfig:
     # "non_special": all non-special tokens, including masks
     ce_loss_function_elements: str = "masked"
 
-    data_dir: str = "../sample_data/1k/index.csv"  # Data paths
+    data_dir: str = "../sample_data/1k.csv"  # Data paths
     checkpoint_dir: str = "../checkpoints/transformer_trunk"  # Checkpointing
     reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization across architectures
 

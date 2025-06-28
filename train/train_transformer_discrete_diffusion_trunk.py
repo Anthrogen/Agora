@@ -86,7 +86,7 @@ class TrainingConfig:
     seq_loss_weight: float = 1.0
     struct_loss_weight: float = 1.0
 
-    data_dir: str = "../sample_data/100/"  # Data paths
+    data_dir: str = "../sample_data/1k.csv"  # Data paths
     checkpoint_dir: str = "../checkpoints/transformer_trunk"  # Checkpointing
     reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization
 

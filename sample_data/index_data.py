@@ -1,95 +1,61 @@
+import argparse
 import csv
 import json
-import sys
+import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-# ---------------------------------------------------------------------------
-# Edit this variable if you prefer to hard-code the directory containing the
-# JSON files. You can also leave it as an empty string and supply the directory
-# on the command line instead.
-# ---------------------------------------------------------------------------
-JSON_DIR: str = "1k"  # e.g. "../sample_data/100"
-
-HEADER: List[str] = [
-    "sequence_id",
-    "rep_id",
-    "rep_json_path",
-    "member_json_path",
-]
+from typing import List
 
 
-def extract_sequence_id(data: Dict[str, Any]) -> Optional[str]:
-    """Return the `sequence_id` field from a JSON object if it exists.
+def find_members(directory: Path, csv_dir: Path) -> List[List[str]]:
 
-    The field name is expected to be exactly "sequence_id". If it is missing
-    the file will be skipped.
-    """
+    rows: List[List[str]] = []
 
-    return data.get("sequence_id")
+    for item in directory.iterdir():
+        if item.is_file() and item.suffix.lower() == ".json":
+            try:
+                with item.open("r", encoding="utf‑8") as fh:
+                    data = json.load(fh)
+            except Exception:
+                # Skip unreadable or invalid JSON files silently
+                continue
+
+            seq_id = data.get("sequence_id")
+            if seq_id is None:
+                continue
+
+            rel_path = os.path.relpath(item, csv_dir)
+            rows.append([str(seq_id), "", "", rel_path])
+
+    return rows
 
 
-def build_index(directory: Path) -> int:
-    """Generate `index.csv` inside *directory*.
+def write_csv(csv_path: Path, rows: List[List[str]]) -> None:
+    """Write *rows* to *csv_path* with the required header and final newline."""
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
 
-    Returns the number of rows written (excluding the header).
-    """
+    header = ["sequence_id", "rep_id", "rep_json_path", "member_json_path"]
+
+    # Use newline="" so csv module controls line endings (RFC‑4180 compliant)
+    with csv_path.open("w", newline="", encoding="utf‑8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(header)
+        writer.writerows(rows)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("csv_file")
+    parser.add_argument("directory")
+    args = parser.parse_args()
+
+    csv_path = Path(args.csv_file).resolve()
+    directory = Path(args.directory).resolve()
 
     if not directory.is_dir():
         raise NotADirectoryError(f"{directory} is not a directory")
 
-    rows: List[Dict[str, str]] = []
-    for json_file in sorted(directory.glob("*.json")):
-        try:
-            with json_file.open("r", encoding="utf-8") as fh:
-                data = json.load(fh)
-        except json.JSONDecodeError as exc:
-            print(f"[WARN] Skipping {json_file.name}: JSON parse error – {exc}", file=sys.stderr)
-            continue
-
-        sequence_id = extract_sequence_id(data)
-        if sequence_id is None:
-            print(f"[WARN] Skipping {json_file.name}: missing 'sequence_id' field", file=sys.stderr)
-            continue
-
-        rows.append(
-            {
-                "sequence_id": str(sequence_id),
-                "rep_id": "",  # intentionally blank for now
-                "rep_json_path": "",  # intentionally blank for now
-                "member_json_path": json_file.name,  # store file name only
-            }
-        )
-
-    # Write index.csv
-    index_path = directory / "index.csv"
-    with index_path.open("w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=HEADER)
-        writer.writeheader()
-        writer.writerows(rows)
-
-    print(f"[INFO] Wrote {len(rows)} rows to {index_path.relative_to(Path.cwd())}")
-    return len(rows)
-
-
-def build_offset_file(csv_path: pathlib.Path, idx_path: pathlib.Path):
-    offsets = array.array("Q", [0])            # first line starts at byte 0
-    with csv_path.open("rb") as f:
-        while f.readline():                    # read & discard line
-            offsets.append(f.tell())           # record file pointer
-    offsets.pop()            # last tell() == EOF → remove it
-    idx_path.write_bytes(offsets.tobytes())    # 8-byte little-endian
-
-
-def main() -> None:
-
-    target_dir = Path(JSON_DIR).expanduser().resolve()
-    try:
-        build_index(target_dir)
-        build_offset_file(target_dir / "index.csv", target_dir / "index.idx")
-    except Exception as exc:  # pylint: disable=broad-except
-        print(f"ERROR: {exc}", file=sys.stderr)
-        sys.exit(1)
+    rows = find_members(directory, csv_path.parent)
+    write_csv(csv_path, rows)
 
 
 if __name__ == "__main__":

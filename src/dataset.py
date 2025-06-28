@@ -239,7 +239,7 @@ class ProteinDataset(Dataset):
         Eager: if true, check for malformed files up front. Otherwise, do so on the fly and potentially return None from __getitem__.
         """
         self.index_csv_path = index_csv_path
-        self.index_csv_dir = os.path.dirname(index_csv_path)
+        self.index_csv_dir = os.path.dirname(index_csv_path) # all paths expressed in the .csv file are relative to this position.
 
         # Maximum sequence length for padding/truncation
         # Proteins longer than this will be truncated
@@ -249,7 +249,7 @@ class ProteinDataset(Dataset):
         self.verbose = verbose
 
         # Itearte through the CSV file.
-        # For each row, record the offset (number of bytes from the beginning of the file) of the row.
+        # For each row, record the offset (number of bytes from the beginning of the file) of the row on the disk.
         self.offsets = array.array("Q", [0])
         with open(self.index_csv_path, "rb") as f:
             f.readline()                         
@@ -263,23 +263,26 @@ class ProteinDataset(Dataset):
         assert len(self.offsets) > 0, f"No valid JSON Paths found in {self.index_csv_path}!"
         
         # Create a memory map into the index.csv file.
-        # This allows us to read the file without re-loading it into memory at each invocation of __getitem__.
+        # This virtually "maps" the disk space (large memory storage) file into the memory of the python process.
+        # This allows us to read the contents of the file 
+        #  without re-loading it into memory at each invocation of __getitem__.
         fd = os.open(self.index_csv_path, os.O_RDONLY)
         self.mm = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
         os.close(fd)
 
         if eager:
-            self.offsets = array.array("Q", [off for idx, off in enumerate(self.offsets) if self.__getitem__(idx) is not None])
+            self.offsets = array.array("Q", [off for idx, off in enumerate(self.offsets) if self.get_protein(idx) is not None])
             
 
     def __len__(self):
         """Return the total number of protein structures in the dataset"""
         return len(self.offsets)
 
-
-
-    def __getitem__(self, idx: int) -> torch.Tensor:
-
+    def get_protein(self, idx) -> Protein:
+        """
+        It is important to separate out this functionality from __getitem__
+        so that we can speed up eager mode.
+        """
         assert idx >= 0 and idx < len(self.offsets), f"Index {idx} out of bounds for dataset of length {len(self.offsets)}"
 
         start = self.offsets[idx]
@@ -300,17 +303,22 @@ class ProteinDataset(Dataset):
         # assert os.path.exists(json_path)
 
         try:
-            protein = Protein(json_path, mode=self.mode)
+            return Protein(json_path, mode=self.mode)
         except (AssertionError, ValueError) as e:
             if self.verbose:
                 print(f"Warning: encountered malformed file {json_path}: {e}")
+            return None
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        protein = self.get_protein(idx)
+        if protein is None:
             return None
 
         coords = protein.coords[:self.max_length]
         seq = protein.seq[:self.max_length]
         l = torch.tensor(min(protein.len, self.max_length))
 
-        # 7) Optionally center the structure at origin
+        # Optionally center the structure at origin
         # This is useful for translation-invariant applications
         if self.center:
             centroid = coords.reshape(-1, 3).mean(dim=0)  # Average position of all atoms

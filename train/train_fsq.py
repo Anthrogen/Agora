@@ -90,13 +90,13 @@ class TrainingConfig:
     max_epochs: int = 70
     learning_rate: float = 1e-5
     num_iter: int = 3  # Number of iterations to repeat training
-    masking_strategy: str = "discrete_diffusion" # Masking strategy: 'simple' or 'complex' or 'discrete_diffusion'
+    masking_strategy: str = "simple" # Masking strategy: 'simple' or 'complex' or 'discrete_diffusion'
     
     if masking_strategy == "simple":
         mask_prob_seq: float = 0.2 # Masking probability for sequence tokens
         mask_prob_coords: float = 0.2 # Masking probability for structure tokens
 
-    data_dir: str = "../sample_data/1k/index.csv"  # Data paths
+    data_dir: str = "../sample_data/1k.csv"  # Data paths
     checkpoint_dir: str = "../checkpoints/fsq"  # Checkpointing
     reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization across architectures
 
@@ -164,8 +164,6 @@ def ensure_identical_parameters_all_models(models: Dict[str, Autoencoder], seed:
             if model is not ref_model:
                 # Copy encoder components
                 # Input projection and conv blocks are shared
-                #TODO: this needs to be in the model.
-                #e.g. model.load(state_dictionary) and it can unpack what it needs internally.
                 model.encoder.input_proj.load_state_dict(ref_model.encoder.input_proj.state_dict())
                 model.encoder.encoder_conv1.load_state_dict(ref_model.encoder.encoder_conv1.state_dict())
                 model.encoder.encoder_conv2.load_state_dict(ref_model.encoder.encoder_conv2.state_dict())
@@ -338,7 +336,6 @@ def validate_step(models: Dict[str, Autoencoder], batch: MaskedBatch, model_cfg:
                 # Forward pass - use only first 3 atoms for standard coordinates
                 three_atoms = batch.masked_data['coords'][:, :, :3, :]  # [B, L, 3, 3]
 
-                #TODO: so is coords_mask for masked or unmasked positions?  I think unmasked?
                 if model_type in ("GA", "RA"): x_rec, _ = model(three_atoms, batch.masked_data['coords'], unmasked_elements)
                 else: x_rec, _ = model(three_atoms)
                 
@@ -450,10 +447,8 @@ def main():
     print(f"Starting training with {train_cfg.num_iter} iterations")
     print(f"Training models: {train_cfg.model_types}")
     print(f"Stage: {model_cfg.stage}")
-    if model_cfg.stage == "stage_1":
-        print(f"Using masking strategy: {train_cfg.masking_strategy}")
-    elif model_cfg.stage == "stage_2":
-        print(f"Will load encoders from stage 1 checkpoints")
+    if model_cfg.stage == "stage_1": print(f"Using masking strategy: {train_cfg.masking_strategy}")
+    elif model_cfg.stage == "stage_2": print(f"Will load encoders from stage 1 checkpoints")
     
     # Determine dataset mode based on stage
     if model_cfg.stage == "stage_1": dataset_mode = "backbone"  # 4 atoms: N, CA, C, CB
@@ -533,14 +528,12 @@ def main():
         
         # Use different masking strategies for stage 1 vs stage 2
         if model_cfg.stage == "stage_1":
-
             stage_1_tracks = {'seq': False, 'struct': False, 'coords': True}
             min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
             train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, stage_1_tracks, device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
             val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, stage_1_tracks, device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
 
         elif model_cfg.stage == "stage_2":  # stage_2 - no masking
-
             stage_2_tracks = {'seq': True, 'struct': False, 'coords': True}
             train_loader = NoMaskDataLoader(train_ds, model_cfg, train_cfg, stage_2_tracks, device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
             val_loader = NoMaskDataLoader(val_ds, model_cfg, train_cfg, stage_2_tracks, device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
