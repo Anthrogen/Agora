@@ -231,9 +231,12 @@ class Protein():
 class ProteinDataset(Dataset):
     """
     Test me in shell:
-    ProteinDataset("/workspace/demo/Odyssey/sample_data/100/index.csv")
+    ProteinDataset("/workspace/demo/Odyssey/sample_data/tiny_set.csv")
     """
-    MEMBER_JSON_PATH_COL = 3 # Within the index.csv file, this is the colun (0-indexed) that points ot member Json Path 
+
+    PROTEIN_ID_COL = 1
+    JSON_PATH_COL = 2 # Within the index.csv file, this is the colun (0-indexed) that points ot member Json Path 
+    TOTAL_COLS = 4
     def __init__(self, index_csv_path: str, center: bool = True, mode: str = "backbone", max_length: int = 2048, eager: bool = False, verbose: bool = False):
         """
         Eager: if true, check for malformed files up front. Otherwise, do so on the fly and potentially return None from __getitem__.
@@ -250,17 +253,40 @@ class ProteinDataset(Dataset):
 
         # Itearte through the CSV file.
         # For each row, record the offset (number of bytes from the beginning of the file) of the row on the disk.
-        self.offsets = array.array("Q", [0])
+        self.offsets = array.array("Q", [])
+        
         with open(self.index_csv_path, "rb") as f:
-            f.readline()                         
-            pos = f.tell()                      
 
-            for line in f:                      
-                self.offsets.append(pos)
-                pos = f.tell()
+            last_id = None # filter out non-unique entries.
+            for line in f:
+                pos = f.tell() - len(line)
+                line = line.decode("utf-8").rstrip("\r\n").split(",")
+
+                # print(f"Line: {line}")
+
+                if len(line) != self.TOTAL_COLS:
+                    if self.verbose:
+                        print(f"Skipping bad csv line: {line}")
+                    continue
+
+                new_id = line[self.PROTEIN_ID_COL].strip()
+                if self.verbose:
+                    print(f"new_id = {new_id}")
+                
+
+                if last_id is None or last_id != new_id:
+                    self.offsets.append(pos)
+                else:
+                    if self.verbose:
+                        print(f"Skipping duplicate entry for {new_id}")
+
+                last_id = new_id
+
 
         self.offsets.pop(0) # Get rid of header row.
         assert len(self.offsets) > 0, f"No valid JSON Paths found in {self.index_csv_path}!"
+
+        # print(f"Full offsets: {self.offsets}")
         
         # Create a memory map into the index.csv file.
         # This virtually "maps" the disk space (large memory storage) file into the memory of the python process.
@@ -293,7 +319,7 @@ class ProteinDataset(Dataset):
         rel_path_to_json = (
             self.mm[start:end]
             .decode()
-            .split(",")[self.MEMBER_JSON_PATH_COL]
+            .split(",")[self.JSON_PATH_COL]
             .strip()  # remove any whitespace/newline characters
         )
 

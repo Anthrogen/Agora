@@ -53,11 +53,9 @@ class ModelConfig:
     model_type: Optional[str] = None # Placeholder for model type
     d_model: int = 128 # 768  # Model dimensions
     latent_dim: int = 32
-    n_heads: int = 1 # 12
-    if stage == "stage_1":
-        n_layers: int = 3 # 12
-    elif stage == "stage_2":
-        n_layers: int = 10
+    n_heads: int = 1
+    if stage == "stage_1": n_layers: int = 3 # 12
+    elif stage == "stage_2": n_layers: int = 10
     seq_vocab: int = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)  # Sequence tokens + special tokens
     struct_vocab: int = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
     max_len: int = 2048
@@ -88,7 +86,7 @@ class DiffusionConfig:
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_type: str = "SA"  # Model to train - can be "SA", "GA", "RA", or "SC"
+    model_type: str = "SC"  # Model to train - can be "SA", "GA", "RA", or "SC"
     batch_size: int = 4  # Training hyperparameters
     max_epochs: int = 70
     learning_rate: float = 1e-5
@@ -463,23 +461,19 @@ def main():
         
         # For stage 1, ensure identical parameter initialization across architectures
         if model_cfg.stage == "stage_1":
-            if train_cfg.model_type == "SA":
-                # If training SA, just create it directly
-                model = create_model_with_config("SA", model_cfg, device)
-            else:
-                # Create SA as reference and target model
-                print(f"Creating SA reference model and {train_cfg.model_type} target model...")
-                sa_model = create_model_with_config("SA", model_cfg, device)
-                target_model = create_model_with_config(train_cfg.model_type, model_cfg, device)
-                
-                # Synchronize target model with SA reference
-                print(f"Synchronizing {train_cfg.model_type} shared parameters with SA reference...")
-                temp_models = {"SA": sa_model, train_cfg.model_type: target_model}
-                ensure_identical_parameters_all_models(temp_models, train_cfg.reference_model_seed + iteration)
-                
-                # Keep target model, delete SA reference
-                model = target_model
-                del sa_model; del temp_models
+            # Create SA as reference and target model
+            print(f"Creating SA reference model and {train_cfg.model_type} target model...")
+            sa_model = create_model_with_config("SA", model_cfg, device)
+            target_model = create_model_with_config(train_cfg.model_type, model_cfg, device)
+            
+            # Synchronize target model with SA reference
+            print(f"Synchronizing {train_cfg.model_type} shared parameters with SA reference...")
+            temp_models = {"SA": sa_model, train_cfg.model_type: target_model}
+            ensure_identical_parameters_all_models(temp_models, train_cfg.reference_model_seed + iteration)
+            
+            # Keep target model, delete SA reference
+            model = target_model
+            del sa_model; del temp_models
 
             # Stage 1: optimize all parameters
             optimizer = AdamW(model.parameters(), lr=train_cfg.learning_rate)
@@ -493,7 +487,7 @@ def main():
             encoder_checkpoint_path = Path(train_cfg.checkpoint_dir) / f"{train_cfg.model_type}_stage_1_iter{iteration+1}.pt"
             
             if encoder_checkpoint_path.exists():
-                checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
+                checkpoint = torch.load(encoder_checkpoint_path, map_location=device, weights_only=False)
                 # Load encoder state dict
                 encoder_state = {k.removeprefix('encoder.'): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
                 model.encoder.load_state_dict(encoder_state)
@@ -523,7 +517,7 @@ def main():
         np.random.seed(data_seed)
         random.seed(data_seed)
         
-        dataset = ProteinDataset(train_cfg.data_dir, mode=dataset_mode, max_length=model_cfg.max_len - 2) # Reserve 2 positions for BOS/EOS
+        dataset = ProteinDataset(train_cfg.data_dir, mode=dataset_mode, max_length=model_cfg.max_len - 2, verbose=False) # Reserve 2 positions for BOS/EOS
         val_size = max(1, int(0.2 * len(dataset)))
         train_size = len(dataset) - val_size
         train_ds, val_ds = random_split(dataset, [train_size, val_size])

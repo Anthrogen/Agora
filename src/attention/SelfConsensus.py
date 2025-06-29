@@ -201,7 +201,7 @@ class SelfConsensus(nn.Module):
         u_j = u.gather(2, edge_j.unsqueeze(1).unsqueeze(-1).expand(-1, H, -1, D))  # [B, H, E, D]
         
         # Apply RoPE rotation to source nodes
-        u_i = self.rope(u_i=u_i, model_type="SC", edge_i=edge_i, edge_j=edge_j)  # [B, H, E, D]
+        # u_i = self.rope(u_i=u_i, model_type="SC", edge_i=edge_i, edge_j=edge_j)  # [B, H, E, D]
         
         # Compute difference
         diff = u_i - u_j  # [B, H, E, D]

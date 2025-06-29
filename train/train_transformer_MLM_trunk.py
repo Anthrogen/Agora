@@ -50,7 +50,7 @@ from src.losses import cross_entropy_loss, calculate_accuracy
 class ModelConfig:
     """Model architecture configuration."""
     d_model: int = 128 # 768  # Model dimensions
-    n_heads: int = 8 # 12
+    n_heads: int = 1 # 12
     n_layers: int = 3 # 12
     seq_vocab: int = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)  # Sequence tokens + special tokens
     struct_vocab: int = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
@@ -60,7 +60,7 @@ class ModelConfig:
     ff_hidden_dim: int = d_model * ff_mult
     
     # Consensus-specific parameters
-    consensus_num_iterations: int = 5 # Number of Consensus gradient iterations
+    consensus_num_iterations: int = 1 # Number of Consensus gradient iterations
     consensus_connectivity_type: str = "local_window"  # "local_window" or "top_w"
     consensus_w: int = 2  # Window size for local_window, or w value for top_w
     consensus_r: int = 8  # Rank of Lambda_ij matrices
@@ -69,9 +69,9 @@ class ModelConfig:
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_types: List[str] = field(default_factory=lambda: ["SC"]) # Models to train - can be any subset of ["SA", "GA", "RA", "SC"]
+    model_types: List[str] = field(default_factory=lambda: ["SA","GA","RA","SC"]) # Models to train - can be any subset of ["SA", "GA", "RA", "SC"]
     batch_size: int = 4  # Training hyperparameters
-    max_epochs: int = 5
+    max_epochs: int = 50
     learning_rate: float = 1e-5
     num_iter: int = 1  # Number of iterations to repeat training
     masking_strategy: str = "simple" # Masking strategy: 'simple' or 'complex'
@@ -322,7 +322,7 @@ def main():
             # Load checkpoint with dynamic path based on model type
             #TODO: make this configurable; use os.path.join
             encoder_checkpoint_path = f"../checkpoints/fsq/{model_type}_stage_1_iter1_{train_cfg.masking_strategy}.pt"
-            checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
+            checkpoint = torch.load(encoder_checkpoint_path, map_location=device, weights_only=False)
             encoder_state = {k.removeprefix('encoder.'): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
             fsq_config = SimpleNamespace(**checkpoint['model_cfg_dict'])
             fsq_encoder = FSQEncoder(fsq_config)
@@ -352,7 +352,7 @@ def main():
         np.random.seed(data_seed)
         random.seed(data_seed)
         
-        dataset = ProteinDataset(train_cfg.data_dir, max_length=model_cfg.max_len - 2) # Reserve 2 positions for BOS/EOS
+        dataset = ProteinDataset(train_cfg.data_dir, max_length=model_cfg.max_len - 2, verbose=False) # Reserve 2 positions for BOS/EOS
         val_size = max(1, int(0.2 * len(dataset)))
         train_size = len(dataset) - val_size
         train_ds, val_ds = random_split(dataset, [train_size, val_size])

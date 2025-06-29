@@ -24,7 +24,7 @@ def find_members(directory: Path, csv_dir: Path) -> List[List[str]]:
                 continue
 
             rel_path = os.path.relpath(item, csv_dir)
-            rows.append([str(seq_id), "", "", rel_path])
+            rows.insert(0, ["", str(seq_id), rel_path, ""])
 
     return rows
 
