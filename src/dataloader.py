@@ -117,7 +117,7 @@ def _get_training_dataloader(dataset, model_cfg, train_cfg, tracks, device, diff
         assert diffusion_cfg is not None, "Diffusion config is required for discrete diffusion"
         return DiffusionDataLoader(dataset, model_cfg, train_cfg, diffusion_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
     elif train_cfg.masking_strategy == "no_mask":
-        return NoMaskDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
+        return NoMaskDataLoader(dataset, model_cfg, train_cfg, tracks, device, **kwargs)
     else:
         raise ValueError(f"Unknown masking strategy: {train_cfg.masking_strategy}")
     
@@ -214,8 +214,8 @@ class ComplexDataLoader(MaskingDataLoader):
 
 
 class NoMaskDataLoader(MaskingDataLoader):
-    def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-        super(NoMaskDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, min_unmasked=min_unmasked, **kwargs)
+    def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, **kwargs):
+        super(NoMaskDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, **kwargs)
     
     def sample_masks(self, batch):
         for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:

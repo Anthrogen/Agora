@@ -63,13 +63,13 @@ class ModelConfig:
     consensus_num_iterations: int = 1 # Number of Consensus gradient iterations
     consensus_connectivity_type: str = "local_window"  # "local_window" or "top_w"
     consensus_w: int = 2  # Window size for local_window, or w value for top_w
-    consensus_r: int = 8  # Rank of Lambda_ij matrices
-    consensus_edge_hidden_dim: int = 24  # Hidden dim for edge networks
+    consensus_r: int = 24  # Rank of Lambda_ij matrices
+    consensus_edge_hidden_dim: int = 12  # Hidden dim for edge networks
 
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_types: List[str] = field(default_factory=lambda: ["SA","GA","RA","SC"]) # Models to train - can be any subset of ["SA", "GA", "RA", "SC"]
+    model_types: List[str] = field(default_factory=lambda: ["SA","SC"]) # Models to train - can be any subset of ["SA", "GA", "RA", "SC"]
     batch_size: int = 4  # Training hyperparameters
     max_epochs: int = 50
     learning_rate: float = 1e-5
@@ -93,7 +93,7 @@ class TrainingConfig:
 
     data_dir: str = "../sample_data/1k.csv"  # Data paths
     checkpoint_dir: str = "../checkpoints/transformer_trunk"  # Checkpointing
-    reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization across architectures
+    reference_model_seed: int = 23 # Reference model seed for consistent parameter initialization across architectures
 
 def create_model_with_config(model_type: str, base_config: ModelConfig, device: torch.device) -> TransformerTrunk:
     """Create a model with specific first layer type."""
