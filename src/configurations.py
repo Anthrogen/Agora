@@ -3,175 +3,231 @@ from dataclasses import dataclass
 from typing import List, Optional, Any
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from dataclasses import dataclass, field
+import os
 
 @dataclass
-class TransformerConfig:
+class Config:
+    pass
+
+@dataclass
+class TransformerConfig(Config):
     """Model architecture configuration."""
+
+    style:                          str = None
+
     d_model:                        int # 768  # Model dimensions
     n_heads:                        int  # 12
     n_layers:                       int  # 12
-    seq_vocab:                      int   # Sequence tokens + special tokens
-    struct_vocab:                   int   # FSQ tokens + special tokens
+
     max_len:                        int 
     dropout:                        float   # Other architecture params
     ff_mult:                        int 
                                      
-    
-    # Consensus-specific parameters
-    consensus_num_iterations:       int = None # Number of consensus gradient iterations
-    consensus_connectivity_type:    str = None # "local_window" or "top_w"
-    consensus_w:                    int = None  # Window size for local_window, or w value for top_w
-    consensus_r:                    int = None  # Rank of Lambda_ij matrices
-    consensus_edge_hidden_dim:      int = None # Hidden dim for edge networks
+    # # Consensus-specific parameters
+    # consensus_num_iterations:       int = None # Number of consensus gradient iterations
+    # consensus_connectivity_type:    str = None # "local_window" or "top_w"
+    # consensus_w:                    int = None  # Window size for local_window, or w value for top_w
+    # consensus_r:                    int = None  # Rank of Lambda_ij matrices
+    # consensus_edge_hidden_dim:      int = None # Hidden dim for edge networks
+    first_block_config:               BlockConfig = None
 
-    def __post_init__(self):
-        self.ff_hidden_dim: int = self.d_model * self.ff_mult
-        assert self.d_model > 0
-        assert self.n_heads > 0
-        assert self.n_layers > 0
-        assert self.seq_vocab > 0
-        assert self.struct_vocab > 0
-        assert self.max_len > 0
-
-
-@dataclass
-class FsqConfig:
-    """Model architecture configuration."""
-    # FSQ parameters
-    fsq_dim:                        int 
-
-    # Transformer parameters
-    model_type:                     Optional[str] # Placeholder for model type
-    d_model:                        int  # 768  # Model dimensions
-    latent_dim:                     int 
-    n_heads:                        int  # 12
-    n_layers:                       int  # 12
+    # TODO: These need to go.  seq_vocab should come from voacbulary.py and struuct_vocab should come from the FSQEncoder object.
     seq_vocab:                      int   # Sequence tokens + special tokens
     struct_vocab:                   int   # FSQ tokens + special tokens
-    max_len:                        int 
-    dropout:                        float   # Other architecture params
-    ff_mult:                        int
-                                    
-    # Consensus-specific parameters
-    consensus_num_iterations:       int   # Number of consensus gradient iterations
-    consensus_connectivity_type:    str   # "local_window" or "top_w"
-    consensus_w:                    int   # Window size for local_window, or w value for top_w
-    consensus_r:                    int   # Rank of Lambda_ij matrices
-    consensus_edge_hidden_dim:      int   # Hidden dim for edge networks
-
-    fsq_levels:                     list[int] = field(default_factory=lambda: [7, 5, 5, 5, 5])
-    # TOOD: needs to be in training_configuration
-    stage:                          str = "stage_1" # "stage_1" or "stage_2"
-    fsq_encoder:                    Optional[Any] = None
 
     def __post_init__(self):
-        self.ff_hidden_dim = self.d_model * self.ff_mult
+        assert self.style in ('stage_1', 'stage_2', 'mlm', 'discrete_diffusion')
+        self.ff_hidden_dim: int = self.d_model * self.ff_mult
+
+        assert isinstance(self.d_model, int) and self.d_model > 0
+        assert isinstance(self.n_heads, int) and self.n_heads > 0
+        assert isinstance(self.n_layers, int) and self.n_layers > 0
+
+        assert isinstance(self.max_len, int) and self.max_len > 0
+        assert isinstance(self.first_block_config, BlockConfig)
+
+        # TODO: get rid of
+        assert self.seq_vocab > 0
+        assert self.struct_vocab > 0
 
 
 @dataclass
-class TrainingConfig:
+class TrunkConfig(TransformerConfig):
+    """Trunk model configuration."""
+    fsq_encoder_path:                  str = None
+
+    def __post_init__(self):
+        assert self.style in ('mlm', 'discrete_diffusion')
+        assert self.fsq_encoder_path is not None and os.path.exists(self.fsq_encoder_path)
+
+@dataclass
+class FSQConfig(TransformerConfig):
+    """Model architecture configuration."""
+
+    # Transformer parameters
+    latent_dim:                     int = None # pre-quantized CONTINUOUS latent dimension.
+
+    fsq_levels:                     list[int] = None # codebook
+    fsq_encoder_path:               str = None
+
+    def __post_init__(self):
+
+        self.fsq_dim = len(self.fsq_levels)
+
+        assert self.fsq_dim > 0
+        assert self.latent_dim > 0
+        assert len(self.fsq_levels) > 0
+        for l in self.fsq_levels:
+            assert l > 0
+
+        # Should this just be in training config?
+        assert self.style in ('stage_1', 'stage_2')
+        
+        if self.style == 'stage_2':
+            assert self.fsq_encoder_path is not None and os.path.exists(self.fsq_encoder_path)
+            # TODO: check that the codebook of this FSQencoder object matches the codebook provided above.
+
+@dataclass
+class TrainingConfig(Config):
     """Training process configuration."""
     # Model types should be in models configuration...
-    model_types:                  List[str]  = None# Models to train - can be any subset of ["SA", "GA", "RA", "SC"]
     batch_size:                   int = None # Training hyperparameters
     max_epochs:                   int = None
     learning_rate:                float = None
-    num_iter:                     int  = None# Number of iterations to repeat training
     
-    masking_strategy:             str = None
-    # for masking_strategy = "simple":
-
-
-
-    # for masking_strategy = "complex"
-
-
+    mask_config:                  MaskConfig = None
+    loss_config:                  LossConfig = None
 
     data_dir:                     str = None  # Data paths
     checkpoint_dir:               str = None   # Checkpointing
-    reference_model_seed:         int=1234  # Reference model seed for consistent parameter initialization across architectures
+
 
     #########################################################
 
+    # num_iter
+    # get rid fo num_iter and absorb into the training wrapper (possibly shell script.)
+    # # TODO: remove entirely and incorporate into model_librarian.py
+    # # TODO: use os.path.join instead of /.
+    # # Model paths (models in /scripts/checkpoints)
+    # simple_checkpoint_pattern:    str = None
+    # complex_checkpoint_pattern:   str = None
+    # discrete_diffusion_checkpoint_pattern: str = None
+    
+    # # FSQ encoder paths (in /checkpoints, not /scripts/checkpoints)
+    # # this hsould just be in the ModelConfig object.
+    # # fsq_encoder_pattern:          str = None
 
-    # Optional parameters:
-    mask_prob_seq:                float  = None # Masking probability for sequence tokens
-    mask_prob_coords:             float  = None # Masking probability for structure tokens
+    # # we'll worry about validation later.
+    # # maybe we can have a "pseudo-diffusion-masker" config object that is derived from MaskConfig
+    # # Here only because of validation_trunk.py.  We NEED to get these out of here ASAP.
+    # time_indices:                 list[int] = None # TODO: move into DiffusionConfig or elsewhere.  Perhaps into MaskConfig?
+    # # Time indices to evaluate (directly specified)
+    # training_methods:             list[Any] = None
 
-    # TODO: should be incorporated into FSQEncoder training where possible.
-    # Or should there be an entirely new object for training the FSQ?
-    seq_loss_weight:              float = None  # sequence loss weight - simple: 1.0
-    struct_loss_weight:           float = None  # structure loss weight - simple: 1.0
+
+    def __post_init__(self):
+        assert isinstance(self.batch_size, int) and self.batch_size > 0
+        assert isinstance(self.max_epochs, int) and self.max_epochs > 0
+        assert isinstance(self.learning_rate, float) and self.learning_rate > 0
+
+        assert isinstance(self.mask_config, MaskConfig)
+        assert isinstance(self.loss_config, LossConfig)
+
+        assert self.data_dir is not None and os.path.exists(self.data_dir), f"Data directory {self.data_dir} does not exist."
+        assert self.checkpoint_dir is not None and os.path.exists(self.checkpoint_dir), f"Checkpoint directory {self.checkpoint_dir} does not exist."
+        
+################################################################################
+# Training Loss Function Configurations
+################################################################################
+@dataclass
+class LossConfig:
+    """Model configuration."""
+    pass
+
+@dataclass
+class CrossEntropyLossConfig(LossConfig):
+    """Cross-entropy loss configuration."""
+    seq_loss_weight: float = None
+    struct_loss_weight: float = None
 
     # Cross-entropy loss function: which elements should contribute to the loss?
     # "masked": only masked positions
     # "non_beospank": all non-BOS/EOS/PAD/UNK positions, including masks
-    ce_loss_function_elements:    str = None
-
-    # TODO: remove entirely and incorporate into model_librarian.py
-    # TODO: use os.path.join instead of /.
-    # Model paths (models in /scripts/checkpoints)
-    simple_checkpoint_pattern:    str = None
-    complex_checkpoint_pattern:   str = None
-    discrete_diffusion_checkpoint_pattern: str = None
-    
-    # FSQ encoder paths (in /checkpoints, not /scripts/checkpoints)
-    fsq_encoder_pattern:          str = None
-
-    # Here only because of validation_trunk.py.  We NEED to get these out of here ASAP.
-    time_indices:                 list[int] = None # TODO: move into DiffusionConfig or elsewhere.  Perhaps into MaskingConfig?
-    # Time indices to evaluate (directly specified)
-    training_methods:             list[Any] = None
-
+    # "non_special": all non-special tokens.  Special includes BOS, EOS, PAD, UNK, MASK.
+    loss_elements:    str = None
 
     def __post_init__(self):
-        # Bascially assert that nothing is None, except for optional arugments
-            
-        # if self.masking_strategy == 'simple':
-        #     assert self.mask_prob_seq is not None and self.mask_prob_coords is not None
+        assert self.seq_loss_weight is not None
+        assert self.struct_loss_weight is not None
+        assert self.loss_elements in ('masked', 'non_beospank', 'non_special')
 
-        # assert self.masking_strategy in ('simple', 'complex', 'discrete_diffusion')
-        # if self.ce_loss_function_elements is not None:
-        #     assert self.ce_loss_function_elements in ('masked', 'non_beospank')
-
-        # for mt in self.model_types:
-        #     assert mt in ('SA', 'GA', 'RA', 'C')
-
-        # assert self.batch_size > 0
-        # assert self.max_epochs > 0
-        # assert self.learning_rate > 0
-        # assert self.num_iter > 0
-        pass
-        
 @dataclass
-class DiffusionConfig:
+class KabschRMSDLossConfig(LossConfig):
+    """Kabsch RMSD loss configuration."""
+    # Cross-entropy loss function: which elements should contribute to the loss?
+    # "masked": only masked positions
+    # "non_beospank": all non-BOS/EOS/PAD/UNK positions, including masks
+    # "non_special": all non-special tokens.  Special includes BOS, EOS, PAD, UNK, MASK.
+    # 'non_masked': all positions excluding mask.
+    rmsd_elements:    str = None
+
+    def __post_init__(self):
+        assert self.rmsd_elements in ('masked', 'non_beospank', 'non_special', 'non_masked')
+    
+
+
+# Note: DiffusionConfig is a subclass of LossConfig, included in the "MaskConfig" section.
+
+
+################################################################################
+# Masking Configurations
+################################################################################
+@dataclass
+class MaskConfig:
+    """Noise configuration."""
+    pass
+
+@dataclass
+class SimpleMaskConfig(MaskConfig):
+    """Simple noise configuration."""
+    mask_prob_seq:        float = None
+    mask_prob_struct:     float = None
+
+@dataclass
+class ComplexMaskConfig(MaskConfig):
+    """Complex noise configuration."""
+    pass
+
+@dataclass
+class NoMaskConfig(MaskConfig):
+    pass
+
+@dataclass
+class DiffusionConfig(MaskConfig, LossConfig):
     """Discrete diffusion configuration."""
     # Noise schedule parameters
     noise_schedule:        str  # Type of noise schedule ("linear", "inverted_u", or "uniform")
     sigma_min:             float  # Minimum noise level
     sigma_max:             float  # Maximum noise level
     num_timesteps:         int  # Number of discrete timesteps for training
-    
-    # Absorbing state tokens (using MASK token index)
-    seq_absorb_token:      int
-    struct_absorb_token:   int
 
     def __post_init__(self):
         assert self.noise_schedule in ('linear', 'inverted_u', 'uniform')
         assert self.sigma_min > 0
         assert self.sigma_max > 0
         assert self.num_timesteps > 0
-        assert self.seq_absorb_token is not None
-        assert self.struct_absorb_token is not None
 
 
-
+################################################################################
+# Transformer Block Configurations
+################################################################################
 @dataclass
-class AttentionConfig:
-    """Attention configuration."""
+class BlockConfig():
+    """Transformer block configuration."""
     pass
 
-class SelfConsensusConfig(AttentionConfig):
+@dataclass
+class SelfConsensusConfig(BlockConfig):
     """SelfConsensus configuration."""
     # Consensus-specific parameters
     consensus_num_iterations:       int   # Number of consensus gradient iterations
@@ -180,14 +236,24 @@ class SelfConsensusConfig(AttentionConfig):
     consensus_r:                    int   # Rank of Lambda_ij matrices
     consensus_edge_hidden_dim:      int   # Hidden dim for edge networks
 
-class ReflexiveAttentionConfig(AttentionConfig):
+    def __post_init__(self):
+        assert self.consensus_num_iterations > 0
+        assert self.consensus_connectivity_type in ('local_window', 'top_w')
+        assert self.consensus_w > 0
+        assert self.consensus_r > 0
+        assert self.consensus_edge_hidden_dim > 0
+
+@dataclass
+class ReflexiveAttentionConfig(BlockConfig):
     """Reflexive attention configuration."""
     pass
 
-class SelfAttentionConfig(AttentionConfig):
+@dataclass
+class SelfAttentionConfig(BlockConfig):
     pass
 
-class GeometricAttentionConfig(AttentionConfig):
+@dataclass
+class GeometricAttentionConfig(BlockConfig):
     pass
 
 class ConfigurationError(Exception):

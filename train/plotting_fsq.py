@@ -132,7 +132,7 @@ if __name__ == "__main__":
     checkpoint_dir = "../checkpoints/fsq"  # Relative to train folder
     model_types = ["SA", "GA", "RA", "SC"]  # Including SC for SelfConsensus
     stage = "stage_1"  # Can be "stage_1" or "stage_2"
-    masking_strategy = "simple"  # Can be "simple", "complex", or "discrete_diffusion"
+    masking_strategy = "discrete_diffusion"  # Can be "simple", "complex", or "discrete_diffusion"
     loss_output_file = f"validation_losses_{stage}_{masking_strategy}.png"
     
     # Create the plots

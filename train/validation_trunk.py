@@ -32,12 +32,12 @@ from src.dataloader import _get_noise_levels
 # Import functions from training scripts
 from train_transformer_discrete_diffusion_trunk import (
     ModelConfig as DiffusionModelConfig, DiffusionConfig, 
-    validate_step as diffusion_validate_step,
-    create_model_with_config as create_diffusion_model
+    create_model_with_config as create_diffusion_model,
+    discrete_diffusion_step
 )
 from train_transformer_MLM_trunk import (
     ModelConfig as MLMModelConfig,
-    validate_step as mlm_validate_step,
+    mlm_step,
     create_model_with_config as create_mlm_model
 )
 
@@ -45,7 +45,7 @@ from train_transformer_MLM_trunk import (
 class TrainingConfig:
     """Configuration for validation."""
     # Model type to evaluate (single selection)
-    model_type: str = "SA"  # Options: "SA", "GA", "RA", "SC"
+    model_type: str = "SC"  # Options: "SA", "GA", "RA", "SC"
     
     # Masking strategy and parameters
     masking_strategy: str = "simple"
@@ -56,10 +56,10 @@ class TrainingConfig:
     time_indices: List[int] = field(default_factory=lambda: [0,9,19,29,39,49,59,69,79,89,99])
     
     # Training methods to evaluate (any combination)
-    training_methods: List[str] = field(default_factory=lambda: ["simple", "complex", "diffusion"])
+    training_methods: List[str] = field(default_factory=lambda: ["simple", "complex", "discrete_diffusion"])
     
     # Data settings
-    data_dir: str = "../sample_data/100"
+    data_dir: str = "../sample_data/1k.csv"
     batch_size: int = 4
 
     # Loss weights
@@ -75,7 +75,7 @@ class TrainingConfig:
     # Model paths (models in /scripts/checkpoints)
     simple_checkpoint_pattern: str = "../checkpoints/transformer_trunk/{}_simple_iter1_final.pt"
     complex_checkpoint_pattern: str = "../checkpoints/transformer_trunk/{}_complex_iter1_final.pt"
-    diffusion_checkpoint_pattern: str = "../checkpoints/transformer_trunk/{}_discrete_diffusion_iter1_final.pt"
+    discrete_diffusion_checkpoint_pattern: str = "../checkpoints/transformer_trunk/{}_discrete_diffusion_iter1_final.pt"
     
     # FSQ encoder paths (in /checkpoints, not /scripts/checkpoints)
     fsq_encoder_pattern: str = "../checkpoints/fsq/{}_stage_1_iter1_{}.pt"
@@ -87,7 +87,7 @@ class TrainingConfig:
             raise ValueError(f"Invalid model_type: {self.model_type}. Must be one of {valid_types}")
         
         # Validate training methods
-        valid_methods = {"simple", "complex", "diffusion"}
+        valid_methods = {"simple", "complex", "discrete_diffusion"}
         for method in self.training_methods:
             if method not in valid_methods:
                 raise ValueError(f"Invalid training method: {method}. Must be one of {valid_methods}")
@@ -114,7 +114,7 @@ def load_model_checkpoint(checkpoint_path: str, model_type: str, training_method
                          fsq_encoder_pattern: str = None) -> Tuple[TransformerTrunk, Optional[FSQEncoder]]:
     """Load a model from checkpoint."""
     # Check if this is a diffusion model based on the training method
-    is_diffusion = training_method == 'diffusion'
+    is_diffusion = training_method == 'discrete_diffusion'
     
     # Fix pickle loading by temporarily setting ModelConfig in global namespace
     import __main__
@@ -158,7 +158,7 @@ def load_model_checkpoint(checkpoint_path: str, model_type: str, training_method
     fsq_encoder = None
     if fsq_encoder_pattern:
         # Map training method to the FSQ encoder suffix
-        if training_method == 'diffusion':
+        if training_method == 'discrete_diffusion':
             encoder_suffix = 'discrete_diffusion'
         else:
             encoder_suffix = training_method  # 'simple' or 'complex'
@@ -168,7 +168,7 @@ def load_model_checkpoint(checkpoint_path: str, model_type: str, training_method
         if not os.path.exists(encoder_checkpoint_path):
             raise FileNotFoundError(f"FSQ encoder not found at: {encoder_checkpoint_path}")
         
-        encoder_checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
+        encoder_checkpoint = torch.load(encoder_checkpoint_path, map_location=device, weights_only=False)
         encoder_state = {k.removeprefix('encoder.'): v for k, v in encoder_checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
         fsq_config = SimpleNamespace(**encoder_checkpoint['model_cfg_dict']) 
         fsq_encoder = FSQEncoder(fsq_config)
@@ -180,13 +180,13 @@ def load_model_checkpoint(checkpoint_path: str, model_type: str, training_method
     
     return model, fsq_encoder
 
-def evaluate_mlm_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, train_cfg: TrainingConfig) -> Dict[str, float]:
+def evaluate_mlm_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, model_cfg: ModelConfig, train_cfg: TrainingConfig) -> Dict[str, float]:
     """Evaluate an MLM model using cross-entropy loss on a single batch."""
     with torch.no_grad():
-        retval = mlm_validate_step({model_type : model}, batch, train_cfg)
+        retval = mlm_step({model_type : model}, optimizer=None, batch=batch, model_cfg=model_cfg, train_cfg=train_cfg, train_mode=False)
         return retval[model_type]
 
-def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, timestep: int, model_cfg_for_eval: DiffusionModelConfig, diffusion_cfg: DiffusionConfig,
+def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, timestep: int, model_cfg: ModelConfig, diffusion_cfg: DiffusionConfig,
                            train_cfg: TrainingConfig, device: torch.device) -> Dict[str, float]:
     """Evaluate a diffusion model using score entropy loss on a single batch."""
 
@@ -207,7 +207,7 @@ def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, model_
     batch.metadata['pseudo_inst_noise'] = pseudo_inst_noise.to(device)
 
     with torch.no_grad():
-        retval = diffusion_validate_step({model_type: model}, batch, model_cfg_for_eval, train_cfg)
+        retval = discrete_diffusion_step({model_type: model}, optimizer=None, batch=batch, model_cfg=model_cfg, train_cfg=train_cfg, train_mode=False)
         return retval[model_type]
 
 
@@ -230,15 +230,7 @@ def main(custom_config: Optional[TrainingConfig] = None):
     print(f"Training methods to evaluate: {train_cfg.training_methods}")
     
     # Results storage
-    results = {
-        'time_index': [],
-        'mask_prob': [],
-        'model_type': [],
-        'training_method': [],
-        'loss': [],
-        'seq_loss': [],
-        'struct_loss': []
-    }
+    results = {'time_index': [], 'mask_prob': [], 'model_type': [], 'training_method': [], 'loss': [], 'seq_loss': [], 'struct_loss': []}
     
     # Evaluate each time index
     for t_idx in train_cfg.time_indices:
@@ -247,7 +239,6 @@ def main(custom_config: Optional[TrainingConfig] = None):
         print(f"\n{'='*60}")
         print(f"Time index t={t_idx}, mask probability={mask_prob:.3f}")
         print(f"{'='*60}")
-        
         print(f"\nEvaluating {train_cfg.model_type} models...")
         
         # Set mask probabilities for this time index
@@ -273,27 +264,14 @@ def main(custom_config: Optional[TrainingConfig] = None):
             model, fsq_encoder = load_model_checkpoint(checkpoint_path, train_cfg.model_type, training_method, device, train_cfg.fsq_encoder_pattern)
             
             # Use appropriate model config
-            if training_method in ['simple', 'complex']:
-                model_cfg_for_eval = mlm_model_cfg
-            else:
-                model_cfg_for_eval = diffusion_model_cfg
+            if training_method in ['simple', 'complex']: model_cfg = mlm_model_cfg
+            else: model_cfg = diffusion_model_cfg
             
             # Add generator for reproducible validation
             val_generator = torch.Generator()
             val_generator.manual_seed(42)  # or any fixed seed
 
-            val_loader = _get_training_dataloader(
-                dataset=dataset, 
-                model_cfg=model_cfg_for_eval, 
-                train_cfg=train_cfg, 
-                tracks=tracks, 
-                device=device, 
-                min_unmasked=min_unmasked, 
-                fsq_encoder=fsq_encoder,
-                batch_size=train_cfg.batch_size,
-                shuffle=False,
-                generator=val_generator
-            )
+            val_loader = _get_training_dataloader(dataset=dataset, model_cfg=model_cfg, train_cfg=train_cfg, tracks=tracks, device=device, min_unmasked=min_unmasked, fsq_encoder=fsq_encoder, shuffle=False, batch_size=train_cfg.batch_size, generator=val_generator)
             
             # Evaluate model using unified approach - loop over batches
             all_metrics = {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0}
@@ -303,14 +281,13 @@ def main(custom_config: Optional[TrainingConfig] = None):
                 # Call appropriate evaluation function based on training method
                 if training_method in ['simple', 'complex']:
                     # MLM models use cross-entropy loss
-                    batch_metrics = evaluate_mlm_model(model, batch, train_cfg.model_type, train_cfg)
+                    batch_metrics = evaluate_mlm_model(model, batch, train_cfg.model_type, model_cfg, train_cfg)
                 else:
-                    # Diffusion models use score entropy loss
-                    batch_metrics = evaluate_diffusion_model(model, batch, train_cfg.model_type, t_idx, model_cfg_for_eval, diffusion_cfg, train_cfg, device)
+                    # Discrete diffusion models use score entropy loss
+                    batch_metrics = evaluate_diffusion_model(model, batch, train_cfg.model_type, t_idx, model_cfg, diffusion_cfg, train_cfg, device)
                 
                 # Accumulate metrics
-                for key in all_metrics:
-                    all_metrics[key] += batch_metrics[key]
+                for key in all_metrics: all_metrics[key] += batch_metrics[key]
                 num_batches += 1
             
             # Average metrics
@@ -326,9 +303,8 @@ def main(custom_config: Optional[TrainingConfig] = None):
             results['struct_loss'].append(metrics['loss_struct'])
             
             # Print results
-            loss_type = "Score Entropy" if training_method == 'diffusion' else "Cross Entropy"
-            print(f"    {training_method.capitalize()} - {loss_type} Loss: {metrics['loss']:.4f} "
-                  f"(Seq: {metrics['loss_seq']:.4f}, Struct: {metrics['loss_struct']:.4f})")
+            loss_type = "Score Entropy" if training_method == 'discrete_diffusion' else "Cross Entropy"
+            print(f"    {training_method.capitalize()} - {loss_type} Loss: {metrics['loss']:.4f} (Seq: {metrics['loss_seq']:.4f}, Struct: {metrics['loss_struct']:.4f})")
     
     # Save results to CSV
     results_df = pd.DataFrame(results)
@@ -343,7 +319,7 @@ def main(custom_config: Optional[TrainingConfig] = None):
     method_styles = {
         'simple': {'color': 'blue', 'marker': 'o', 'label': 'Simple MLM'},
         'complex': {'color': 'green', 'marker': 's', 'label': 'Complex MLM'},
-        'diffusion': {'color': 'red', 'marker': '^', 'label': 'Discrete Diffusion'}
+        'discrete_diffusion': {'color': 'red', 'marker': '^', 'label': 'Discrete Diffusion'}
     }
     
     # Plot 1: Mask Percentage vs Sequence Loss
@@ -359,9 +335,7 @@ def main(custom_config: Optional[TrainingConfig] = None):
             seq_losses = method_data['seq_loss'].values
             
             style = method_styles.get(training_method, {'color': 'black', 'marker': 'x', 'label': training_method})
-            ax1.plot(mask_percentages, seq_losses, 
-                    color=style['color'], marker=style['marker'], 
-                    linewidth=2, markersize=8, label=style['label'])
+            ax1.plot(mask_percentages, seq_losses, color=style['color'], marker=style['marker'], linewidth=2, markersize=8, label=style['label'])
     
     ax1.legend(fontsize=11)
     ax1.set_xlim(0, 100)
@@ -379,9 +353,7 @@ def main(custom_config: Optional[TrainingConfig] = None):
             struct_losses = method_data['struct_loss'].values
             
             style = method_styles.get(training_method, {'color': 'black', 'marker': 'x', 'label': training_method})
-            ax2.plot(mask_percentages, struct_losses, 
-                    color=style['color'], marker=style['marker'], 
-                    linewidth=2, markersize=8, label=style['label'])
+            ax2.plot(mask_percentages, struct_losses, color=style['color'], marker=style['marker'], linewidth=2, markersize=8, label=style['label'])
     
     ax2.legend(fontsize=11)
     ax2.set_xlim(0, 100)
@@ -401,12 +373,13 @@ def main(custom_config: Optional[TrainingConfig] = None):
     print("="*80)
     
     print(f"\n{train_cfg.model_type}:")
-    for training_method in ['simple', 'complex', 'diffusion']:
+    for training_method in ['simple', 'complex', 'discrete_diffusion']:
         mask = (results_df['model_type'] == train_cfg.model_type) & (results_df['training_method'] == training_method)
         if mask.any():
             avg_loss = results_df[mask]['loss'].mean()
-            loss_type = "Score Entropy" if training_method == 'diffusion' else "Cross Entropy"
-            print(f"  {training_method.capitalize():10s} - Avg {loss_type} Loss: {avg_loss:.4f}")
+            loss_type = "Score Entropy" if training_method == 'discrete_diffusion' else "Cross Entropy"
+            method_display = training_method.capitalize()
+            print(f"  {method_display:17s} - Avg {loss_type} Loss: {avg_loss:.4f}")
 
 if __name__ == "__main__":
     main() 

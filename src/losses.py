@@ -4,10 +4,73 @@ import torch.nn.functional as F
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 
 # --------------------------------------------------------------------------- #
-#  Discrete Diffusion Utilities                                                #
+#  MLM Utilities                                                              #
 # --------------------------------------------------------------------------- #
+def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, loss_elements: torch.Tensor) -> float:
+    """Calculate accuracy for masked positions only."""
+    B, L, V = logits.shape
+    content_logits = logits[:,:,:V-len(SPECIAL_TOKENS)]
+    predictions = torch.argmax(content_logits, dim=-1)
+    correct = (predictions == labels) & loss_elements
 
+    num_loss_elements = torch.sum(loss_elements.float())
 
+    if num_loss_elements == 0.0:
+        return None
+
+    # Just return the unconditioned sample mean.
+    # Not everything has to be complicated.
+
+    retval = torch.sum(correct.float()) / num_loss_elements
+    assert not retval.isnan()
+
+    return retval
+
+def cross_entropy_loss(logits, labels, loss_elements):
+    """
+    Logits is (B,L,V)
+    Labels (B,L), each element of which is in [0,V)
+    Loss elements is a boolean (B,L) tensor that denotes which elements contribute to the loss.
+    """
+    
+    B, L, V = logits.shape
+    assert labels.shape == (B, L)
+    assert loss_elements.shape == (B, L)
+
+    logits = logits.clone()
+    num_content_tokens = V - len(SPECIAL_TOKENS)
+    logits_content = logits[:,:,:num_content_tokens]
+    nlls = -torch.log_softmax(logits_content, dim=-1)
+
+    # DO NOT set special tokens to have -inf values.  After the gather operation, these will be zeroed out
+    #  when multiplied by loss_elements.  Zero times infinity is NaN!!!
+    special_nlls = torch.full((B, L, len(SPECIAL_TOKENS)), -1, device=logits.device)
+    nlls = torch.cat([nlls,special_nlls], dim=2)
+
+    # Calculate the pdf over V for each element of (B,L)
+    # For Odyssey 1, we shall softmax over only the content tokens of V -- we do not include the special tokens.
+    entropies = torch.gather(nlls, dim=2, index=labels.unsqueeze(-1)).squeeze(-1)
+    values = entropies * loss_elements.float()
+
+    assert not (values < 0).any()
+
+    per_row_sum = values.sum(dim=1)
+    per_row_denom = loss_elements.float().sum(dim=1)
+  
+    # We need to normalize each row by the number of elements that contribute to the loss within that row.
+    # For some rows, this will be zero.  We cannot normalize by zero, but the good news is 
+    # the numerator will be zero for these rows too, so we can divide by anything you want
+    # and the quotient will just be zero.
+    # Clamp this denominator to be one at the minimum.
+    per_row_average = per_row_sum / per_row_denom.clamp(min=1.0)
+
+    retval = torch.mean(per_row_average)
+    assert not torch.isnan(retval).any()
+    return retval
+
+# --------------------------------------------------------------------------- #
+#  Discrete Diffusion Utilities                                               #
+# --------------------------------------------------------------------------- #
 def score_entropy_loss(output, x_0, x_t, cumulative_noise_levels, inst_noise_levels, mask_token, valid_mask):
     """
     Score entropy loss from SEDD paper.
@@ -92,75 +155,9 @@ def score_entropy_loss(output, x_0, x_t, cumulative_noise_levels, inst_noise_lev
     per_protein = per_residue_masked.sum(dim=1) / valid_counts  # (B,)
 
     return per_protein.mean(0) # scalar
-
-
-def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, loss_elements: torch.Tensor) -> float:
-    """Calculate accuracy for masked positions only."""
-    B, L, V = logits.shape
-    content_logits = logits[:,:,:V-len(SPECIAL_TOKENS)]
-    predictions = torch.argmax(content_logits, dim=-1)
-    correct = (predictions == labels) & loss_elements
-
-    num_loss_elements = torch.sum(loss_elements.float())
-
-    if num_loss_elements == 0.0:
-        return None
-
-    # Just return the unconditioned sample mean.
-    # Not everything has to be complicated.
-
-    retval = torch.sum(correct.float()) / num_loss_elements
-    assert not retval.isnan()
-
-    return retval
-
-
-
-def cross_entropy_loss(logits, labels, loss_elements):
-    """
-    Logits is (B,L,V)
-    Labels (B,L), each element of which is in [0,V)
-    Loss elements is a boolean (B,L) tensor that denotes which elements contribute to the loss.
-    """
-    
-    B, L, V = logits.shape
-    assert labels.shape == (B, L)
-    assert loss_elements.shape == (B, L)
-
-    logits = logits.clone()
-    num_content_tokens = V - len(SPECIAL_TOKENS)
-    logits_content = logits[:,:,:num_content_tokens]
-    nlls = -torch.log_softmax(logits_content, dim=-1)
-
-    # DO NOT set special tokens to have -inf values.  After the gather operation, these will be zeroed out
-    #  when multiplied by loss_elements.  Zero times infinity is NaN!!!
-    special_nlls = torch.full((B, L, len(SPECIAL_TOKENS)), -1, device=logits.device)
-    nlls = torch.cat([nlls,special_nlls], dim=2)
-
-    # Calculate the pdf over V for each element of (B,L)
-    # For Odyssey 1, we shall softmax over only the content tokens of V -- we do not include the special tokens.
-    entropies = torch.gather(nlls, dim=2, index=labels.unsqueeze(-1)).squeeze(-1)
-    values = entropies * loss_elements.float()
-
-    assert not (values < 0).any()
-
-    per_row_sum = values.sum(dim=1)
-    per_row_denom = loss_elements.float().sum(dim=1)
-  
-    # We need to normalize each row by the number of elements that contribute to the loss within that row.
-    # For some rows, this will be zero.  We cannot normalize by zero, but the good news is 
-    # the numerator will be zero for these rows too, so we can divide by anything you want
-    # and the quotient will just be zero.
-    # Clamp this denominator to be one at the minimum.
-    per_row_average = per_row_sum / per_row_denom.clamp(min=1.0)
-
-    retval = torch.mean(per_row_average)
-    assert not torch.isnan(retval).any()
-    return retval
-
     
 # --------------------------------------------------------------------------- #
-#  FSQ and MLM Utilities                                                      #
+#  FSQ Utilities                                                              #
 # --------------------------------------------------------------------------- #
 def mse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """

@@ -2,6 +2,13 @@
 Plot validation losses for different first layer types.
 Loads CSV files saved by train_transformer.py and creates comparison plots
 with 95% confidence intervals on a log scale.
+
+Supports different masking strategies:
+- simple: Files named {model_type}_simple_seq_val_loss.csv, {model_type}_simple_struct_val_loss.csv
+- complex: Files named {model_type}_complex_seq_val_loss.csv, {model_type}_complex_struct_val_loss.csv  
+- discrete_diffusion: Files named {model_type}_discrete_diffusion_seq_val_loss.csv, {model_type}_discrete_diffusion_struct_val_loss.csv
+
+Falls back to legacy naming patterns for backward compatibility.
 """
 import numpy as np
 import matplotlib.pyplot as plt
@@ -9,28 +16,38 @@ from pathlib import Path
 import scipy.stats as stats
 
 
-def load_validation_loss_data(checkpoint_dir: str, first_layer: str):
-    """Load validation loss data for a given first layer type."""
-    # Primary file naming pattern
-    seq_csv_path = Path(checkpoint_dir) / f"{first_layer}_sequence_val_loss.csv"
-    struct_csv_path = Path(checkpoint_dir) / f"{first_layer}_structure_val_loss.csv"
+def load_validation_loss_data(checkpoint_dir: str, first_layer: str, masking_strategy: str = None):
+    """Load validation loss data for a given first layer type and masking strategy."""
     
-    # Check if files exist with primary pattern
-    if seq_csv_path.exists() and struct_csv_path.exists():
-        # Load data, skipping header rows
-        seq_loss = np.loadtxt(seq_csv_path, delimiter=',', comments='#')
-        struct_loss = np.loadtxt(struct_csv_path, delimiter=',', comments='#')
-        return seq_loss, struct_loss
+    # Try different naming patterns based on masking strategy
+    patterns_to_try = []
     
-    # Try alternative naming pattern
-    seq_csv_path = Path(checkpoint_dir) / f"{first_layer}_seq_val_loss.csv"
-    struct_csv_path = Path(checkpoint_dir) / f"{first_layer}_struct_val_loss.csv"
+    if masking_strategy:
+        # Primary pattern with masking strategy
+        patterns_to_try.append((
+            f"{first_layer}_{masking_strategy}_seq_val_loss.csv",
+            f"{first_layer}_{masking_strategy}_struct_val_loss.csv"
+        ))
     
-    # Load data, skipping header rows
-    seq_loss = np.loadtxt(seq_csv_path, delimiter=',', comments='#')
-    struct_loss = np.loadtxt(struct_csv_path, delimiter=',', comments='#')
+    # Fallback patterns for backward compatibility
+    patterns_to_try.extend([
+        (f"{first_layer}_sequence_val_loss.csv", f"{first_layer}_structure_val_loss.csv"),
+        (f"{first_layer}_seq_val_loss.csv", f"{first_layer}_struct_val_loss.csv")
+    ])
     
-    return seq_loss, struct_loss
+    # Try each pattern until we find files that exist
+    for seq_filename, struct_filename in patterns_to_try:
+        seq_csv_path = Path(checkpoint_dir) / seq_filename
+        struct_csv_path = Path(checkpoint_dir) / struct_filename
+        
+        if seq_csv_path.exists() and struct_csv_path.exists():
+            # Load data, skipping header rows
+            seq_loss = np.loadtxt(seq_csv_path, delimiter=',', comments='#')
+            struct_loss = np.loadtxt(struct_csv_path, delimiter=',', comments='#')
+            return seq_loss, struct_loss
+    
+    # If we get here, no files were found
+    raise FileNotFoundError(f"Could not find validation loss files for {first_layer} with masking strategy {masking_strategy}")
 
 
 def calculate_confidence_interval(data, confidence=0.95):
@@ -52,6 +69,7 @@ def calculate_confidence_interval(data, confidence=0.95):
 
 def plot_validation_losses(checkpoint_dir: str = "checkpoints", 
                          first_layers: list = ["SA", "GA", "RA", "SC"],
+                         masking_strategy: str = None,
                          output_file: str = "validation_losses.png"):
     """Create validation loss plots with confidence intervals."""
     
@@ -82,7 +100,7 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
     for first_layer in first_layers:
         try:
             # Load data
-            seq_loss, struct_loss = load_validation_loss_data(checkpoint_dir, first_layer)
+            seq_loss, struct_loss = load_validation_loss_data(checkpoint_dir, first_layer, masking_strategy)
             
             # Get number of epochs
             num_epochs = seq_loss.shape[1]
@@ -108,8 +126,8 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
             ax2.fill_between(epochs, struct_lower, struct_upper, 
                             color=colors.get(first_layer, "#333333"), alpha=0.2)
             
-        except FileNotFoundError:
-            print(f"Warning: Could not find loss data files for {first_layer}")
+        except FileNotFoundError as e:
+            print(f"Warning: Could not find loss data files for {first_layer} with masking strategy {masking_strategy}: {e}")
             continue
         except Exception as e:
             print(f"Error loading {first_layer}: {e}")
@@ -141,7 +159,8 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
     ax2.set_yscale('log')
     
     # Add overall title
-    fig.suptitle('Validation Losses by First Layer Type (95% CI)', fontsize=16)
+    strategy_text = f" ({masking_strategy})" if masking_strategy else ""
+    fig.suptitle(f'Validation Losses by First Layer Type{strategy_text} (95% CI)', fontsize=16)
     
     # Adjust layout and save
     plt.tight_layout()
@@ -151,9 +170,10 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
 
 if __name__ == "__main__":
     # Default parameters - can be modified as needed
-    checkpoint_dir = "checkpoints"  # Relative to scripts folder
-    first_layers = ["SA", "GA", "RA", "SC"]  # Including SC for SelfConsensus
-    loss_output_file = "validation_losses.png"
+    checkpoint_dir = "../checkpoints/transformer_trunk"  # Relative to scripts folder
+    first_layers = ["SA", "SC"]  # Including SC for SelfConsensus
+    masking_strategy = "simple"  # Can be "simple", "complex", or "discrete_diffusion"
+    loss_output_file = f"validation_losses_{masking_strategy}.png"
     
     # Create the plots
-    plot_validation_losses(checkpoint_dir, first_layers, loss_output_file)
+    plot_validation_losses(checkpoint_dir, first_layers, masking_strategy, loss_output_file)

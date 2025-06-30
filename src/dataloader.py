@@ -81,9 +81,9 @@ def _get_noise_levels(s_min, s_max, T, schedule_type="linear"):
         # Convert to cumulative noise levels
         cumulative_noise_levels = -torch.log(1 - mask_probs + 1e-8)
         
-        # For uniform schedule, instantaneous noise is constant
-        # (equal time spent at each mask percentage)
-        inst_noise_levels = torch.full_like(cumulative_noise_levels, (s_max - s_min) / T)
+        # Compute instantaneous noise as derivative of cumulative noise
+        # d/dt[-log(1 - mask_probs)] = d/dt[-log(1 - (0.05 + 0.9*t))] = 0.9 / (1 - (0.05 + 0.9*t))
+        inst_noise_levels = 0.9 / (1 - mask_probs + 1e-8)
         
     else:
         raise ValueError(f"Unknown schedule type: {schedule_type}. Must be 'linear', 'inverted_u', or 'uniform'")

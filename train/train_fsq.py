@@ -48,7 +48,7 @@ class ModelConfig:
     # FSQ parameters
     fsq_dim: int = 5
     fsq_levels: list[int] = field(default_factory=lambda: [7, 5, 5, 5, 5])
-    stage: str = "stage_1" # "stage_1" or "stage_2"
+    stage: str = "stage_2" # "stage_1" or "stage_2"
     fsq_encoder = None
     
     # Transformer parameters
@@ -69,8 +69,8 @@ class ModelConfig:
     consensus_num_iterations: int = 1  # Number of consensus gradient iterations
     consensus_connectivity_type: str = "local_window"  # "local_window" or "top_w"
     consensus_w: int = 2  # Window size for local_window, or w value for top_w
-    consensus_r: int = 24  # Rank of Lambda_ij matrices
-    consensus_edge_hidden_dim: int = 12  # Hidden dim for edge networks
+    consensus_r: int = 8  # Rank of Lambda_ij matrices
+    consensus_edge_hidden_dim: int = 24  # Hidden dim for edge networks
 
 @dataclass
 class DiffusionConfig:
@@ -81,14 +81,14 @@ class DiffusionConfig:
     sigma_max: float = 5.68  # Maximum noise level
     num_timesteps: int = 100  # Number of discrete timesteps for training
     
-    # Absorbing state tokens (using MASK token index)
-    seq_absorb_token: int = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS)
-    struct_absorb_token: int = SPECIAL_TOKENS.MASK.value + 4375
+    # # Absorbing state tokens (using MASK token index)
+    # seq_absorb_token: int = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS)
+    # struct_absorb_token: int = SPECIAL_TOKENS.MASK.value + 4375
 
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_type: str = "SC"  # Model to train - can be "SA", "GA", "RA", or "SC"
+    model_type: str = "RA"  # Model to train - can be "SA", "GA", "RA", or "SC"
     batch_size: int = 4  # Training hyperparameters
     max_epochs: int = 70
     learning_rate: float = 1e-5
@@ -200,9 +200,7 @@ def worker_init_fn(worker_id):
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
-
 def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: ModelConfig, device: torch.device, train_mode=True) -> Dict[str, float]:
-
     # Stage 1: Masked coordinate reconstruction
     B, L, H, _ = batch.masked_data['coords'].shape
 
@@ -215,10 +213,8 @@ def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
     with torch.set_grad_enabled(train_mode):
         # Forward pass - use only first 3 atoms for standard coordinates
         three_atom_masked_coords = batch.masked_data['coords'][:, :, :3, :]  # [B, L, 3, 3]
-        if model.cfg.model_type in ("GA", "RA"): 
-            x_rec, _ = model(three_atom_masked_coords, batch.masked_data['coords'], unmasked_elements)
-        else: 
-            x_rec, _ = model(three_atom_masked_coords)
+        if model.cfg.model_type in ("GA", "RA"): x_rec, _ = model(three_atom_masked_coords, batch.masked_data['coords'], unmasked_elements)
+        else: x_rec, _ = model(three_atom_masked_coords)
 
         # In order to run KABSCH, we need to isolate only unmasked residues into a [U, 3, 3] tensor for each protein in the batch, where U is number of unmasked residues in a given protein.
         pts_pred = []; pts_true = []
@@ -235,8 +231,7 @@ def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
         if pts_pred:
             loss = squared_kabsch_rmsd_loss(pts_pred, pts_true)
             # Also compute regular Kabsch RMSD for reporting
-            with torch.no_grad():
-                rmsd = kabsch_rmsd_loss(pts_pred, pts_true)
+            with torch.no_grad(): rmsd = kabsch_rmsd_loss(pts_pred, pts_true)
         else:
             loss = torch.tensor(0.0, device=device)
             rmsd = torch.tensor(0.0, device=device)
@@ -249,10 +244,9 @@ def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
         
         # Return metrics
         return {'loss': loss.item(), 'rmsd': rmsd.item()}
-    
+
 
 def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: ModelConfig, device: torch.device, train_mode=True) -> Dict[str, float]:
-
     # Stage 2: Full structure reconstruction from frozen encoder
     B, L, H, _ = batch.masked_data['coords'].shape
     
@@ -268,10 +262,8 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
         with torch.no_grad():
             four_atom = batch.masked_data['coords'][:, :, :4, :]  # [B, L, 4, 3] for encoder
             three_atom = batch.masked_data['coords'][:, :, :3, :]  # [B, L, 3, 3]
-            if model.cfg.model_type in ("GA", "RA"): 
-                z_q, _ = model.encoder(three_atom, four_atom, unmasked_elements)
-            else: 
-                z_q, _ = model.encoder(three_atom)
+            if model.cfg.model_type in ("GA", "RA"): z_q, _ = model.encoder(three_atom, four_atom, unmasked_elements)
+            else: z_q, _ = model.encoder(three_atom)
         
         # Zero out BOS/EOS/PAD positions in z_q
         z_q[batch.beospank['coords']] = 0.0
@@ -282,10 +274,8 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
         decoder_input = torch.cat([z_q, seq_tokens_float], dim=-1)  # [B, L, fsq_dim + 1]
         
         # Decoder forward pass
-        if model.cfg.model_type in ("GA", "RA"): 
-            x_rec = model.decoder(decoder_input, four_atom, unmasked_elements)
-        else: 
-            x_rec = model.decoder(decoder_input)
+        if model.cfg.model_type in ("GA", "RA"): x_rec = model.decoder(decoder_input, four_atom, unmasked_elements)
+        else: x_rec = model.decoder(decoder_input)
         
         # x_rec is [B, L, 14, 3] for stage 2
         # Compute loss on all valid positions (no masking in stage 2)
@@ -303,8 +293,7 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
         if pts_pred:
             loss = squared_kabsch_rmsd_loss(pts_pred, pts_true)
             # Also compute regular Kabsch RMSD for reporting
-            with torch.no_grad():
-                rmsd = kabsch_rmsd_loss(pts_pred, pts_true)
+            with torch.no_grad(): rmsd = kabsch_rmsd_loss(pts_pred, pts_true)
         else:
             loss = torch.tensor(0.0, device=device)
             rmsd = torch.tensor(0.0, device=device)
@@ -329,12 +318,11 @@ def main():
     
     # Validate model type
     valid_types = {"SA", "GA", "RA", "SC"}
-    if train_cfg.model_type not in valid_types:
-        raise ValueError(f"Invalid model type: {train_cfg.model_type}. Must be one of {valid_types}")
+    if train_cfg.model_type not in valid_types: raise ValueError(f"Invalid model type: {train_cfg.model_type}. Must be one of {valid_types}")
     
     # Arrays to store validation metrics across iterations
     all_metrics = {
-        'val_loss': np.zeros((train_cfg.num_iter, train_cfg.max_epochs)),
+        'val_loss': np.zeros((train_cfg.num_iter, train_cfg.max_epochs)), 
         'val_rmsd': np.zeros((train_cfg.num_iter, train_cfg.max_epochs))
     }
     
@@ -360,19 +348,24 @@ def main():
         
         # For stage 1, ensure identical parameter initialization across architectures
         if model_cfg.stage == "stage_1":
-            # Create SA as reference and target model
-            print(f"Creating SA reference model and {train_cfg.model_type} target model...")
-            sa_model = create_model_with_config("SA", model_cfg, device)
-            target_model = create_model_with_config(train_cfg.model_type, model_cfg, device)
-            
-            # Synchronize target model with SA reference
-            print(f"Synchronizing {train_cfg.model_type} shared parameters with SA reference...")
-            temp_models = {"SA": sa_model, train_cfg.model_type: target_model}
-            ensure_identical_parameters_all_models(temp_models, train_cfg.reference_model_seed + iteration)
-            
-            # Keep target model, delete SA reference
-            model = target_model
-            del sa_model; del temp_models
+            if train_cfg.model_type == "SA":
+                # For SA training, just create SA model directly (no synchronization needed)
+                print(f"Creating {train_cfg.model_type} model...")
+                model = create_model_with_config("SA", model_cfg, device)
+            else:
+                # For non-SA training, create SA reference and target model, then synchronize
+                print(f"Creating SA reference model and {train_cfg.model_type} target model...")
+                sa_model = create_model_with_config("SA", model_cfg, device)
+                target_model = create_model_with_config(train_cfg.model_type, model_cfg, device)
+                
+                # Synchronize target model with SA reference
+                print(f"Synchronizing {train_cfg.model_type} shared parameters with SA reference...")
+                temp_models = {"SA": sa_model, train_cfg.model_type: target_model}
+                ensure_identical_parameters_all_models(temp_models, train_cfg.reference_model_seed + iteration)
+                
+                # Keep target model, delete SA reference
+                model = target_model
+                del sa_model; del temp_models
 
             # Stage 1: optimize all parameters
             optimizer = AdamW(model.parameters(), lr=train_cfg.learning_rate)
@@ -405,10 +398,8 @@ def main():
         
         # Print parameter count (only on first iteration)
         if iteration == 0:
-            if model_cfg.stage == "stage_1":
-                total_params = sum(p.numel() for p in model.parameters())
-            else:
-                total_params = sum(p.numel() for p in model.decoder.parameters())
+            if model_cfg.stage == "stage_1": total_params = sum(p.numel() for p in model.parameters())
+            else: total_params = sum(p.numel() for p in model.decoder.parameters())
             print(f"{train_cfg.model_type} {'total' if model_cfg.stage == 'stage_1' else 'decoder'} parameters: {total_params:,}")
         
         # -------------------- Data loading -------------------- #
@@ -440,7 +431,6 @@ def main():
             stage_2_tracks = {'seq': True, 'struct': False, 'coords': True}
             train_loader = NoMaskDataLoader(train_ds, model_cfg, train_cfg, stage_2_tracks, device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn)
             val_loader = NoMaskDataLoader(val_ds, model_cfg, train_cfg, stage_2_tracks, device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn)
-
         
         # Initialize tracking for the model
         history = {'train_loss': [], 'train_rmsd': [], 'val_loss': [], 'val_rmsd': []}
@@ -459,16 +449,12 @@ def main():
                     if batch_data is None: continue
                     
                     # Train model on the batch
-                    if model_cfg.stage == "stage_1":
-                        batch_metrics = stage_1_step(model, optimizer, batch_data, model_cfg, device, train_mode=True)
-                    elif model_cfg.stage == "stage_2":
-                        batch_metrics = stage_2_step(model, optimizer, batch_data, model_cfg, device, train_mode=True)
-                    else:
-                        raise ValueError()
+                    if model_cfg.stage == "stage_1": batch_metrics = stage_1_step(model, optimizer, batch_data, model_cfg, device, train_mode=True)
+                    elif model_cfg.stage == "stage_2": batch_metrics = stage_2_step(model, optimizer, batch_data, model_cfg, device, train_mode=True)
+                    else: raise ValueError()
                     
                     # Accumulate metrics
-                    for key in train_metrics_sum:
-                        train_metrics_sum[key] += batch_metrics[key]
+                    for key in train_metrics_sum: train_metrics_sum[key] += batch_metrics[key]
                     num_batches += 1
                     
                     # Update progress bar with metrics
@@ -476,9 +462,7 @@ def main():
                     pbar.set_postfix(postfix)
             
             # Calculate epoch averages for training
-            for key in train_metrics_sum:
-                train_metrics_sum[key] /= num_batches
-            
+            for key in train_metrics_sum: train_metrics_sum[key] /= num_batches
             history['train_loss'].append(train_metrics_sum['loss'])
             history['train_rmsd'].append(train_metrics_sum['rmsd'])
             
@@ -491,21 +475,16 @@ def main():
                 if batch_data is None: continue
                 
                 # Validate model on the batch
-                if model_cfg.stage == "stage_1":
-                    batch_metrics = stage_1_step(model, optimizer, batch_data, model_cfg, device, train_mode=False)
-                elif model_cfg.stage == "stage_2":
-                    batch_metrics = stage_2_step(model, optimizer, batch_data, model_cfg, device, train_mode=False)
-                else:
-                    raise ValueError()
+                if model_cfg.stage == "stage_1": batch_metrics = stage_1_step(model, optimizer, batch_data, model_cfg, device, train_mode=False)
+                elif model_cfg.stage == "stage_2": batch_metrics = stage_2_step(model, optimizer, batch_data, model_cfg, device, train_mode=False)
+                else: raise ValueError()
                 
                 # Accumulate metrics
-                for key in val_metrics_sum:
-                    val_metrics_sum[key] += batch_metrics[key]
+                for key in val_metrics_sum: val_metrics_sum[key] += batch_metrics[key]
                 val_num_batches += 1
             
             # Calculate epoch averages for validation
-            for key in val_metrics_sum:
-                val_metrics_sum[key] /= val_num_batches
+            for key in val_metrics_sum: val_metrics_sum[key] /= val_num_batches
             
             # Store in history
             history['val_loss'].append(val_metrics_sum['loss'])
@@ -518,16 +497,13 @@ def main():
             # Print detailed epoch summary
             print(f"\nIteration {iteration+1}, Epoch {epoch+1}/{train_cfg.max_epochs}")
             print(f"\n{train_cfg.model_type}:")
-            print(f"  Train - Loss (squared RMSD): {train_metrics_sum['loss']:.4f}, "
-                  f"RMSD: {train_metrics_sum['rmsd']:.4f}")
-            print(f"  Val   - Loss (squared RMSD): {val_metrics_sum['loss']:.4f}, "
-                  f"RMSD: {val_metrics_sum['rmsd']:.4f}")
+            print(f"  Train - Loss (squared RMSD): {train_metrics_sum['loss']:.4f}, RMSD: {train_metrics_sum['rmsd']:.4f}")
+            print(f"  Val   - Loss (squared RMSD): {val_metrics_sum['loss']:.4f}, RMSD: {val_metrics_sum['rmsd']:.4f}")
         
         # Save final checkpoints only for the first iteration
         if iteration == 0:
             # Get the actual model config from the model
             model_cfg_dict = asdict(model.cfg)
-            
             checkpoint_path = Path(train_cfg.checkpoint_dir) / f"{train_cfg.model_type}_{model_cfg.stage}_iter{iteration+1}_{train_cfg.masking_strategy}.pt"
             torch.save({'model_state_dict': model.state_dict(), 'model_cfg_dict': model_cfg_dict}, checkpoint_path)
             print(f"\nSaved checkpoint for iteration {iteration+1}")

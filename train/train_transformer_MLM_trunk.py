@@ -63,17 +63,17 @@ class ModelConfig:
     consensus_num_iterations: int = 1 # Number of Consensus gradient iterations
     consensus_connectivity_type: str = "local_window"  # "local_window" or "top_w"
     consensus_w: int = 2  # Window size for local_window, or w value for top_w
-    consensus_r: int = 24  # Rank of Lambda_ij matrices
-    consensus_edge_hidden_dim: int = 12  # Hidden dim for edge networks
+    consensus_r: int = 8  # Rank of Lambda_ij matrices
+    consensus_edge_hidden_dim: int = 24  # Hidden dim for edge networks
 
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_types: List[str] = field(default_factory=lambda: ["SA","SC"]) # Models to train - can be any subset of ["SA", "GA", "RA", "SC"]
+    model_type: str = "SC"  # Model to train - can be "SA", "GA", "RA", or "SC"
     batch_size: int = 4  # Training hyperparameters
     max_epochs: int = 50
     learning_rate: float = 1e-5
-    num_iter: int = 1  # Number of iterations to repeat training
+    num_iter: int = 3  # Number of iterations to repeat training
     masking_strategy: str = "simple" # Masking strategy: 'simple' or 'complex'
     
     if masking_strategy == "simple":
@@ -93,7 +93,7 @@ class TrainingConfig:
 
     data_dir: str = "../sample_data/1k.csv"  # Data paths
     checkpoint_dir: str = "../checkpoints/transformer_trunk"  # Checkpointing
-    reference_model_seed: int = 23 # Reference model seed for consistent parameter initialization across architectures
+    reference_model_seed: int = 22 # Reference model seed for consistent parameter initialization across architectures
 
 def create_model_with_config(model_type: str, base_config: ModelConfig, device: torch.device) -> TransformerTrunk:
     """Create a model with specific first layer type."""
@@ -159,16 +159,14 @@ def ensure_identical_parameters_all_models(models: Dict[str, TransformerTrunk], 
 # --------------------------------------------------------------------------- #
 #  Training utilities                                                          #
 # --------------------------------------------------------------------------- #
-
-
 def worker_init_fn(worker_id):
     """Initialize each worker with a deterministic seed."""
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
-def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.optim.Optimizer], batch: MaskedBatch, train_cfg: TrainingConfig, model_cfg: ModelConfig, device: torch.device) -> Dict[str, Dict[str, float]]:
-    """Perform a single training step for all models with the same batch."""
+def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: ModelConfig, train_cfg: TrainingConfig, train_mode: bool = True) -> Dict[str, float]:
+    """Perform a single MLM step with train/validation mode."""
     masked_seq, masked_struct, masked_coords = batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords']
     mask_seq, mask_struct, mask_coords= batch.masks['seq'], batch.masks['struct'], batch.masks['coords']
     seq_tokens, struct_tokens = batch.unmasked_data['seq'], batch.unmasked_data['struct']
@@ -182,15 +180,11 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
     assert nonspecial_elements_coords.any(dim=1).all()
     
     inputs = (masked_seq, masked_struct) # Prepare model input
-    metrics = {} # Store metrics for each model
+    model.train(train_mode)
     
-    # Train each model on the same batch
-    for model_type, model in models.items():
-        model.train()
-        optimizer = optimizers[model_type]
-        
+    with torch.set_grad_enabled(train_mode):
         # Forward pass
-        if model_type in ("GA", "RA"): outputs = model(inputs, masked_coords, nonspecial_elements_coords)
+        if train_cfg.model_type in ("GA", "RA"): outputs = model(inputs, masked_coords, nonspecial_elements_coords)
         else: outputs = model(inputs)
         seq_logits, struct_logits = outputs
 
@@ -215,66 +209,14 @@ def train_step(models: Dict[str, TransformerTrunk], optimizers: Dict[str, torch.
         seq_acc = calculate_accuracy(seq_logits, batch.unmasked_data['seq'], loss_elements_seq)
         struct_acc = calculate_accuracy(struct_logits, batch.unmasked_data['struct'], loss_elements_struct)
         
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        if train_mode:
+            # Backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
         
-        # Store metrics
-        metrics[model_type] = {'loss': loss.item(), 'loss_seq': loss_seq.item(), 'loss_struct': loss_struct.item(), 'seq_acc': seq_acc, 'struct_acc': struct_acc}
-    
-    return metrics
-
-def validate_step(models: Dict[str, TransformerTrunk], batch: MaskedBatch, train_cfg: TrainingConfig) -> Dict[str, Dict[str, float]]:
-    """Perform a single validation step for all models with the same batch."""
-    masked_seq, masked_struct, masked_coords = batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords']
-    mask_seq, mask_struct = batch.masks['seq'], batch.masks['struct']
-    seq_tokens, struct_tokens = batch.unmasked_data['seq'], batch.unmasked_data['struct']
-    B, L = masked_seq.shape
-
-    # Create coord_mask for GA/RA models
-    nonspecial_elements = (~batch.beospank['coords']) & (~mask_struct) # boolean tensor of shape (B,L), True for all positions corresponding to non-BOS/EOS/PAD and non-MASK tokens.
-    # We need one non-special element in coords for GA/RA models.
-    assert nonspecial_elements.any(dim=1).all()
-    
-    inputs = (masked_seq, masked_struct) # Prepare model input
-    metrics = {} # Store metrics for each model
-    
-    # Evaluate each model on the same batch
-    for model_type, model in models.items():
-        model.eval()
-        
-        with torch.no_grad():
-            # Forward pass
-            if model_type in ("GA", "RA"): outputs = model(inputs, masked_coords, nonspecial_elements)
-            else: outputs = model(inputs)  
-            seq_logits, struct_logits = outputs
-            
-            if train_cfg.ce_loss_function_elements == "masked":
-                loss_elements_seq = batch.masks['seq']
-                loss_elements_struct = batch.masks['struct']
-            elif train_cfg.ce_loss_function_elements == "non_beospank":
-                # Compute loss over all non-BOS/EOS/PAD positions, including masks.
-                loss_elements_seq = ~batch.beospank['seq']
-                loss_elements_struct = ~batch.beospank['struct']
-            elif train_cfg.ce_loss_function_elements == "non_special":
-                loss_elements_seq = ~batch.beospank['seq'] & ~batch.masks['seq']
-                loss_elements_struct = ~batch.beospank['struct'] & ~batch.masks['struct']
-            else:
-                raise ValueError(f"What is {train_cfg.ce_loss_function_elements}?")
-
-            loss_seq = cross_entropy_loss(seq_logits, batch.unmasked_data['seq'], loss_elements_seq)
-            loss_struct = cross_entropy_loss(struct_logits, batch.unmasked_data['struct'], loss_elements_struct)
-
-            loss = train_cfg.seq_loss_weight * loss_seq + train_cfg.struct_loss_weight * loss_struct
-
-            seq_acc = calculate_accuracy(seq_logits, batch.unmasked_data['seq'], loss_elements_seq)
-            struct_acc = calculate_accuracy(struct_logits, batch.unmasked_data['struct'], loss_elements_struct)
-            
-            # Store metrics
-            metrics[model_type] = {'loss': loss.item(), 'loss_seq': loss_seq.item(), 'loss_struct': loss_struct.item(), 'seq_acc': seq_acc, 'struct_acc': struct_acc}
-    
-    return metrics
+        # Return metrics
+        return {'loss': loss.item(), 'loss_seq': loss_seq.item(), 'loss_struct': loss_struct.item(), 'seq_acc': seq_acc, 'struct_acc': struct_acc}
 
 def main():
     # Initialize configurations
@@ -282,21 +224,19 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(train_cfg.checkpoint_dir, exist_ok=True)
     
-    # Validate model types
+    # Validate model type
     valid_types = {"SA", "GA", "RA", "SC"}
-    for mt in train_cfg.model_types:
-        if mt not in valid_types:
-            raise ValueError(f"Invalid model type: {mt}. Must be one of {valid_types}")
+    if train_cfg.model_type not in valid_types: raise ValueError(f"Invalid model type: {train_cfg.model_type}. Must be one of {valid_types}")
     
-    # Arrays to store validation metrics for all models across iterations: (model_type, num_iter, max_epochs)
+    # Arrays to store validation metrics
     all_metrics = {
-        model_type: {'val_seq_acc': np.zeros((train_cfg.num_iter, train_cfg.max_epochs)), 'val_struct_acc': np.zeros((train_cfg.num_iter, train_cfg.max_epochs)),
-                    'val_seq_loss': np.zeros((train_cfg.num_iter, train_cfg.max_epochs)),'val_struct_loss': np.zeros((train_cfg.num_iter, train_cfg.max_epochs))}
-        for model_type in train_cfg.model_types
+        'val_loss': np.zeros((train_cfg.num_iter, train_cfg.max_epochs)),
+        'val_seq_loss': np.zeros((train_cfg.num_iter, train_cfg.max_epochs)),
+        'val_struct_loss': np.zeros((train_cfg.num_iter, train_cfg.max_epochs))
     }
     
     print(f"Starting training with {train_cfg.num_iter} iterations")
-    print(f"Training models: {train_cfg.model_types}")
+    print(f"Training model: {train_cfg.model_type}")
     print(f"Using masking strategy: {train_cfg.masking_strategy}")
     
     # -------------------- Iteration loop -------------------- #
@@ -305,45 +245,51 @@ def main():
         print(f"ITERATION {iteration + 1}/{train_cfg.num_iter}")
         print(f"{'='*60}\n")
         
-        # Create all models with fixed seed for this iteration
-        print(f"Creating {len(train_cfg.model_types)} models for iteration {iteration + 1}...")
+        # Create model with fixed seed for this iteration
+        print(f"Creating model for iteration {iteration + 1}...")
         torch.manual_seed(train_cfg.reference_model_seed + iteration)
         
-        # Create models and load corresponding FSQ encoders
-        # Each model type loads its own pre-trained FSQ encoder from a separate checkpoint
-        # This allows each architecture to have been trained with architecture-specific autoencoders
-        models = {}; optimizers = {}; fsq_encoders = {}
-        
-        for model_type in train_cfg.model_types:
-            # Create model
-            models[model_type] = create_model_with_config(model_type, model_cfg, device)
-            optimizers[model_type] = AdamW(models[model_type].parameters(), lr=train_cfg.learning_rate)
+        # Ensure identical parameter initialization across architectures
+        if train_cfg.model_type == "SA":
+            # For SA training, just create SA model directly (no synchronization needed)
+            print(f"Creating {train_cfg.model_type} model...")
+            model = create_model_with_config("SA", model_cfg, device)
+        else:
+            # For non-SA training, create SA reference and target model, then synchronize
+            print(f"Creating SA reference model and {train_cfg.model_type} target model...")
+            sa_model = create_model_with_config("SA", model_cfg, device)
+            target_model = create_model_with_config(train_cfg.model_type, model_cfg, device)
+            
+            # Synchronize target model with SA reference
+            print(f"Synchronizing {train_cfg.model_type} shared parameters with SA reference...")
+            temp_models = {"SA": sa_model, train_cfg.model_type: target_model}
+            ensure_identical_parameters_all_models(temp_models, train_cfg.reference_model_seed + iteration)
+            
+            # Keep target model, delete SA reference
+            model = target_model
+            del sa_model; del temp_models
 
-            # Load checkpoint with dynamic path based on model type
-            #TODO: make this configurable; use os.path.join
-            encoder_checkpoint_path = f"../checkpoints/fsq/{model_type}_stage_1_iter1_{train_cfg.masking_strategy}.pt"
-            checkpoint = torch.load(encoder_checkpoint_path, map_location=device, weights_only=False)
-            encoder_state = {k.removeprefix('encoder.'): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
-            fsq_config = SimpleNamespace(**checkpoint['model_cfg_dict'])
-            fsq_encoder = FSQEncoder(fsq_config)
-            
-            fsq_encoder.load_state_dict(encoder_state)
-            print(f"Loaded {model_type} encoder weights from: {encoder_checkpoint_path}")
-            
-            fsq_encoder.eval()
-            fsq_encoder.requires_grad_(False)
-            fsq_encoder = fsq_encoder.to(device)
-            fsq_encoders[model_type] = fsq_encoder
+        optimizer = AdamW(model.parameters(), lr=train_cfg.learning_rate)
+
+        # Load checkpoint with dynamic path based on model type
+        #TODO: make this configurable; use os.path.join
+        encoder_checkpoint_path = f"../checkpoints/fsq/{train_cfg.model_type}_stage_1_iter1_{train_cfg.masking_strategy}.pt"
+        checkpoint = torch.load(encoder_checkpoint_path, map_location=device, weights_only=False)
+        encoder_state = {k.removeprefix('encoder.'): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
+        fsq_config = SimpleNamespace(**checkpoint['model_cfg_dict'])
+        fsq_encoder = FSQEncoder(fsq_config)
         
-        # Ensure consistent parameter initialization across architectures
-        print(f"Ensuring all models have identical parameters...")
-        ensure_identical_parameters_all_models(models, train_cfg.reference_model_seed + iteration)
+        fsq_encoder.load_state_dict(encoder_state)
+        print(f"Loaded {train_cfg.model_type} encoder weights from: {encoder_checkpoint_path}")
+        
+        fsq_encoder.eval()
+        fsq_encoder.requires_grad_(False)
+        fsq_encoder = fsq_encoder.to(device)
         
         # Print parameter count (only on first iteration)
         if iteration == 0:
-            for model_type, model in models.items():
-                total_params = sum(p.numel() for p in model.parameters())
-                print(f"{model_type} total parameters: {total_params:,}")
+            total_params = sum(p.numel() for p in model.parameters())
+            print(f"{train_cfg.model_type} total parameters: {total_params:,}")
         
         # -------------------- Data loading -------------------- #
         # Set seed for dataset split AND masking to ensure consistency
@@ -365,191 +311,143 @@ def main():
         
         tracks = {'seq': True, 'struct': True, 'coords': True}
         min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
-        assert fsq_encoders[train_cfg.model_types[-1]] is not None
-        train_loader = _get_training_dataloader(train_ds, 
-                                                model_cfg, 
-                                                train_cfg, 
-                                                tracks, 
-                                                device, 
-                                                min_unmasked=min_unmasked, 
-                                                fsq_encoder=fsq_encoders[train_cfg.model_types[-1]],
-                                                shuffle=True, 
-                                                batch_size=train_cfg.batch_size,
-                                                generator=g_train, 
-                                                worker_init_fn=worker_init_fn)
-
-        val_loader = _get_training_dataloader(val_ds, 
-                                                model_cfg, 
-                                                train_cfg, 
-                                                tracks, 
-                                                device, 
-                                                min_unmasked=min_unmasked, 
-                                                fsq_encoder=fsq_encoders[train_cfg.model_types[-1]],
-                                                shuffle=False, 
-                                                batch_size=train_cfg.batch_size,
-                                                generator=g_val, 
-                                                worker_init_fn=worker_init_fn)
+        train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, fsq_encoder=fsq_encoder, shuffle=True, batch_size=train_cfg.batch_size, generator=g_train, worker_init_fn=worker_init_fn)
+        val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, fsq_encoder=fsq_encoder, shuffle=False, batch_size=train_cfg.batch_size, generator=g_val, worker_init_fn=worker_init_fn)
         
-        # Initialize tracking for each model
-        history = {
-            model_type: {'train_loss': [], 'train_seq_acc': [], 'train_struct_acc': [],
-                'val_loss': [], 'val_seq_acc': [], 'val_struct_acc': [], 'val_seq_loss': [], 'val_struct_loss': []
-            }
-            for model_type in train_cfg.model_types
-        }
+        # Initialize tracking
+        history = {'train_loss': [], 'train_seq_acc': [], 'train_struct_acc': [], 'val_loss': [], 'val_seq_acc': [], 'val_struct_acc': [], 'val_seq_loss': [], 'val_struct_loss': []}
         
         # -------------------- Training loop -------------------- #
         for epoch in range(train_cfg.max_epochs):
             # Training metrics accumulators
-            train_metrics_sum = {model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0} for model_type in train_cfg.model_types}
-            train_metrics_num_batches = {model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0} for model_type in train_cfg.model_types}
+            train_metrics_sum = {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0}
+            train_metrics_num_batches = {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0}
 
             # Training
-            with tqdm(train_loader, desc=f"Iter {iteration+1}/{train_cfg.num_iter}, Epoch {epoch+1}/{train_cfg.max_epochs} [Train]", 
+            with tqdm(train_loader, desc=f"Iter {iteration+1}/{train_cfg.num_iter}, Epoch {epoch+1}/{train_cfg.max_epochs} [{train_cfg.model_type} Train]", 
                      ascii=True, leave=True, ncols=150, position=0) as pbar:
                 for batch in pbar:
                     # Skip empty/None batches
                     if batch is None: continue
                     
-                    # Train all models on the same batch
-                    batch_metrics = train_step(models, optimizers, batch, train_cfg, model_cfg, device)
+                    # Train single model on batch
+                    batch_metrics = mlm_step(model, optimizer, batch, model_cfg, train_cfg, train_mode=True)
                     
                     # Accumulate metrics
-                    for model_type in train_cfg.model_types:
-                        for key in train_metrics_sum[model_type]:
-                            if batch_metrics[model_type][key] is not None: # Some metrics (e.g. accuracy) may be None if there are no loss_elements.
-                                train_metrics_sum[model_type][key] += batch_metrics[model_type][key]
-                                train_metrics_num_batches[model_type][key] += 1
+                    for key in train_metrics_sum:
+                        if batch_metrics[key] is not None: # Some metrics (e.g. accuracy) may be None if there are no loss_elements.
+                            train_metrics_sum[key] += batch_metrics[key]
+                            train_metrics_num_batches[key] += 1
                     
-                    # Update progress bar with metrics from all models
-                    postfix = {}
-                    for model_type in train_cfg.model_types:
-                        postfix[f'{model_type}_loss'] = f"{batch_metrics[model_type]['loss']:.3f}"
-                    pbar.set_postfix(postfix)
+                    # Update progress bar
+                    pbar.set_postfix({f'{train_cfg.model_type}_loss': f"{batch_metrics['loss']:.3f}"})
             
             # Calculate epoch averages for training
-            for model_type in train_cfg.model_types:
-                for key in train_metrics_sum[model_type]:
-                    train_metrics_sum[model_type][key] /= train_metrics_num_batches[model_type][key]
-                
-                history[model_type]['train_loss'].append(train_metrics_sum[model_type]['loss'])
-                history[model_type]['train_seq_acc'].append(train_metrics_sum[model_type]['seq_acc'])
-                history[model_type]['train_struct_acc'].append(train_metrics_sum[model_type]['struct_acc'])
+            for key in train_metrics_sum: train_metrics_sum[key] /= train_metrics_num_batches[key]
+            
+            history['train_loss'].append(train_metrics_sum['loss'])
+            history['train_seq_acc'].append(train_metrics_sum['seq_acc'])
+            history['train_struct_acc'].append(train_metrics_sum['struct_acc'])
             
             # -------------------- Validation -------------------- #
-            val_metrics_sum = {
-                model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0}
-                for model_type in train_cfg.model_types
-            }
-            val_metrics_num_batches = {
-                model_type: {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0}
-                for model_type in train_cfg.model_types
-            }
+            val_metrics_sum = {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0}
+            val_metrics_num_batches = {'loss': 0.0, 'loss_seq': 0.0, 'loss_struct': 0.0, 'seq_acc': 0.0, 'struct_acc': 0.0}
             
             for batch in val_loader:
                 # Skip empty/None batches
                 if batch is None: continue
                 
-                # Validate all models on the same batch
-                batch_metrics = validate_step(models, batch, train_cfg)
+                # Validate single model on batch
+                batch_metrics = mlm_step(model, optimizer, batch, model_cfg, train_cfg, train_mode=False)
                 
                 # Accumulate metrics
-                for model_type in train_cfg.model_types:
-                    for key in val_metrics_sum[model_type]:
-                        if batch_metrics[model_type][key] is not None: # Some metrics (e.g. accuracy) may be None if there are no loss_elements.
-                            val_metrics_sum[model_type][key] += batch_metrics[model_type][key]
-                            val_metrics_num_batches[model_type][key] += 1
+                for key in val_metrics_sum:
+                    if batch_metrics[key] is not None: # Some metrics (e.g. accuracy) may be None if there are no loss_elements.
+                        val_metrics_sum[key] += batch_metrics[key]
+                        val_metrics_num_batches[key] += 1
             
             # Calculate epoch averages for validation
-            for model_type in train_cfg.model_types:
-                for key in val_metrics_sum[model_type]:
-                    val_metrics_sum[model_type][key] /= val_metrics_num_batches[model_type][key]
-                
-                # Store in history
-                history[model_type]['val_loss'].append(val_metrics_sum[model_type]['loss'])
-                history[model_type]['val_seq_acc'].append(val_metrics_sum[model_type]['seq_acc'])
-                history[model_type]['val_struct_acc'].append(val_metrics_sum[model_type]['struct_acc'])
-                history[model_type]['val_seq_loss'].append(val_metrics_sum[model_type]['loss_seq'])
-                history[model_type]['val_struct_loss'].append(val_metrics_sum[model_type]['loss_struct'])
-                
-                # Store in global metrics arrays
-                all_metrics[model_type]['val_seq_acc'][iteration, epoch] = val_metrics_sum[model_type]['seq_acc']
-                all_metrics[model_type]['val_struct_acc'][iteration, epoch] = val_metrics_sum[model_type]['struct_acc']
-                all_metrics[model_type]['val_seq_loss'][iteration, epoch] = val_metrics_sum[model_type]['loss_seq']
-                all_metrics[model_type]['val_struct_loss'][iteration, epoch] = val_metrics_sum[model_type]['loss_struct']
+            for key in val_metrics_sum: val_metrics_sum[key] /= val_metrics_num_batches[key]
+            
+            # Store in history
+            history['val_loss'].append(val_metrics_sum['loss'])
+            history['val_seq_acc'].append(val_metrics_sum['seq_acc'])
+            history['val_struct_acc'].append(val_metrics_sum['struct_acc'])
+            history['val_seq_loss'].append(val_metrics_sum['loss_seq'])
+            history['val_struct_loss'].append(val_metrics_sum['loss_struct'])
+            
+            # Store in global metrics arrays
+            all_metrics['val_loss'][iteration, epoch] = val_metrics_sum['loss']
+            all_metrics['val_seq_loss'][iteration, epoch] = val_metrics_sum['loss_seq']
+            all_metrics['val_struct_loss'][iteration, epoch] = val_metrics_sum['loss_struct']
             
             # Print detailed epoch summary
-            print(f"\nIteration {iteration+1}, Epoch {epoch+1}/{train_cfg.max_epochs}")
-            for model_type in train_cfg.model_types:
-                print(f"\n{model_type}:")
-                print(f"  Train - Loss: {train_metrics_sum[model_type]['loss']:.4f} "
-                      f"(Seq: {train_metrics_sum[model_type]['loss_seq']:.4f}, "
-                      f"Struct: {train_metrics_sum[model_type]['loss_struct']:.4f})")
-                print(f"          Acc:  Seq: {train_metrics_sum[model_type]['seq_acc']:.4f}, "
-                      f"Struct: {train_metrics_sum[model_type]['struct_acc']:.4f}")
-                print(f"  Val   - Loss: {val_metrics_sum[model_type]['loss']:.4f} "
-                      f"(Seq: {val_metrics_sum[model_type]['loss_seq']:.4f}, "
-                      f"Struct: {val_metrics_sum[model_type]['loss_struct']:.4f})")
-                print(f"          Acc:  Seq: {val_metrics_sum[model_type]['seq_acc']:.4f}, "
-                      f"Struct: {val_metrics_sum[model_type]['struct_acc']:.4f}")
+            print(f"\nIteration {iteration+1}, Epoch {epoch+1}/{train_cfg.max_epochs} - {train_cfg.model_type}:")
+            # Training metrics
+            print(f"  Train:")
+            print(f"    Loss: {train_metrics_sum['loss']:.4f} (Seq: {train_metrics_sum['loss_seq']:.4f}, Struct: {train_metrics_sum['loss_struct']:.4f})")
+            print(f"    Acc:  Seq: {train_metrics_sum['seq_acc']:.4f}, Struct: {train_metrics_sum['struct_acc']:.4f}")
+            
+            # Validation metrics
+            print(f"  Val:")
+            print(f"    Loss: {val_metrics_sum['loss']:.4f} (Seq: {val_metrics_sum['loss_seq']:.4f}, Struct: {val_metrics_sum['loss_struct']:.4f})")
+            print(f"    Acc:  Seq: {val_metrics_sum['seq_acc']:.4f}, Struct: {val_metrics_sum['struct_acc']:.4f}")
                     
         # Save final checkpoints only for the first iteration
         if iteration == 0:
-            for model_type in train_cfg.model_types:
-                final_checkpoint_path = Path(train_cfg.checkpoint_dir) / f"{model_type}_{train_cfg.masking_strategy}_iter{iteration+1}_final.pt"
-                torch.save({
-                    'iteration': iteration + 1,
-                    'epoch': train_cfg.max_epochs,
-                    'model_type': model_type,
-                    'model_state_dict': models[model_type].state_dict(),
-                    'optimizer_state_dict': optimizers[model_type].state_dict(),
-                    'history': history[model_type],
-                    'model_config': model_cfg,
-                }, final_checkpoint_path)
-            print(f"\nSaved final checkpoints for iteration {iteration+1}")
+            final_checkpoint_path = Path(train_cfg.checkpoint_dir) / f"{train_cfg.model_type}_{train_cfg.masking_strategy}_iter{iteration+1}_final.pt"
+            torch.save({
+                'iteration': iteration + 1,
+                'epoch': train_cfg.max_epochs,
+                'model_type': train_cfg.model_type,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'history': history,
+                'model_config': model_cfg,
+            }, final_checkpoint_path)
+            print(f"\nSaved final checkpoint for {train_cfg.model_type} iteration {iteration+1}")
         else:
-            print(f"\nSkipping checkpoint save for iteration {iteration+1} (only saving iteration 1)")
+            print(f"\nSkipping checkpoint save for {train_cfg.model_type} iteration {iteration+1} (only saving iteration 1)")
     
     # -------------------- Save validation metrics to CSV -------------------- #
-    for model_type in train_cfg.model_types:
-        # Save sequence validation accuracies
-        seq_csv_path = Path(train_cfg.checkpoint_dir) / f"{model_type}_sequence_val_acc.csv"
-        np.savetxt(seq_csv_path, all_metrics[model_type]['val_seq_acc'], delimiter=',', 
-                   header=f"Validation sequence accuracies for {model_type}\nRows: iterations ({train_cfg.num_iter}), Columns: epochs ({train_cfg.max_epochs})", comments='# ')
-        
-        # Save structure validation accuracies
-        struct_csv_path = Path(train_cfg.checkpoint_dir) / f"{model_type}_structure_val_acc.csv"
-        np.savetxt(struct_csv_path, all_metrics[model_type]['val_struct_acc'], delimiter=',',
-                   header=f"Validation structure accuracies for {model_type}\nRows: iterations ({train_cfg.num_iter}), Columns: epochs ({train_cfg.max_epochs})", comments='# ')
-        
-        # Save sequence validation losses
-        seq_loss_csv_path = Path(train_cfg.checkpoint_dir) / f"{model_type}_sequence_val_loss.csv"
-        np.savetxt(seq_loss_csv_path, all_metrics[model_type]['val_seq_loss'], delimiter=',', 
-                   header=f"Validation sequence losses for {model_type}\nRows: iterations ({train_cfg.num_iter}), Columns: epochs ({train_cfg.max_epochs})", comments='# ')
-        
-        # Save structure validation losses
-        struct_loss_csv_path = Path(train_cfg.checkpoint_dir) / f"{model_type}_structure_val_loss.csv"
-        np.savetxt(struct_loss_csv_path, all_metrics[model_type]['val_struct_loss'], delimiter=',',
-                   header=f"Validation structure losses for {model_type}\nRows: iterations ({train_cfg.num_iter}), Columns: epochs ({train_cfg.max_epochs})", comments='# ')
-        
-        print(f"\nSaved metrics for {model_type}")
+    # Save validation losses
+    loss_csv_path = Path(train_cfg.checkpoint_dir) / f"{train_cfg.model_type}_{train_cfg.masking_strategy}_val_loss.csv"
+    np.savetxt(loss_csv_path, all_metrics['val_loss'], delimiter=',',
+               header=f"Validation losses for {train_cfg.model_type} ({train_cfg.masking_strategy})\n"
+                     f"Rows: iterations ({train_cfg.num_iter}), Columns: epochs ({train_cfg.max_epochs})", comments='# ')
+    
+    # Save sequence losses
+    seq_loss_csv_path = Path(train_cfg.checkpoint_dir) / f"{train_cfg.model_type}_{train_cfg.masking_strategy}_seq_val_loss.csv"
+    np.savetxt(seq_loss_csv_path, all_metrics['val_seq_loss'], delimiter=',', 
+               header=f"Sequence validation losses for {train_cfg.model_type} ({train_cfg.masking_strategy})\n"
+                     f"Rows: iterations ({train_cfg.num_iter}), Columns: epochs ({train_cfg.max_epochs})", comments='# ')
+    
+    # Save structure losses
+    struct_loss_csv_path = Path(train_cfg.checkpoint_dir) / f"{train_cfg.model_type}_{train_cfg.masking_strategy}_struct_val_loss.csv"
+    np.savetxt(struct_loss_csv_path, all_metrics['val_struct_loss'], delimiter=',',
+               header=f"Structure validation losses for {train_cfg.model_type} ({train_cfg.masking_strategy})\n"
+                     f"Rows: iterations ({train_cfg.num_iter}), Columns: epochs ({train_cfg.max_epochs})", comments='# ')
+    
+    print(f"\nSaved metrics for {train_cfg.model_type}")
     
     # Print summary statistics
     print(f"\n{'='*60}")
     print("TRAINING COMPLETE - SUMMARY STATISTICS")
     print(f"{'='*60}")
-    print(f"Models trained: {train_cfg.model_types}")
+    print(f"Model trained: {train_cfg.model_type}")
     print(f"Number of iterations: {train_cfg.num_iter}")
     print(f"Number of epochs per iteration: {train_cfg.max_epochs}")
     
-    for model_type in train_cfg.model_types:
-        print(f"\n{model_type}:")
-        print(f"  Sequence validation accuracy:")
-        print(f"    Mean final epoch: {all_metrics[model_type]['val_seq_acc'][:, -1].mean():.4f} ± {all_metrics[model_type]['val_seq_acc'][:, -1].std():.4f}")
-        print(f"    Best single run: {all_metrics[model_type]['val_seq_acc'].max():.4f}")
-        print(f"  Structure validation accuracy:")
-        print(f"    Mean final epoch: {all_metrics[model_type]['val_struct_acc'][:, -1].mean():.4f} ± {all_metrics[model_type]['val_struct_acc'][:, -1].std():.4f}")
-        print(f"    Best single run: {all_metrics[model_type]['val_struct_acc'].max():.4f}")
+    print(f"\n{train_cfg.model_type}:")
+    print(f"  Total validation loss:")
+    print(f"    Mean final epoch: {all_metrics['val_loss'][:, -1].mean():.4f} ± {all_metrics['val_loss'][:, -1].std():.4f}")
+    print(f"    Best single run: {all_metrics['val_loss'].min():.4f}")
+    print(f"  Sequence validation loss:")
+    print(f"    Mean final epoch: {all_metrics['val_seq_loss'][:, -1].mean():.4f} ± {all_metrics['val_seq_loss'][:, -1].std():.4f}")
+    print(f"    Best single run: {all_metrics['val_seq_loss'].min():.4f}")
+    print(f"  Structure validation loss:")
+    print(f"    Mean final epoch: {all_metrics['val_struct_loss'][:, -1].mean():.4f} ± {all_metrics['val_struct_loss'][:, -1].std():.4f}")
+    print(f"    Best single run: {all_metrics['val_struct_loss'].min():.4f}")
 
 if __name__ == "__main__":
     main() 
