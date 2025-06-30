@@ -1,0 +1,201 @@
+# Odyssey Default Configuration File
+# This file contains all configuration parameters for training and experiments
+
+# Model Architecture Configuration
+model:
+  # Model type: "SA" (Self-Attention), "GA" (Geometric Attention), 
+  # "RA" (Reflexive Attention), "SC" (Self-Consensus)
+  type: "SC"
+  
+  # Core transformer parameters
+  d_model: 768              # Model dimension
+  n_heads: 12               # Number of attention heads
+  n_layers: 12              # Number of transformer layers
+  dropout: 0.1              # Dropout rate
+  ff_mult: 4                # Feedforward multiplier (ff_dim = d_model * ff_mult)
+  max_len: 2048             # Maximum sequence length
+  
+  # Vocabulary sizes
+  seq_vocab: 25             # Sequence vocabulary size (20 amino acids + special tokens)
+  struct_vocab: 4380        # Structure vocabulary size (FSQ tokens + special tokens)
+  
+  # FSQ (Finite Scalar Quantization) parameters
+  fsq:
+    dim: 5                  # FSQ dimension
+    levels: [7, 5, 5, 5, 5] # Quantization levels for each dimension
+    latent_dim: 32          # Latent dimension for autoencoder
+    
+  # Consensus-specific parameters (for SC model)
+  consensus:
+    num_iterations: 1       # Number of consensus gradient iterations
+    connectivity_type: "local_window"  # "local_window" or "top_w"
+    w: 2                    # Window size for local_window, or w value for top_w
+    r: 24                   # Rank of Lambda_ij matrices
+    edge_hidden_dim: 12     # Hidden dimension for edge networks
+
+# Training Configuration
+training:
+  # Basic training parameters
+  batch_size: 32
+  max_epochs: 100
+  learning_rate: 1e-4
+  num_iterations: 3         # Number of training iterations/runs
+  
+  # Optimizer settings
+  optimizer:
+    type: "AdamW"
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+    eps: 1e-8
+  
+  # Learning rate scheduler
+  scheduler:
+    type: "CosineAnnealingLR"
+    T_max: 100              # Should match max_epochs
+    eta_min: 1e-6
+  
+  # Loss weights
+  loss_weights:
+    sequence: 1.0           # Weight for sequence reconstruction loss
+    structure: 1.0          # Weight for structure reconstruction loss
+    rmsd: 0.1               # Weight for RMSD loss (if applicable)
+  
+  # Loss computation settings
+  ce_loss_elements: "masked"  # "masked" or "non_beospank"
+  
+  # Training stage (for multi-stage training)
+  stage: "stage_1"          # "stage_1" or "stage_2"
+  
+  # Reference model seed for consistent initialization
+  reference_model_seed: 1234
+
+# Masking Configuration
+masking:
+  # Strategy: "simple", "complex", or "discrete_diffusion"
+  strategy: "simple"
+  
+  # Simple masking parameters
+  simple:
+    mask_prob_seq: 0.2      # Probability of masking sequence tokens
+    mask_prob_coords: 0.2   # Probability of masking structure tokens
+  
+  # Complex masking parameters
+  complex:
+    # Add complex masking parameters here
+    
+  # Discrete diffusion parameters
+  discrete_diffusion:
+    noise_schedule: "linear"  # "linear", "inverted_u", or "uniform"
+    sigma_min: 0.31
+    sigma_max: 5.68
+    num_timesteps: 100
+    seq_absorb_token: 24      # MASK token index for sequence
+    struct_absorb_token: 4379 # MASK token index for structure
+
+# Data Configuration
+data:
+  # Data paths
+  data_dir: "sample_data/1k"
+  csv_file: "sample_data/1k.csv"
+  
+  # Data loading settings
+  num_workers: 4
+  pin_memory: true
+  
+  # Train/validation split
+  train_split: 0.9          # 90% for training, 10% for validation
+  
+  # Data augmentation (if any)
+  augmentation:
+    enabled: false
+
+# Checkpoint Configuration
+checkpoint:
+  # Checkpoint directory
+  dir: "odyssey/checkpoints"
+  
+  # Checkpoint patterns
+  patterns:
+    simple: "{model_type}_stage_{stage}_iter{iter}_simple.pt"
+    complex: "{model_type}_stage_{stage}_iter{iter}_complex.pt"
+    discrete_diffusion: "{model_type}_stage_{stage}_iter{iter}_discrete_diffusion.pt"
+    fsq_encoder: "{model_type}_stage_{stage}_fsq_encoder.pt"
+  
+  # Save frequency
+  save_every: 10            # Save checkpoint every N epochs
+  save_best: true           # Save best model based on validation loss
+  
+  # Resume training
+  resume: false
+  resume_path: null
+
+# Logging Configuration
+logging:
+  # Weights & Biases (wandb) settings
+  wandb:
+    enabled: false
+    project: "odyssey"
+    entity: null
+    tags: ["training"]
+    
+  # Console logging
+  console:
+    level: "INFO"           # DEBUG, INFO, WARNING, ERROR
+    
+  # File logging
+  file:
+    enabled: true
+    path: "logs/training.log"
+    
+  # Metrics logging frequency
+  log_every: 100            # Log metrics every N steps
+
+# Experiment Configuration
+experiment:
+  # Experiment name (used for organizing runs)
+  name: "default_experiment"
+  
+  # Random seeds for reproducibility
+  seed: 42
+  
+  # GPU settings
+  device: "cuda"            # "cuda" or "cpu"
+  cuda_deterministic: true
+  
+  # Mixed precision training
+  mixed_precision: false
+  
+  # Gradient clipping
+  gradient_clip: 1.0
+
+# Validation Configuration
+validation:
+  # Validation frequency
+  validate_every: 1         # Validate every N epochs
+  
+  # Validation metrics
+  metrics:
+    - "loss"
+    - "perplexity"
+    - "accuracy"
+    - "rmsd"
+  
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.001
+
+# Testing/Inference Configuration
+testing:
+  # Test batch size (can be larger than training)
+  batch_size: 64
+  
+  # Test data path
+  test_data: null
+  
+  # Model checkpoint to use for testing
+  checkpoint_path: null
+  
+  # Output directory for predictions
+  output_dir: "outputs"

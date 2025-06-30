@@ -4,10 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "odyssey"
-version = "0"
-description = "Odyssey"
+version = "0.1.0"
+description = "Odyssey - Protein Structure Modeling"
 authors = [{ name="Sean Moushegian", email="sean@anthrogen.com" }, {name="Shyam Venkatasubramanian", email="shyam@anthrogen.com"}]
 requires-python = ">=3.8"
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.21.0",
+    "einops>=0.6.0",
+    "matplotlib>=3.5.0",
+    "tqdm>=4.65.0",
+    "pandas>=1.3.0",
+    "scipy>=1.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "wandb>=0.15.0",
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "ruff>=0.1.0",
+]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["odyssey*"]
