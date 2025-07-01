@@ -5,9 +5,9 @@ import torch.nn.functional as F
 from typing import Optional
 import math
 import matplotlib.pyplot as plt
-from src.quantizer import Quantizer
+from odyssey.src.quantizer import Quantizer
 
-from src.models.blocks import ConvBlock, StandardTransformerBlock, GeometricTransformerBlock, ReflexiveTransformerBlock, ConsensusTransformerBlock
+from odyssey.src.models.blocks import ConvBlock, StandardTransformerBlock, GeometricTransformerBlock, ReflexiveTransformerBlock, ConsensusTransformerBlock
 
 class FSQEncoder(nn.Module):
     """

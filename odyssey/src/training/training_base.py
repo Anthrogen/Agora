@@ -14,8 +14,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.training.metrics import MetricTracker, MetricHistory, EpochMetrics
-from src.training.model_factory import save_checkpoint, load_checkpoint
+from odyssey.src.training.metrics import MetricTracker, MetricHistory, EpochMetrics
+from odyssey.src.training.model_factory import save_checkpoint, load_checkpoint
 
 
 class BaseTrainer(ABC):

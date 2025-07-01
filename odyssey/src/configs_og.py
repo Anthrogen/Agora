@@ -1,7 +1,7 @@
 import torch
 from dataclasses import dataclass
 from typing import List, Optional, Any
-from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from dataclasses import dataclass, field
 import os
 

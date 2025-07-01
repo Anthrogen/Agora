@@ -12,9 +12,6 @@ from dataclasses import dataclass, field, asdict, replace
 from typing import Optional, Tuple, Callable, Dict
 import random
 from types import SimpleNamespace
-import json
-from datetime import datetime
-import argparse
 
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -31,7 +28,10 @@ from mlm_step import mlm_step
 from discrete_diffusion_step import discrete_diffusion_step
 
 from odyssey.src.configurations import *
-from odyssey.src.config_loader import load_config_from_args
+from odyssey.src.config_loader import load_config
+
+
+model_cfg, train_cfg = load_config("configs/default_config.yaml")
 
 def worker_init_fn(worker_id):
     """Initialize each worker with a deterministic seed."""
@@ -43,10 +43,6 @@ def worker_init_fn(worker_id):
 def train(model_cfg, train_cfg):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(train_cfg.checkpoint_dir, exist_ok=True)
-    
-    # Store config dictionaries as backup
-    model_config_dict = model_cfg.get_config_dict()
-    train_config_dict = train_cfg.get_config_dict()
     
     # TODO: better printing
     print(f"Starting {model_cfg.style} training")
@@ -229,9 +225,7 @@ def train(model_cfg, train_cfg):
         'model_type': model_cfg.first_block_cfg.initials(),
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'model_config': model_cfg,
-        'model_config_dict': model_config_dict,  # Backup dictionary
-        'train_config_dict': train_config_dict   # Backup dictionary
+        'model_config': model_cfg
     }, final_checkpoint_path)
     print(f"\nSaved final checkpoint for {model_cfg.first_block_cfg.initials()}")
     
@@ -246,44 +240,42 @@ def train(model_cfg, train_cfg):
 # --------------------------------------------------------------------------- #
 #  MLM Training Configurations                                                #
 # --------------------------------------------------------------------------- #
-# NOTE: These hardcoded configurations are now replaced by YAML config files
-# Use: python train.py --config configs/mlm_config.yaml
-# _mask_cfg = SimpleMaskConfig(mask_prob_seq=0.15, mask_prob_struct=0.15)
-# # _mask_cfg = ComplexMaskConfig()
+_mask_cfg = SimpleMaskConfig(mask_prob_seq=0.15, mask_prob_struct=0.15)
+# _mask_cfg = ComplexMaskConfig()
 
-# _loss_cfg = CrossEntropyLossConfig(seq_loss_weight=1.0, struct_loss_weight=1.0, loss_elements="masked")
+_loss_cfg = CrossEntropyLossConfig(seq_loss_weight=1.0, struct_loss_weight=1.0, loss_elements="masked")
 
-# _first_block_cfg = SelfConsensusConfig(consensus_num_iterations=1, consensus_connectivity_type="local_window", consensus_w=2, consensus_r=8, consensus_edge_hidden_dim=24)
-# # _first_block_cfg = SelfAttentionConfig()
-# # _first_block_cfg = GeometricAttentionConfig()
-# # _first_block_cfg = ReflexiveAttentionConfig()
+_first_block_cfg = SelfConsensusConfig(consensus_num_iterations=1, consensus_connectivity_type="local_window", consensus_w=2, consensus_r=8, consensus_edge_hidden_dim=24)
+# _first_block_cfg = SelfAttentionConfig()
+# _first_block_cfg = GeometricAttentionConfig()
+# _first_block_cfg = ReflexiveAttentionConfig()
 
-# _train_cfg = TrainingConfig(
-#     batch_size=4,
-#     max_epochs=50,
-#     learning_rate=1e-5,
-#     mask_config=_mask_cfg,
-#     loss_config=_loss_cfg,
-#     data_dir="/workspace/demo/Odyssey/sample_data/1k.csv",
-#     checkpoint_dir="/workspace/demo/Odyssey/checkpoints/transformer_trunk"
-# )
+_train_cfg = TrainingConfig(
+    batch_size=4,
+    max_epochs=50,
+    learning_rate=1e-5,
+    mask_config=_mask_cfg,
+    loss_config=_loss_cfg,
+    data_dir="/workspace/demo/Odyssey/sample_data/1k.csv",
+    checkpoint_dir="/workspace/demo/Odyssey/checkpoints/transformer_trunk"
+)
 
-# _model_cfg = TrunkConfig(
-#     style='mlm',
-#     d_model=128,
-#     n_heads=1,
-#     n_layers=3,
-#     max_len=2048,
-#     dropout=0.1,
-#     ff_mult=4,
-#     first_block_cfg=_first_block_cfg,
-#     reference_model_seed=42,
-#     fsq_encoder_path="/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_simple_model.pt", # complex_model.pt
-#     seq_vocab=len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS),
-#     struct_vocab=4375 + len(SPECIAL_TOKENS),
-#     seq_absorb_token=SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS),
-#     struct_absorb_token=SPECIAL_TOKENS.MASK.value + 4375
-# )
+_model_cfg = TrunkConfig(
+    style='mlm',
+    d_model=128,
+    n_heads=1,
+    n_layers=3,
+    max_len=2048,
+    dropout=0.1,
+    ff_mult=4,
+    first_block_cfg=_first_block_cfg,
+    reference_model_seed=42,
+    fsq_encoder_path="/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_simple_model.pt", # complex_model.pt
+    seq_vocab=len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS),
+    struct_vocab=4375 + len(SPECIAL_TOKENS),
+    seq_absorb_token=SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS),
+    struct_absorb_token=SPECIAL_TOKENS.MASK.value + 4375
+)
 
 # --------------------------------------------------------------------------- #
 #  Discrete Diffusion Training Configurations                                 #
@@ -405,8 +397,4 @@ def train(model_cfg, train_cfg):
 # )
 
 if __name__ == "__main__":
-    # Load configuration from YAML file instead of hardcoded values
-    config_loader, model_cfg, train_cfg = load_config_from_args()
-    
-    # Run training with loaded configurations
-    train(model_cfg, train_cfg)
+    train(_model_cfg, _train_cfg)

@@ -33,10 +33,10 @@ from torch.utils.data.distributed import DistributedSampler
 
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from src.models.transformer import TransformerTrunk
-from src.quantizer.fsq import FSQ
+from odyssey.src.models.transformer import TransformerTrunk
+from odyssey.src.quantizer.fsq import FSQ
 from trained_fsq.fsq_autoencoder_GA_var3 import FSQEncoder, FSQDecoder
-from src.data_loader import (
+from odyssey.src.data_loader import (
     ProteinBackboneDataset, AMINO_ACID_VOCAB, STRUCTURE_SPECIAL_TOKENS,
     STRUCTURE_VOCAB_SIZE, add_structure_special_tokens
 )

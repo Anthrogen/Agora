@@ -4,7 +4,7 @@ import math
 from typing import Dict, Optional, Literal
 import torch
 
-from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from .base import BaseMaskingStrategy
 
 

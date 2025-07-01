@@ -1,7 +1,7 @@
 import torch
 from typing import Dict
-from src.models.autoencoder import Autoencoder, StandardTransformerBlock
-from src.models.transformer import TransformerTrunk
+from odyssey.src.models.autoencoder import Autoencoder, StandardTransformerBlock
+from odyssey.src.models.transformer import TransformerTrunk
 
 def ensure_identical_parameters_transformers(models: Dict[str, TransformerTrunk], seed: int):
     """Ensure all models have identical parameters where possible.

@@ -1,8 +1,7 @@
-
-from src.attention.GeometricAttention import GeometricAttention
-from src.attention.SelfAttention import SelfAttention
-from src.attention.ReflexiveAttention import ReflexiveAttention
-from src.attention.SelfConsensus import SelfConsensus
+from odyssey.src.attention.GeometricAttention import GeometricAttention
+from odyssey.src.attention.SelfAttention import SelfAttention
+from odyssey.src.attention.ReflexiveAttention import ReflexiveAttention
+from odyssey.src.attention.SelfConsensus import SelfConsensus
 
 import torch
 from torch import nn

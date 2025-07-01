@@ -6,9 +6,9 @@ It provides methods of loading and saving models to and from checkpoints/.
 import torch
 import os
 from typing import Dict
-from src.models.transformer import TransformerTrunk
-from src.models.blocks import StandardTransformerBlock
-from src.models.autoencoder import Autoencoder
+from odyssey.src.models.transformer import TransformerTrunk
+from odyssey.src.models.blocks import StandardTransformerBlock
+from odyssey.src.models.autoencoder import Autoencoder
 
 
 def ensure_identical_parameters_all_models(models: Dict[str, TransformerTrunk | Autoencoder], seed: int):

@@ -29,13 +29,13 @@ from types import SimpleNamespace
 
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from src.models.transformer import TransformerTrunk, StandardTransformerBlock
-from src.models.autoencoder import FSQEncoder
-from src.dataset import ProteinDataset
-from src.dataloader import DiffusionDataLoader, MaskedBatch
-from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from src.losses import score_entropy_loss
-from src.configurations import TrunkConfig, TrainingConfig
+from odyssey.src.models.transformer import TransformerTrunk, StandardTransformerBlock
+from odyssey.src.models.autoencoder import FSQEncoder
+from odyssey.src.dataset import ProteinDataset
+from odyssey.src.dataloader import DiffusionDataLoader, MaskedBatch
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from odyssey.src.losses import score_entropy_loss
+from odyssey.src.configurations import TrunkConfig, TrainingConfig
 
 def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: TrunkConfig, train_cfg: TrainingConfig, train_mode: bool = True) -> Dict[str, float]:
     """Perform a single step with discrete diffusion."""

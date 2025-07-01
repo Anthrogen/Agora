@@ -2,12 +2,12 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader
 from typing import Tuple
-from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from src.tokenizer_bos_eos_pad import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from odyssey.src.tokenizer_bos_eos_pad import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer
 import math
 from abc import abstractmethod
 
-from src.configurations import DiffusionConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig
+from odyssey.src.configurations import DiffusionConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig
 
 # --------------------------------------------------------------------------- #
 #  Noise Schedules for complex masking                                        #

@@ -1,7 +1,7 @@
 # loss_functions.py
 import torch
 import torch.nn.functional as F
-from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 
 # --------------------------------------------------------------------------- #
 #  MLM Utilities                                                              #

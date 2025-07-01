@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from typing import Optional
 import math
 
-from src.models.blocks import SinusoidalPositionEmbeddings, AdaptiveLayerNorm, ConvBlock, StandardTransformerBlock, GeometricTransformerBlock, ReflexiveTransformerBlock, ConsensusTransformerBlock
+from odyssey.src.models.blocks import SinusoidalPositionEmbeddings, AdaptiveLayerNorm, ConvBlock, StandardTransformerBlock, GeometricTransformerBlock, ReflexiveTransformerBlock, ConsensusTransformerBlock
 
 # --------------------------------------------------------------------------- #
 #  Top-level model                                                             #

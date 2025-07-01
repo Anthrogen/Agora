@@ -11,10 +11,10 @@ import torch.nn as nn
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, Union
 
-from src.models.transformer import Transformer
-from src.models.autoencoder import Autoencoder, FSQEncoder
-from src.model_librarian import ensure_identical_parameters_all_architectures
-from src.training.config import (
+from odyssey.src.models.transformer import Transformer
+from odyssey.src.models.autoencoder import Autoencoder, FSQEncoder
+from odyssey.src.model_librarian import ensure_identical_parameters_all_architectures
+from odyssey.src.training.config import (
     BaseModelConfig, FSQModelConfig, TransformerModelConfig,
     BaseTrainingConfig, CheckpointConfig
 )

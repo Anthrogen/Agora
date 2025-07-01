@@ -5,7 +5,7 @@ from typing import Dict, Optional, Literal, Tuple
 import torch
 import torch.nn.functional as F
 
-from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from .base import BaseMaskingStrategy
 
 

@@ -13,7 +13,7 @@ import os
 # Add both parent directory and src to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
-from src.dataloader import _get_noise_levels
+from odyssey.src.dataloader import _get_noise_levels
 
 def plot_mask_density():
     """Plot density distributions of mask percentages for different schedules."""
