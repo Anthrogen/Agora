@@ -7,6 +7,8 @@ from src.tokenizer_bos_eos_pad import SequenceTokenizer, StructureTokenizer, Coo
 import math
 from abc import abstractmethod
 
+from src.configurations import DiffusionConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig
+
 # --------------------------------------------------------------------------- #
 #  Noise Schedules for complex masking                                        #
 # --------------------------------------------------------------------------- #
@@ -81,9 +83,9 @@ def _get_noise_levels(s_min, s_max, T, schedule_type="linear"):
         # Convert to cumulative noise levels
         cumulative_noise_levels = -torch.log(1 - mask_probs + 1e-8)
         
-        # For uniform schedule, instantaneous noise is constant
-        # (equal time spent at each mask percentage)
-        inst_noise_levels = torch.full_like(cumulative_noise_levels, (s_max - s_min) / T)
+        # Compute instantaneous noise as derivative of cumulative noise
+        # d/dt[-log(1 - mask_probs)] = d/dt[-log(1 - (0.05 + 0.9*t))] = 0.9 / (1 - (0.05 + 0.9*t))
+        inst_noise_levels = 0.9 / (1 - mask_probs + 1e-8)
         
     else:
         raise ValueError(f"Unknown schedule type: {schedule_type}. Must be 'linear', 'inverted_u', or 'uniform'")
@@ -107,19 +109,18 @@ def _sample_cosine(batch_size: int, device: torch.device) -> torch.Tensor:
     mask_rates = torch.sin(u * np.pi / 2)  # Apply sine transformation
     return torch.clamp(mask_rates, min=0.05, max=0.95)  # Clamp to avoid extreme values
 
-def _get_training_dataloader(dataset, model_cfg, train_cfg, tracks, device, diffusion_cfg=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-    #TODO: replace this with a constructor that simply examines the MaskCfg object of the TrainingConfig object
-    if train_cfg.masking_strategy == "simple":
+def _get_training_dataloader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
+    # Determine dataloader type based on mask_config type
+    if isinstance(train_cfg.mask_config, SimpleMaskConfig):
         return SimpleDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
-    elif train_cfg.masking_strategy == "complex":
+    elif isinstance(train_cfg.mask_config, ComplexMaskConfig):
         return ComplexDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
-    elif train_cfg.masking_strategy == "discrete_diffusion":
-        assert diffusion_cfg is not None, "Diffusion config is required for discrete diffusion"
-        return DiffusionDataLoader(dataset, model_cfg, train_cfg, diffusion_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
-    elif train_cfg.masking_strategy == "no_mask":
+    elif isinstance(train_cfg.mask_config, DiffusionConfig):
+        return DiffusionDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
+    elif isinstance(train_cfg.mask_config, NoMaskConfig):
         return NoMaskDataLoader(dataset, model_cfg, train_cfg, tracks, device, **kwargs)
     else:
-        raise ValueError(f"Unknown masking strategy: {train_cfg.masking_strategy}")
+        raise ValueError(f"Unknown mask config type: {type(train_cfg.mask_config)}. Expected SimpleMaskConfig, ComplexMaskConfig, DiffusionConfig, or NoMaskConfig.")
     
 
 class MaskingDataLoader(DataLoader):
@@ -162,10 +163,6 @@ class MaskingDataLoader(DataLoader):
             #print(f"Iterative over track {track}")
             batch.apply_mask(track, batch.masks[track])
 
-        # if self.propogate_coords_mask:
-        #     batch.apply_mask('struct', batch.masks['coords'])
-        # else:
-        #     batch.apply_mask('struct', batch.masks['struct'])
         if self.tracks['struct']:
             batch.apply_mask('struct', batch.masks['coords'])
 
@@ -180,7 +177,8 @@ class SimpleDataLoader(MaskingDataLoader):
     def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
         super(SimpleDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device,fsq_encoder=fsq_encoder, min_unmasked=min_unmasked,  **kwargs)
 
-        self.simple_mask_prob = {'seq': train_cfg.mask_prob_seq, 'coords': train_cfg.mask_prob_coords}
+        assert isinstance(train_cfg.mask_config, SimpleMaskConfig)
+        self.simple_mask_prob = {'seq': train_cfg.mask_config.mask_prob_seq, 'coords': train_cfg.mask_config.mask_prob_struct}
 
     def sample_masks(self, batch):
         for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:
@@ -224,18 +222,19 @@ class NoMaskDataLoader(MaskingDataLoader):
 class DiffusionDataLoader(MaskingDataLoader):
     """DataLoader that applies discrete diffusion noise process during batch collation."""
 
-    def __init__(self, dataset, model_cfg, train_cfg, diffusion_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
+    def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
         super(DiffusionDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, min_unmasked=min_unmasked, **kwargs)
 
         # Store diffusion config
-        self.diffusion_cfg = diffusion_cfg
+        self.diffusion_cfg = train_cfg.mask_config
+        assert isinstance(self.diffusion_cfg, DiffusionConfig)
 
         # Pre-compute noise levels
         self.inst_noise_levels, self.cumulative_noise_levels = _get_noise_levels(
-            diffusion_cfg.sigma_min, 
-            diffusion_cfg.sigma_max, 
-            diffusion_cfg.num_timesteps,
-            diffusion_cfg.noise_schedule
+            self.diffusion_cfg.sigma_min, 
+            self.diffusion_cfg.sigma_max, 
+            self.diffusion_cfg.num_timesteps,
+            self.diffusion_cfg.noise_schedule
         )
         # Move to device
         self.inst_noise_levels = self.inst_noise_levels.to(self.device)
