@@ -32,13 +32,13 @@ from types import SimpleNamespace
 
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from src.models.autoencoder import Autoencoder, StandardTransformerBlock
-from src.models.autoencoder import FSQEncoder
-from src.dataloader import MaskedBatch, SimpleDataLoader, ComplexDataLoader, DiffusionDataLoader, NoMaskDataLoader, _get_training_dataloader
-from src.dataset import ProteinDataset
-from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
-from src.configurations import FSQConfig, TrainingConfig
+from odyssey.src.models.autoencoder import Autoencoder, StandardTransformerBlock
+from odyssey.src.models.autoencoder import FSQEncoder
+from odyssey.src.dataloader import MaskedBatch, SimpleDataLoader, ComplexDataLoader, DiffusionDataLoader, NoMaskDataLoader, _get_training_dataloader
+from odyssey.src.dataset import ProteinDataset
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from odyssey.src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
+from odyssey.src.configurations import FSQConfig, TrainingConfig
 
 def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: FSQConfig, train_cfg: TrainingConfig, train_mode=True) -> Dict[str, float]:
     # Stage 1: Masked coordinate reconstruction

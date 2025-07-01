@@ -1,0 +1,61 @@
+# Configuration for Large-scale Discrete Diffusion training
+# Example of scaling up model size for discrete diffusion
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+model:
+  style: "discrete_diffusion"
+  
+  # Larger transformer parameters
+  d_model: 1024
+  n_heads: 16
+  n_layers: 24
+  max_len: 2048
+  dropout: 0.1
+  ff_mult: 4
+  reference_model_seed: 42
+  
+  # Using Self-Consensus with more iterations
+  block_type: "self_consensus"
+  block_params:
+    num_iterations: 2
+    connectivity_type: "top_w"
+    w: 5
+    r: 32
+    edge_hidden_dim: 32
+  
+  # Trunk-specific parameters
+  fsq_encoder_path: "checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt"
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+training:
+  batch_size: 8  # Smaller batch size due to larger model
+  max_epochs: 200
+  learning_rate: 1e-4
+  
+  # Data paths
+  data_dir: "sample_data/1k"
+  checkpoint_dir: "checkpoints/transformer_trunk"
+
+# =============================================================================
+# Loss Configuration
+# =============================================================================
+loss:
+  type: "score_entropy"
+  weights:
+    sequence: 1.0
+    structure: 1.2  # Slightly higher weight on structure
+
+# =============================================================================
+# Masking Configuration
+# =============================================================================
+masking:
+  strategy: "discrete_diffusion"
+  discrete_diffusion:
+    noise_schedule: "inverted_u"  # Different noise schedule
+    sigma_min: 0.1
+    sigma_max: 10.0
+    num_timesteps: 200  # More timesteps

@@ -15,15 +15,15 @@ from dataclasses import dataclass, field
 import json
 from copy import deepcopy
 
-from src.configurations import (
+from odyssey.src.configurations import (
     Config, TransformerConfig, TrunkConfig, FSQConfig, TrainingConfig,
-    LossConfig, CrossEntropyLossConfig, KabschRMSDLossConfig,
+    LossConfig, CrossEntropyLossConfig, KabschRMSDLossConfig, ScoreEntropyLossConfig,
     MaskConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig, DiffusionConfig,
     BlockConfig, SelfConsensusConfig, ReflexiveAttentionConfig, 
     SelfAttentionConfig, GeometricAttentionConfig,
     ConfigurationError
 )
-from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 
 
 class ConfigLoader:
@@ -121,6 +121,12 @@ class ConfigLoader:
         """
         model_cfg = self.config['model']
         
+        # Validate required fields
+        required_fields = ['style', 'd_model', 'n_heads', 'n_layers', 'max_len', 'dropout', 'ff_mult']
+        for field in required_fields:
+            if field not in model_cfg:
+                raise ValueError(f"Missing required model field: {field}")
+        
         # Calculate vocabulary sizes
         seq_vocab = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)
         struct_vocab = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
@@ -139,7 +145,8 @@ class ConfigLoader:
             'max_len': model_cfg['max_len'],
             'dropout': model_cfg['dropout'],
             'ff_mult': model_cfg['ff_mult'],
-            'first_block_config': first_block_config,
+            'first_block_cfg': first_block_config,
+            'reference_model_seed': model_cfg.get('reference_model_seed', 42),
             'seq_vocab': seq_vocab,
             'struct_vocab': struct_vocab
         }
@@ -147,41 +154,73 @@ class ConfigLoader:
         # Create appropriate config based on style
         if model_cfg['style'] in ['stage_1', 'stage_2']:
             # FSQ configuration
-            fsq_params = model_cfg.get('fsq', {})
+            if 'fsq' not in model_cfg:
+                raise ValueError(f"FSQ parameters required for {model_cfg['style']} style")
+            
+            fsq_params = model_cfg['fsq']
+            if 'latent_dim' not in fsq_params or 'levels' not in fsq_params:
+                raise ValueError("FSQ config must include 'latent_dim' and 'levels'")
+            
             config = FSQConfig(
                 **common_params,
-                latent_dim=fsq_params.get('latent_dim', 32),
-                fsq_levels=fsq_params.get('levels', [7, 5, 5, 5, 5]),
+                latent_dim=fsq_params['latent_dim'],
+                fsq_levels=fsq_params['levels'],
                 fsq_encoder_path=fsq_params.get('encoder_path') if model_cfg['style'] == 'stage_2' else None
             )
         elif model_cfg['style'] in ['mlm', 'discrete_diffusion']:
             # Trunk configuration
+            if 'fsq_encoder_path' not in model_cfg:
+                raise ValueError(f"fsq_encoder_path required for {model_cfg['style']} style")
+            
+            seq_absorb_token = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS)
+            struct_absorb_token = SPECIAL_TOKENS.MASK.value + 4375
             config = TrunkConfig(
                 **common_params,
-                fsq_encoder_path=model_cfg.get('fsq_encoder_path')
+                fsq_encoder_path=model_cfg['fsq_encoder_path'],
+                seq_absorb_token=seq_absorb_token,
+                struct_absorb_token=struct_absorb_token
             )
         else:
-            # Base transformer configuration
-            config = TransformerConfig(**common_params)
+            raise ValueError(f"Unknown model style: {model_cfg['style']}")
         
         return config
     
     def get_mask_config(self) -> MaskConfig:
         """Create mask configuration based on strategy."""
+        if 'masking' not in self.config:
+            raise ValueError("Configuration must include 'masking' section")
+        
         mask_cfg = self.config['masking']
+        if 'strategy' not in mask_cfg:
+            raise ValueError("Masking configuration must specify 'strategy'")
+        
         strategy = mask_cfg['strategy']
         
         if strategy == 'simple':
+            if 'simple' not in mask_cfg:
+                raise ValueError("Simple masking requires 'simple' configuration section")
+            simple_cfg = mask_cfg['simple']
+            if 'mask_prob_seq' not in simple_cfg or 'mask_prob_struct' not in simple_cfg:
+                raise ValueError("Simple masking requires 'mask_prob_seq' and 'mask_prob_struct'")
+            
             return SimpleMaskConfig(
-                mask_prob_seq=mask_cfg['simple']['mask_prob_seq'],
-                mask_prob_struct=mask_cfg['simple']['mask_prob_struct']
+                mask_prob_seq=simple_cfg['mask_prob_seq'],
+                mask_prob_struct=simple_cfg['mask_prob_struct']
             )
         elif strategy == 'complex':
             return ComplexMaskConfig()
         elif strategy == 'none':
             return NoMaskConfig()
         elif strategy == 'discrete_diffusion':
+            if 'discrete_diffusion' not in mask_cfg:
+                raise ValueError("Discrete diffusion masking requires 'discrete_diffusion' configuration section")
+            
             diff_cfg = mask_cfg['discrete_diffusion']
+            required_fields = ['noise_schedule', 'sigma_min', 'sigma_max', 'num_timesteps']
+            for field in required_fields:
+                if field not in diff_cfg:
+                    raise ValueError(f"Discrete diffusion masking requires '{field}'")
+            
             return DiffusionConfig(
                 noise_schedule=diff_cfg['noise_schedule'],
                 sigma_min=diff_cfg['sigma_min'],
@@ -189,41 +228,64 @@ class ConfigLoader:
                 num_timesteps=diff_cfg['num_timesteps']
             )
         else:
-            raise ValueError(f"Unknown masking strategy: {strategy}")
+            raise ValueError(f"Unknown masking strategy: {strategy}. Valid options: simple, complex, none, discrete_diffusion")
     
     def get_loss_config(self) -> LossConfig:
         """Create loss configuration."""
         loss_cfg = self.config['loss']
+        if 'type' not in loss_cfg:
+            raise ValueError("Loss configuration must specify 'type'")
+        
         loss_type = loss_cfg['type']
         
         if loss_type == 'cross_entropy':
+            if 'weights' not in loss_cfg:
+                raise ValueError("Cross-entropy loss requires 'weights' section")
+            if 'loss_elements' not in loss_cfg:
+                raise ValueError("Cross-entropy loss requires 'loss_elements'")
+            
+            weights = loss_cfg['weights']
+            if 'sequence' not in weights or 'structure' not in weights:
+                raise ValueError("Loss weights must include 'sequence' and 'structure'")
+            
             return CrossEntropyLossConfig(
-                seq_loss_weight=loss_cfg['weights']['sequence'],
-                struct_loss_weight=loss_cfg['weights']['structure'],
+                seq_loss_weight=weights['sequence'],
+                struct_loss_weight=weights['structure'],
                 loss_elements=loss_cfg['loss_elements']
             )
         elif loss_type == 'kabsch_rmsd':
-            return KabschRMSDLossConfig(
-                rmsd_elements=loss_cfg['rmsd_elements']
+            return KabschRMSDLossConfig()
+        elif loss_type == 'score_entropy':
+            if 'weights' not in loss_cfg:
+                raise ValueError("Score entropy loss requires 'weights' section")
+            
+            weights = loss_cfg['weights']
+            if 'sequence' not in weights or 'structure' not in weights:
+                raise ValueError("Loss weights must include 'sequence' and 'structure'")
+            
+            return ScoreEntropyLossConfig(
+                seq_loss_weight=weights['sequence'],
+                struct_loss_weight=weights['structure']
             )
-        elif loss_type == 'diffusion':
-            # Diffusion loss is handled as part of DiffusionConfig
-            return self.get_mask_config()  # Returns DiffusionConfig which is also a LossConfig
         else:
-            raise ValueError(f"Unknown loss type: {loss_type}")
+            raise ValueError(f"Unknown loss type: {loss_type}. Valid options: cross_entropy, kabsch_rmsd, score_entropy")
     
     def get_training_config(self) -> TrainingConfig:
         """Create training configuration object."""
+        if 'training' not in self.config:
+            raise ValueError("Configuration must include 'training' section")
+        
         train_cfg = self.config['training']
+        
+        # Validate required fields
+        required_fields = ['batch_size', 'max_epochs', 'learning_rate', 'data_dir', 'checkpoint_dir']
+        for field in required_fields:
+            if field not in train_cfg:
+                raise ValueError(f"Missing required training field: {field}")
         
         # Get mask and loss configurations
         mask_config = self.get_mask_config()
-        
-        # For diffusion, the mask config is also the loss config
-        if isinstance(mask_config, DiffusionConfig):
-            loss_config = mask_config
-        else:
-            loss_config = self.get_loss_config()
+        loss_config = self.get_loss_config()
         
         config = TrainingConfig(
             batch_size=train_cfg['batch_size'],
@@ -277,6 +339,33 @@ class ConfigLoader:
         
         with open(output_path, 'w') as f:
             yaml.dump(self.config, f, default_flow_style=False, sort_keys=False)
+    
+    def validate_config_consistency(self) -> None:
+        """Validate that configuration combinations make sense."""
+        model_style = self.config['model']['style']
+        loss_type = self.config['loss']['type']
+        mask_strategy = self.config['masking']['strategy']
+        
+        # Validate loss type for model style
+        if model_style in ['stage_1', 'stage_2'] and loss_type != 'kabsch_rmsd':
+            print(f"Warning: FSQ models typically use 'kabsch_rmsd' loss, but got '{loss_type}'")
+        
+        if model_style == 'mlm' and loss_type != 'cross_entropy':
+            print(f"Warning: MLM models typically use 'cross_entropy' loss, but got '{loss_type}'")
+        
+        if model_style == 'discrete_diffusion':
+            if loss_type != 'score_entropy':
+                print(f"Warning: Discrete diffusion models should use 'score_entropy' loss, but got '{loss_type}'")
+            if mask_strategy != 'discrete_diffusion':
+                print(f"Warning: Discrete diffusion models should use 'discrete_diffusion' masking, but got '{mask_strategy}'")
+        
+        # Validate stage 2 requirements
+        if model_style == 'stage_2':
+            if mask_strategy != 'none':
+                print(f"Warning: Stage 2 training typically uses 'none' masking, but got '{mask_strategy}'")
+            fsq_params = self.config['model'].get('fsq', {})
+            if 'encoder_path' not in fsq_params or not fsq_params['encoder_path']:
+                raise ValueError("Stage 2 training requires fsq.encoder_path to be specified")
     
     def print_config(self) -> None:
         """Print configuration in a readable format."""
@@ -371,6 +460,9 @@ def load_config_from_args(args: Optional[argparse.Namespace] = None) -> tuple:
     # Merge with command-line arguments
     config_loader.merge_with_args(args)
     
+    # Validate configuration consistency
+    config_loader.validate_config_consistency()
+    
     # Print config if requested
     if args.print_config:
         config_loader.print_config()
@@ -382,8 +474,14 @@ def load_config_from_args(args: Optional[argparse.Namespace] = None) -> tuple:
         print(f"Configuration saved to: {args.save_config}")
     
     # Create configuration objects
-    model_config = config_loader.get_model_config()
-    training_config = config_loader.get_training_config()
+    try:
+        model_config = config_loader.get_model_config()
+        training_config = config_loader.get_training_config()
+    except Exception as e:
+        print(f"\nError creating configuration: {e}")
+        print("\nPlease check your configuration file follows the correct format.")
+        print("See configs/configuration_constructor.md for detailed documentation.")
+        raise
     
     return config_loader, model_config, training_config
 

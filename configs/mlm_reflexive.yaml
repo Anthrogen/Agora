@@ -1,0 +1,55 @@
+# Configuration for MLM with Reflexive Attention
+# Example of MLM training with different attention mechanism
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+model:
+  style: "mlm"
+  
+  # Core transformer parameters
+  d_model: 512
+  n_heads: 8
+  n_layers: 10
+  max_len: 2048
+  dropout: 0.1
+  ff_mult: 4
+  reference_model_seed: 42
+  
+  # Using Reflexive Attention
+  block_type: "reflexive_attention"
+  block_params: {}
+  
+  # Trunk-specific parameters
+  fsq_encoder_path: "checkpoints/fsq/GA_stage_1_iter1_simple.pt"
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+training:
+  batch_size: 16
+  max_epochs: 80
+  learning_rate: 3e-5
+  
+  # Data paths
+  data_dir: "sample_data/1k"
+  checkpoint_dir: "checkpoints/transformer_trunk"
+
+# =============================================================================
+# Loss Configuration
+# =============================================================================
+loss:
+  type: "cross_entropy"
+  weights:
+    sequence: 1.0
+    structure: 1.0
+  loss_elements: "non_beospank"  # Different loss element strategy
+
+# =============================================================================
+# Masking Configuration
+# =============================================================================
+masking:
+  strategy: "simple"
+  simple:
+    mask_prob_seq: 0.25    # Higher masking probability
+    mask_prob_struct: 0.25

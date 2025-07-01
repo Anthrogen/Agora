@@ -1,0 +1,53 @@
+# Configuration for FSQ Stage 1 training with Geometric Attention
+# Example of using different attention blocks
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+model:
+  style: "stage_1"
+  
+  # Core transformer parameters
+  d_model: 256
+  n_heads: 8
+  n_layers: 8
+  max_len: 1024
+  dropout: 0.1
+  ff_mult: 4
+  reference_model_seed: 42
+  
+  # Using Geometric Attention instead of Self Attention
+  block_type: "geometric_attention"
+  block_params: {}
+  
+  # FSQ parameters
+  fsq:
+    latent_dim: 32
+    levels: [7, 5, 5, 5, 5]
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+training:
+  batch_size: 8
+  max_epochs: 100
+  learning_rate: 5e-5
+  
+  # Data paths
+  data_dir: "sample_data/1k"
+  checkpoint_dir: "checkpoints/fsq"
+
+# =============================================================================
+# Loss Configuration
+# =============================================================================
+loss:
+  type: "kabsch_rmsd"
+
+# =============================================================================
+# Masking Configuration
+# =============================================================================
+masking:
+  strategy: "simple"
+  simple:
+    mask_prob_seq: 0.15
+    mask_prob_struct: 0.15

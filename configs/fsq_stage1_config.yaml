@@ -1,0 +1,52 @@
+# Configuration for FSQ Stage 1 training
+# Trains FSQ encoder from scratch using Kabsch RMSD loss
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+model:
+  style: "stage_1"
+  
+  # Core transformer parameters
+  d_model: 128
+  n_heads: 1
+  n_layers: 3
+  max_len: 2048
+  dropout: 0.1
+  ff_mult: 4
+  reference_model_seed: 42
+  
+  # Block type for first transformer block
+  block_type: "self_attention"
+  
+  # FSQ parameters
+  fsq:
+    latent_dim: 32
+    levels: [7, 5, 5, 5, 5]
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+training:
+  batch_size: 4
+  max_epochs: 50
+  learning_rate: 1e-5
+  
+  # Data paths
+  data_dir: "sample_data/1k"
+  checkpoint_dir: "checkpoints/fsq"
+
+# =============================================================================
+# Loss Configuration
+# =============================================================================
+loss:
+  type: "kabsch_rmsd"
+
+# =============================================================================
+# Masking Configuration
+# =============================================================================
+masking:
+  strategy: "simple"
+  simple:
+    mask_prob_seq: 0.15
+    mask_prob_struct: 0.15

@@ -1,5 +1,12 @@
-# Odyssey Configuration File
-# This file contains configuration parameters matching the configurations.py structure
+# Odyssey Default Configuration File
+# FSQ Stage 1 Training Configuration
+#
+# SAFETY TIP: Before modifying this file, create a backup:
+#   cp configs/default_config.yaml configs/backup/default_config_$(date +%Y%m%d).yaml
+#
+# Or use the built-in backup features:
+#   python train_from_config.py --config configs/default_config.yaml \
+#     --save-config configs/backup/default_config_backup.yaml
 
 # =============================================================================
 # Model Configuration
@@ -16,6 +23,7 @@ model:
   max_len: 2048             # Maximum sequence length
   dropout: 0.1              # Dropout rate
   ff_mult: 4                # Feedforward multiplier (ff_dim = d_model * ff_mult)
+  reference_model_seed: 42  # Seed for model initialization
   
   # Block type for first transformer block
   # Options: "self_attention", "geometric_attention", "reflexive_attention", "self_consensus"
@@ -30,14 +38,10 @@ model:
     r: 24                   # Rank of Lambda_ij matrices
     edge_hidden_dim: 12     # Hidden dimension for edge networks
   
-  # FSQ parameters (used for stage_1 and stage_2)
+  # FSQ parameters (required for stage_1)
   fsq:
     latent_dim: 32          # Pre-quantized continuous latent dimension
     levels: [7, 5, 5, 5, 5] # Quantization levels for each dimension
-    # encoder_path: null    # Path to pre-trained encoder (required for stage_2)
-  
-  # FSQ encoder path for trunk models (mlm, discrete_diffusion)
-  # fsq_encoder_path: "checkpoints/fsq/GA_stage_1_iter1_simple.pt"
 
 # =============================================================================
 # Training Configuration
@@ -56,21 +60,8 @@ training:
 # Loss Configuration
 # =============================================================================
 loss:
-  # Loss type: "cross_entropy", "kabsch_rmsd", or "diffusion"
-  type: "cross_entropy"
-  
-  # Cross-entropy loss weights
-  weights:
-    sequence: 1.0
-    structure: 1.0
-  
-  # Loss elements - which positions contribute to loss
-  # Options: "masked", "non_beospank", "non_special"
-  loss_elements: "masked"
-  
-  # RMSD elements (for kabsch_rmsd loss)
-  # Options: "masked", "non_beospank", "non_special", "non_masked"
-  # rmsd_elements: "non_masked"
+  # Loss type: "cross_entropy", "kabsch_rmsd", "score_entropy"
+  type: "kabsch_rmsd"  # FSQ stage 1 uses RMSD loss
 
 # =============================================================================
 # Masking Configuration
@@ -88,17 +79,9 @@ masking:
   # complex:
   #   # Add parameters when ComplexMaskConfig is fully defined
   
-  # Discrete diffusion parameters
-  discrete_diffusion:
-    noise_schedule: "linear"  # "linear", "inverted_u", or "uniform"
-    sigma_min: 0.31
-    sigma_max: 5.68
-    num_timesteps: 100
-
-# =============================================================================
-# Experiment Configuration (for reference, not used in core configs)
-# =============================================================================
-experiment:
-  name: "default_experiment"
-  seed: 42
-  device: "cuda"
+  # Discrete diffusion parameters (not used for stage_1)
+  # discrete_diffusion:
+  #   noise_schedule: "linear"  # "linear", "inverted_u", or "uniform"
+  #   sigma_min: 0.31
+  #   sigma_max: 5.68
+  #   num_timesteps: 100
