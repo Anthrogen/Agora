@@ -88,7 +88,7 @@ class DiffusionConfig:
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
-    model_type: str = "RA"  # Model to train - can be "SA", "GA", "RA", or "SC"
+    model_type: str = "SC"  # Model to train - can be "SA", "GA", "RA", or "SC"
     batch_size: int = 4  # Training hyperparameters
     max_epochs: int = 70
     learning_rate: float = 1e-5
@@ -105,17 +105,8 @@ class TrainingConfig:
 
 def create_model_with_config(model_type: str, base_config: ModelConfig, device: torch.device) -> Autoencoder:
     """Create a model with specific first layer type."""
-    
-    # For stage 1, use the model_type and n_layers from the base config
-    if base_config.stage == "stage_1":
-        actual_model_type = model_type
-
-    # For stage 2, override model_type to SA and n_layers to 10
-    elif base_config.stage == "stage_2":
-        actual_model_type = "SA"  # Always use SA for stage 2
-    
     config = ModelConfig(
-        model_type=actual_model_type,
+        model_type=model_type,
         fsq_dim=base_config.fsq_dim,
         fsq_levels=base_config.fsq_levels,
         stage=base_config.stage,
@@ -383,8 +374,9 @@ def main():
                 # Load encoder state dict
                 encoder_state = {k.removeprefix('encoder.'): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
                 fsq_config = SimpleNamespace(**checkpoint['model_cfg_dict'])
-                fsq_encoder = FSQEncoder(fsq_config)
-                fsq_encoder.load_state_dict(encoder_state)
+                model.encoder = FSQEncoder(fsq_config).to(device)
+                model.encoder.load_state_dict(encoder_state)
+                model.quantizer = model.encoder.quantizer
                 print(f"Loaded encoder weights for {train_cfg.model_type} from {encoder_checkpoint_path}")
             else:
                 raise ValueError(f"No stage 1 checkpoint found for {train_cfg.model_type}. Please train stage 1 first.")
@@ -428,9 +420,9 @@ def main():
             val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, stage_1_tracks, device, diffusion_cfg=diffusion_cfg, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked)
 
         elif model_cfg.stage == "stage_2":  # stage_2 - no masking
-            stage_2_tracks = {'seq': True, 'struct': False, 'coords': True}
-            train_loader = NoMaskDataLoader(train_ds, model_cfg, train_cfg, stage_2_tracks, device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn)
-            val_loader = NoMaskDataLoader(val_ds, model_cfg, train_cfg, stage_2_tracks, device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn)
+            stage_2_tracks = {'seq': True, 'struct': True, 'coords': True}
+            train_loader = NoMaskDataLoader(train_ds, model_cfg, train_cfg, stage_2_tracks, device, fsq_encoder=model.encoder, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn)
+            val_loader = NoMaskDataLoader(val_ds, model_cfg, train_cfg, stage_2_tracks, device, fsq_encoder=model.encoder, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn)
         
         # Initialize tracking for the model
         history = {'train_loss': [], 'train_rmsd': [], 'val_loss': [], 'val_rmsd': []}

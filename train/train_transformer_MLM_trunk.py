@@ -66,6 +66,8 @@ class ModelConfig:
     consensus_r: int = 8  # Rank of Lambda_ij matrices
     consensus_edge_hidden_dim: int = 24  # Hidden dim for edge networks
 
+
+
 @dataclass
 class TrainingConfig:
     """Training process configuration."""
