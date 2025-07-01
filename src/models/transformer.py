@@ -41,19 +41,20 @@ class TransformerTrunk(nn.Module):
         self.layers = nn.ModuleList()
         
         # First block: either geometric transformer block or standard block
-        if cfg.model_type == "GA":
+        model_type = cfg.first_block_cfg.initials()
+        if model_type == "GA":
             self.layers.append(GeometricTransformerBlock(cfg, use_adaln, time_embed_dim))
-        elif cfg.model_type == "SA":
+        elif model_type == "SA":
             self.layers.append(StandardTransformerBlock(cfg, use_adaln, time_embed_dim))
-        elif cfg.model_type == "RA":
+        elif model_type == "RA":
             self.layers.append(ReflexiveTransformerBlock(cfg, use_adaln, time_embed_dim))
-        elif cfg.model_type == "SC":
+        elif model_type == "SC":
             self.layers.append(ConsensusTransformerBlock(cfg, use_adaln, time_embed_dim))
         else:
-            raise ValueError(f"Invalid model_type type: {cfg.model_type}")
+            raise ValueError(f"Invalid model_type type: {model_type}")
         
         # Remaining blocks
-        if cfg.model_type == "SC":
+        if model_type == "SC":
             # For SelfConsensus, all blocks are ConsensusTransformerBlocks
             for _ in range(cfg.n_layers - 1):
                 self.layers.append(ConsensusTransformerBlock(cfg, use_adaln, time_embed_dim))
@@ -119,12 +120,13 @@ class TransformerTrunk(nn.Module):
 
         # --- Transformer trunk ------------------------------------------------
         # Pass through all transformer blocks
+        model_type = self.cfg.first_block_cfg.initials()
         for block in self.layers:
-            if self.cfg.model_type in ("GA") and block is self.layers[0]:
+            if model_type in ("GA") and block is self.layers[0]:
                 # First block may require coordinates
                 assert coords is not None, "Coordinates required for geometric first layer"
                 h = block(h, coords[:,:,:3,:], coord_mask, time_emb)
-            elif self.cfg.model_type in ("RA") and block is self.layers[0]:
+            elif model_type in ("RA") and block is self.layers[0]:
                 # First block may require coordinates
                 assert coords is not None, "Coordinates required for reflexive first layer"
                 h = block(h, coords, coord_mask, time_emb)

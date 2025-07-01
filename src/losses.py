@@ -26,7 +26,7 @@ def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, loss_elements
 
     return retval
 
-def cross_entropy_loss(logits, labels, loss_elements):
+def cross_entropy_loss(logits, labels, loss_elements, reduction='sum'):
     """
     Logits is (B,L,V)
     Labels (B,L), each element of which is in [0,V)
@@ -65,6 +65,7 @@ def cross_entropy_loss(logits, labels, loss_elements):
     per_row_average = per_row_sum / per_row_denom.clamp(min=1.0)
 
     retval = torch.mean(per_row_average)
+
     assert not torch.isnan(retval).any()
     return retval
 

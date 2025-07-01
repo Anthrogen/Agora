@@ -1,6 +1,6 @@
 """
 Plot validation losses for different model types in FSQ training.
-Loads CSV files saved by train_fsq.py and creates comparison plots
+Loads CSV files saved by fsq_step.py and creates comparison plots
 with 95% confidence intervals on a log scale.
 """
 import numpy as np

@@ -30,12 +30,12 @@ from src.losses import score_entropy_loss
 from src.dataloader import _get_noise_levels
 
 # Import functions from training scripts
-from train_transformer_discrete_diffusion_trunk import (
+from discrete_diffusion_step import (
     ModelConfig as DiffusionModelConfig, DiffusionConfig, 
     create_model_with_config as create_diffusion_model,
     discrete_diffusion_step
 )
-from train_transformer_MLM_trunk import (
+from mlm_step import (
     ModelConfig as MLMModelConfig,
     mlm_step,
     create_model_with_config as create_mlm_model
@@ -119,8 +119,8 @@ def load_model_checkpoint(checkpoint_path: str, model_type: str, training_method
     # Fix pickle loading by temporarily setting ModelConfig in global namespace
     import __main__
     # Import the configs to ensure they're available in this scope
-    from train_transformer_discrete_diffusion_trunk import ModelConfig as DiffusionModelConfig_local, DiffusionConfig as DiffusionConfig_local
-    from train_transformer_MLM_trunk import ModelConfig as MLMModelConfig_local
+    from discrete_diffusion_step import ModelConfig as DiffusionModelConfig_local, DiffusionConfig as DiffusionConfig_local
+    from mlm_step import ModelConfig as MLMModelConfig_local
     
     if is_diffusion:
         __main__.ModelConfig = DiffusionModelConfig_local

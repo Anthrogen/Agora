@@ -30,19 +30,20 @@ class FSQEncoder(nn.Module):
         self.layers = nn.ModuleList()
         
         # Transformer blocks
-        if cfg.model_type == "GA":
+        model_type = cfg.first_block_cfg.initials()
+        if model_type == "GA":
             self.layers.append(GeometricTransformerBlock(cfg))
-        elif cfg.model_type == "SA":
+        elif model_type == "SA":
             self.layers.append(StandardTransformerBlock(cfg))
-        elif cfg.model_type == "RA":
+        elif model_type == "RA":
             self.layers.append(ReflexiveTransformerBlock(cfg))
-        elif cfg.model_type == "SC":
+        elif model_type == "SC":
             self.layers.append(ConsensusTransformerBlock(cfg))
         else:
-            raise ValueError(f"Invalid model_type type: {cfg.model_type}")
+            raise ValueError(f"Invalid model_type type: {model_type}")
         
         # Remaining blocks
-        if cfg.model_type == "SC":
+        if model_type == "SC":
             # For SelfConsensus, all blocks are ConsensusTransformerBlocks
             for _ in range(cfg.n_layers - 1):
                 self.layers.append(ConsensusTransformerBlock(cfg))
@@ -88,12 +89,13 @@ class FSQEncoder(nn.Module):
         h = h_conv.transpose(1, 2)          # [B, L, d_model]
         
         # Pass through all transformer blocks
+        model_type = self.cfg.first_block_cfg.initials()
         for block in self.layers:
-            if self.cfg.model_type in ("GA") and block is self.layers[0]:
+            if model_type in ("GA") and block is self.layers[0]:
                 # First block may require coordinates
                 assert coords is not None, "Coordinates required for geometric first layer"
                 h = block(h, coords[:,:,:3,:], coord_mask)
-            elif self.cfg.model_type in ("RA") and block is self.layers[0]:
+            elif model_type in ("RA") and block is self.layers[0]:
                 # First block may require coordinates
                 assert coords is not None, "Coordinates required for reflexive first layer"
                 h = block(h, coords, coord_mask)
@@ -134,7 +136,7 @@ class FSQDecoder(nn.Module):
         # Determine input dimension for decoder_input layer
         # Stage 2: fsq_dim + 1 (concatenated z_q and seq_tokens)
         # Stage 1: fsq_dim (just z_q)
-        if cfg.stage == "stage_2":
+        if cfg.style == "stage_2":
             decoder_input_dim = cfg.fsq_dim + 1
         else:
             decoder_input_dim = cfg.fsq_dim
@@ -146,19 +148,20 @@ class FSQDecoder(nn.Module):
         self.layers = nn.ModuleList()
         
         # Transformer blocks
-        if cfg.model_type == "GA":
+        model_type = cfg.first_block_cfg.initials()
+        if model_type == "GA":
             self.layers.append(GeometricTransformerBlock(cfg))
-        elif cfg.model_type == "SA":
+        elif model_type == "SA":
             self.layers.append(StandardTransformerBlock(cfg))
-        elif cfg.model_type == "RA":
+        elif model_type == "RA":
             self.layers.append(ReflexiveTransformerBlock(cfg))
-        elif cfg.model_type == "SC":
+        elif model_type == "SC":
             self.layers.append(ConsensusTransformerBlock(cfg))
         else:
-            raise ValueError(f"Invalid model_type type: {cfg.model_type}")
+            raise ValueError(f"Invalid model_type type: {model_type}")
         
         # Remaining blocks
-        if cfg.model_type == "SC":
+        if model_type == "SC":
             # For SelfConsensus, all blocks are ConsensusTransformerBlocks
             for _ in range(cfg.n_layers - 1):
                 self.layers.append(ConsensusTransformerBlock(cfg))
@@ -199,12 +202,13 @@ class FSQDecoder(nn.Module):
         h = self.decoder_input(z_q)         # [B, L, d_model]
 
         # Pass through all transformer blocks
+        model_type = self.cfg.first_block_cfg.initials()
         for block in self.layers:
-            if self.cfg.model_type in ("GA") and block is self.layers[0]:
+            if model_type in ("GA") and block is self.layers[0]:
                 # First block may require coordinates
                 assert coords is not None, "Coordinates required for geometric first layer"
                 h = block(h, coords[:,:,:3,:], coord_mask)
-            elif self.cfg.model_type in ("RA") and block is self.layers[0]:
+            elif model_type in ("RA") and block is self.layers[0]:
                 # First block may require coordinates
                 assert coords is not None, "Coordinates required for reflexive first layer"
                 h = block(h, coords, coord_mask)
@@ -261,7 +265,7 @@ class Autoencoder(nn.Module):
         self.encoder = FSQEncoder(cfg)
         
         # Create decoder with appropriate in_dim based on stage
-        if cfg.stage == "stage_2":
+        if cfg.style == "stage_2":
             # Stage 2: decoder outputs 14 atoms
             decoder_out_dim = 14 * 3
         else:

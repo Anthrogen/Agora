@@ -252,8 +252,10 @@ class ConsensusTransformerBlock(nn.Module):
         super().__init__()
         self.use_adaln = use_adaln
         # Use SelfConsensus instead of SelfAttention
-        self.consensus = SelfConsensus(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, num_iterations=cfg.consensus_num_iterations, connectivity_type=cfg.consensus_connectivity_type, 
-                                       w=cfg.consensus_w, r=cfg.consensus_r, edge_hidden_dim=cfg.consensus_edge_hidden_dim, max_len=cfg.max_len)
+        # Get consensus parameters from first_block_cfg
+        consensus_cfg = cfg.first_block_cfg
+        self.consensus = SelfConsensus(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, num_iterations=consensus_cfg.consensus_num_iterations, connectivity_type=consensus_cfg.consensus_connectivity_type, 
+                                       w=consensus_cfg.consensus_w, r=consensus_cfg.consensus_r, edge_hidden_dim=consensus_cfg.consensus_edge_hidden_dim, max_len=cfg.max_len)
         self.ff = FeedForward(cfg.d_model, hidden_dim=cfg.ff_hidden_dim, dropout=cfg.dropout)
         
         if use_adaln:
