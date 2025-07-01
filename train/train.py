@@ -241,62 +241,12 @@ def train(model_cfg, train_cfg):
 #     mask_prob_struct=0.15
 # )
 
-_mask_cfg = ComplexMaskConfig()
+# # _mask_cfg = ComplexMaskConfig()
 
-_loss_cfg = CrossEntropyLossConfig(
-    seq_loss_weight=1.0,
-    struct_loss_weight=1.0,
-    loss_elements="masked"
-)
-
-_consensus_cfg = SelfConsensusConfig(
-    consensus_num_iterations=1,
-    consensus_connectivity_type="local_window",
-    consensus_w=2,
-    consensus_r=8,
-    consensus_edge_hidden_dim=24
-)
-
-_train_cfg = TrainingConfig(
-    batch_size=4,
-    max_epochs=1,
-    learning_rate=1e-5,
-    mask_config=_mask_cfg,
-    loss_config=_loss_cfg,
-    data_dir="/workspace/demo/Odyssey/sample_data/1k.csv",
-    checkpoint_dir="/workspace/demo/Odyssey/checkpoints/transformer_trunk"
-)
-
-_model_cfg = TrunkConfig(
-    style='mlm',
-    d_model=128,
-    n_heads=1,
-    n_layers=3,
-    max_len=2048,
-    dropout=0.1,
-    ff_mult=4,
-    first_block_cfg=_consensus_cfg,
-    reference_model_seed=42,
-    fsq_encoder_path="/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_complex_model.pt", # complex_model.pt
-    seq_vocab=len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS),
-    struct_vocab=4375 + len(SPECIAL_TOKENS),
-    seq_absorb_token=SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS),
-    struct_absorb_token=SPECIAL_TOKENS.MASK.value + 4375
-)
-
-# --------------------------------------------------------------------------- #
-#  Discrete Diffusion Training Configurations                                 #
-# --------------------------------------------------------------------------- #
-# _mask_cfg = DiffusionConfig(
-#     noise_schedule = "uniform" , # Type of noise schedule ("linear", "inverted_u", or "uniform")
-#     sigma_min = 0.31,  # Minimum noise level
-#     sigma_max = 5.68,  # Maximum noise level
-#     num_timesteps = 100  # Number of discrete timesteps for training
-# )
-
-# _loss_cfg = ScoreEntropyLossConfig(
+# _loss_cfg = CrossEntropyLossConfig(
 #     seq_loss_weight=1.0,
-#     struct_loss_weight=1.0
+#     struct_loss_weight=1.0,
+#     loss_elements="masked"
 # )
 
 # _consensus_cfg = SelfConsensusConfig(
@@ -314,11 +264,11 @@ _model_cfg = TrunkConfig(
 #     mask_config=_mask_cfg,
 #     loss_config=_loss_cfg,
 #     data_dir="/workspace/demo/Odyssey/sample_data/1k.csv",
-#     checkpoint_dir="/workspace/demo/Odyssey/checkpoints/transformer_trunk"
+#     checkpoint_dir="/workspace/demo/Odyssey/checkpoints/fsq"
 # )
 
 # _model_cfg = TrunkConfig(
-#     style='discrete_diffusion',
+#     style='mlm',
 #     d_model=128,
 #     n_heads=1,
 #     n_layers=3,
@@ -327,12 +277,62 @@ _model_cfg = TrunkConfig(
 #     ff_mult=4,
 #     first_block_cfg=_consensus_cfg,
 #     reference_model_seed=42,
-#     fsq_encoder_path="/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt",
+#     fsq_encoder_path="/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_simple_model.pt", # complex_model.pt
 #     seq_vocab=len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS),
 #     struct_vocab=4375 + len(SPECIAL_TOKENS),
 #     seq_absorb_token=SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS),
 #     struct_absorb_token=SPECIAL_TOKENS.MASK.value + 4375
 # )
+
+# --------------------------------------------------------------------------- #
+#  Discrete Diffusion Training Configurations                                 #
+# --------------------------------------------------------------------------- #
+_mask_cfg = DiffusionConfig(
+    noise_schedule = "uniform" , # Type of noise schedule ("linear", "inverted_u", or "uniform")
+    sigma_min = 0.31,  # Minimum noise level
+    sigma_max = 5.68,  # Maximum noise level
+    num_timesteps = 100  # Number of discrete timesteps for training
+)
+
+_loss_cfg = ScoreEntropyLossConfig(
+    seq_loss_weight=1.0,
+    struct_loss_weight=1.0
+)
+
+_consensus_cfg = SelfConsensusConfig(
+    consensus_num_iterations=1,
+    consensus_connectivity_type="local_window",
+    consensus_w=2,
+    consensus_r=8,
+    consensus_edge_hidden_dim=24
+)
+
+_train_cfg = TrainingConfig(
+    batch_size=4,
+    max_epochs=1,
+    learning_rate=1e-5,
+    mask_config=_mask_cfg,
+    loss_config=_loss_cfg,
+    data_dir="/workspace/demo/Odyssey/sample_data/1k.csv",
+    checkpoint_dir="/workspace/demo/Odyssey/checkpoints/fsq"
+)
+
+_model_cfg = TrunkConfig(
+    style='mlm',
+    d_model=128,
+    n_heads=1,
+    n_layers=3,
+    max_len=2048,
+    dropout=0.1,
+    ff_mult=4,
+    first_block_cfg=_consensus_cfg,
+    reference_model_seed=42,
+    fsq_encoder_path="/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt",
+    seq_vocab=len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS),
+    struct_vocab=4375 + len(SPECIAL_TOKENS),
+    seq_absorb_token=SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS),
+    struct_absorb_token=SPECIAL_TOKENS.MASK.value + 4375
+)
 
 # --------------------------------------------------------------------------- #
 #  FSQ Stage 1 Training Configurations                                        #
