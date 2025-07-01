@@ -1,132 +1,13 @@
-from __future__ import annotations
 import torch
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Any
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from dataclasses import dataclass, field
 import os
 
 @dataclass
 class Config:
     pass
-
-################################################################################
-# Transformer Block Configurations
-################################################################################
-@dataclass
-class BlockConfig():
-    """Transformer block configuration."""
-    pass
-
-@dataclass
-class SelfConsensusConfig(BlockConfig):
-    """SelfConsensus configuration."""
-    # Consensus-specific parameters
-    consensus_num_iterations:       int   # Number of consensus gradient iterations
-    consensus_connectivity_type:    str   # "local_window" or "top_w"
-    consensus_w:                    int   # Window size for local_window, or w value for top_w
-    consensus_r:                    int   # Rank of Lambda_ij matrices
-    consensus_edge_hidden_dim:      int   # Hidden dim for edge networks
-
-    def __post_init__(self):
-        assert self.consensus_num_iterations > 0
-        assert self.consensus_connectivity_type in ('local_window', 'top_w')
-        assert self.consensus_w > 0
-        assert self.consensus_r > 0
-        assert self.consensus_edge_hidden_dim > 0
-
-@dataclass
-class ReflexiveAttentionConfig(BlockConfig):
-    """Reflexive attention configuration."""
-    pass
-
-@dataclass
-class SelfAttentionConfig(BlockConfig):
-    pass
-
-@dataclass
-class GeometricAttentionConfig(BlockConfig):
-    pass
-
-################################################################################
-# Training Loss Function Configurations
-################################################################################
-@dataclass
-class LossConfig:
-    """Model configuration."""
-    pass
-
-@dataclass
-class CrossEntropyLossConfig(LossConfig):
-    """Cross-entropy loss configuration."""
-    seq_loss_weight: float = None
-    struct_loss_weight: float = None
-
-    # Cross-entropy loss function: which elements should contribute to the loss?
-    # "masked": only masked positions
-    # "non_beospank": all non-BOS/EOS/PAD/UNK positions, including masks
-    # "non_special": all non-special tokens.  Special includes BOS, EOS, PAD, UNK, MASK.
-    loss_elements:    str = None
-
-    def __post_init__(self):
-        assert self.seq_loss_weight is not None
-        assert self.struct_loss_weight is not None
-        assert self.loss_elements in ('masked', 'non_beospank', 'non_special')
-
-@dataclass
-class KabschRMSDLossConfig(LossConfig):
-    """Kabsch RMSD loss configuration."""
-    # Cross-entropy loss function: which elements should contribute to the loss?
-    # "masked": only masked positions
-    # "non_beospank": all non-BOS/EOS/PAD/UNK positions, including masks
-    # "non_special": all non-special tokens.  Special includes BOS, EOS, PAD, UNK, MASK.
-    # 'non_masked': all positions excluding mask.
-    rmsd_elements:    str = None
-
-    def __post_init__(self):
-        assert self.rmsd_elements in ('masked', 'non_beospank', 'non_special', 'non_masked')
-    
-
-
-# Note: DiffusionConfig is a subclass of LossConfig, included in the "MaskConfig" section.
-
-
-################################################################################
-# Masking Configurations
-################################################################################
-@dataclass
-class MaskConfig:
-    """Noise configuration."""
-    pass
-
-@dataclass
-class SimpleMaskConfig(MaskConfig):
-    """Simple noise configuration."""
-    mask_prob_seq:        float = None
-    mask_prob_struct:     float = None
-
-@dataclass
-class ComplexMaskConfig(MaskConfig):
-    """Complex noise configuration."""
-    pass
-
-@dataclass
-class NoMaskConfig(MaskConfig):
-    pass
-
-@dataclass
-class DiffusionConfig(MaskConfig, LossConfig):
-    """Discrete diffusion configuration."""
-    # Noise schedule parameters
-    noise_schedule:        str  # Type of noise schedule ("linear", "inverted_u", or "uniform")
-    sigma_min:             float  # Minimum noise level
-    sigma_max:             float  # Maximum noise level
-    num_timesteps:         int  # Number of discrete timesteps for training
-
-    def __post_init__(self):
-        assert self.noise_schedule in ('linear', 'inverted_u', 'uniform')
-        assert self.sigma_min > 0
-        assert self.sigma_max > 0
-        assert self.num_timesteps > 0
 
 @dataclass
 class TransformerConfig(Config):
@@ -134,13 +15,13 @@ class TransformerConfig(Config):
 
     style:                          str = None
 
-    d_model:                        int = None # 768  # Model dimensions
-    n_heads:                        int = None  # 12
-    n_layers:                       int = None  # 12
+    d_model:                        int # 768  # Model dimensions
+    n_heads:                        int  # 12
+    n_layers:                       int  # 12
 
-    max_len:                        int = None
-    dropout:                        float = None   # Other architecture params
-    ff_mult:                        int = None
+    max_len:                        int 
+    dropout:                        float   # Other architecture params
+    ff_mult:                        int 
                                      
     # # Consensus-specific parameters
     # consensus_num_iterations:       int = None # Number of consensus gradient iterations
@@ -151,8 +32,8 @@ class TransformerConfig(Config):
     first_block_config:               BlockConfig = None
 
     # TODO: These need to go.  seq_vocab should come from voacbulary.py and struuct_vocab should come from the FSQEncoder object.
-    seq_vocab:                      int = None  # Sequence tokens + special tokens
-    struct_vocab:                   int = None  # FSQ tokens + special tokens
+    seq_vocab:                      int   # Sequence tokens + special tokens
+    struct_vocab:                   int   # FSQ tokens + special tokens
 
     def __post_init__(self):
         assert self.style in ('stage_1', 'stage_2', 'mlm', 'discrete_diffusion')
@@ -247,7 +128,7 @@ class TrainingConfig(Config):
     def __post_init__(self):
         assert isinstance(self.batch_size, int) and self.batch_size > 0
         assert isinstance(self.max_epochs, int) and self.max_epochs > 0
-        assert isinstance(self.learning_rate, (int, float)) and self.learning_rate > 0
+        assert isinstance(self.learning_rate, float) and self.learning_rate > 0
 
         assert isinstance(self.mask_config, MaskConfig)
         assert isinstance(self.loss_config, LossConfig)
@@ -255,6 +136,126 @@ class TrainingConfig(Config):
         assert self.data_dir is not None and os.path.exists(self.data_dir), f"Data directory {self.data_dir} does not exist."
         assert self.checkpoint_dir is not None and os.path.exists(self.checkpoint_dir), f"Checkpoint directory {self.checkpoint_dir} does not exist."
         
+################################################################################
+# Training Loss Function Configurations
+################################################################################
+@dataclass
+class LossConfig:
+    """Model configuration."""
+    pass
+
+@dataclass
+class CrossEntropyLossConfig(LossConfig):
+    """Cross-entropy loss configuration."""
+    seq_loss_weight: float = None
+    struct_loss_weight: float = None
+
+    # Cross-entropy loss function: which elements should contribute to the loss?
+    # "masked": only masked positions
+    # "non_beospank": all non-BOS/EOS/PAD/UNK positions, including masks
+    # "non_special": all non-special tokens.  Special includes BOS, EOS, PAD, UNK, MASK.
+    loss_elements:    str = None
+
+    def __post_init__(self):
+        assert self.seq_loss_weight is not None
+        assert self.struct_loss_weight is not None
+        assert self.loss_elements in ('masked', 'non_beospank', 'non_special')
+
+@dataclass
+class KabschRMSDLossConfig(LossConfig):
+    """Kabsch RMSD loss configuration."""
+    # Cross-entropy loss function: which elements should contribute to the loss?
+    # "masked": only masked positions
+    # "non_beospank": all non-BOS/EOS/PAD/UNK positions, including masks
+    # "non_special": all non-special tokens.  Special includes BOS, EOS, PAD, UNK, MASK.
+    # 'non_masked': all positions excluding mask.
+    rmsd_elements:    str = None
+
+    def __post_init__(self):
+        assert self.rmsd_elements in ('masked', 'non_beospank', 'non_special', 'non_masked')
+    
+
+
+# Note: DiffusionConfig is a subclass of LossConfig, included in the "MaskConfig" section.
+
+
+################################################################################
+# Masking Configurations
+################################################################################
+@dataclass
+class MaskConfig:
+    """Noise configuration."""
+    pass
+
+@dataclass
+class SimpleMaskConfig(MaskConfig):
+    """Simple noise configuration."""
+    mask_prob_seq:        float = None
+    mask_prob_struct:     float = None
+
+@dataclass
+class ComplexMaskConfig(MaskConfig):
+    """Complex noise configuration."""
+    pass
+
+@dataclass
+class NoMaskConfig(MaskConfig):
+    pass
+
+@dataclass
+class DiffusionConfig(MaskConfig, LossConfig):
+    """Discrete diffusion configuration."""
+    # Noise schedule parameters
+    noise_schedule:        str  # Type of noise schedule ("linear", "inverted_u", or "uniform")
+    sigma_min:             float  # Minimum noise level
+    sigma_max:             float  # Maximum noise level
+    num_timesteps:         int  # Number of discrete timesteps for training
+
+    def __post_init__(self):
+        assert self.noise_schedule in ('linear', 'inverted_u', 'uniform')
+        assert self.sigma_min > 0
+        assert self.sigma_max > 0
+        assert self.num_timesteps > 0
+
+
+################################################################################
+# Transformer Block Configurations
+################################################################################
+@dataclass
+class BlockConfig():
+    """Transformer block configuration."""
+    pass
+
+@dataclass
+class SelfConsensusConfig(BlockConfig):
+    """SelfConsensus configuration."""
+    # Consensus-specific parameters
+    consensus_num_iterations:       int   # Number of consensus gradient iterations
+    consensus_connectivity_type:    str   # "local_window" or "top_w"
+    consensus_w:                    int   # Window size for local_window, or w value for top_w
+    consensus_r:                    int   # Rank of Lambda_ij matrices
+    consensus_edge_hidden_dim:      int   # Hidden dim for edge networks
+
+    def __post_init__(self):
+        assert self.consensus_num_iterations > 0
+        assert self.consensus_connectivity_type in ('local_window', 'top_w')
+        assert self.consensus_w > 0
+        assert self.consensus_r > 0
+        assert self.consensus_edge_hidden_dim > 0
+
+@dataclass
+class ReflexiveAttentionConfig(BlockConfig):
+    """Reflexive attention configuration."""
+    pass
+
+@dataclass
+class SelfAttentionConfig(BlockConfig):
+    pass
+
+@dataclass
+class GeometricAttentionConfig(BlockConfig):
+    pass
+
 class ConfigurationError(Exception):
     def __init__(self, message):
         self.message = message

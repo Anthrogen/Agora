@@ -10,14 +10,18 @@ import yaml
 import os
 import argparse
 from pathlib import Path
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, List
 from dataclasses import dataclass, field
 import json
 from copy import deepcopy
 
 from src.configurations import (
-    TransformerConfig, FsqConfig, TrainingConfig, 
-    DiffusionConfig, ConfigurationError
+    Config, TransformerConfig, TrunkConfig, FSQConfig, TrainingConfig,
+    LossConfig, CrossEntropyLossConfig, KabschRMSDLossConfig,
+    MaskConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig, DiffusionConfig,
+    BlockConfig, SelfConsensusConfig, ReflexiveAttentionConfig, 
+    SelfAttentionConfig, GeometricAttentionConfig,
+    ConfigurationError
 )
 from src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 
@@ -55,131 +59,183 @@ class ConfigLoader:
             base_dir = self.config_path.parent.parent  # Assuming config is in configs/
         
         # Resolve data paths
-        if 'data' in self.config:
-            for key in ['data_dir', 'csv_file']:
-                if key in self.config['data'] and self.config['data'][key]:
-                    path = Path(self.config['data'][key])
-                    if not path.is_absolute():
-                        self.config['data'][key] = str(base_dir / path)
+        if 'training' in self.config and 'data_dir' in self.config['training']:
+            path = Path(self.config['training']['data_dir'])
+            if not path.is_absolute():
+                self.config['training']['data_dir'] = str(base_dir / path)
         
         # Resolve checkpoint directory
-        if 'checkpoint' in self.config and 'dir' in self.config['checkpoint']:
-            path = Path(self.config['checkpoint']['dir'])
+        if 'training' in self.config and 'checkpoint_dir' in self.config['training']:
+            path = Path(self.config['training']['checkpoint_dir'])
             if not path.is_absolute():
-                self.config['checkpoint']['dir'] = str(base_dir / path)
+                self.config['training']['checkpoint_dir'] = str(base_dir / path)
+        
+        # Resolve FSQ encoder path if present
+        if 'model' in self.config:
+            if 'fsq_encoder_path' in self.config['model'] and self.config['model']['fsq_encoder_path']:
+                path = Path(self.config['model']['fsq_encoder_path'])
+                if not path.is_absolute():
+                    self.config['model']['fsq_encoder_path'] = str(base_dir / path)
+            
+            # Also check in fsq section for stage_2
+            if 'fsq' in self.config['model'] and 'encoder_path' in self.config['model']['fsq']:
+                if self.config['model']['fsq']['encoder_path']:
+                    path = Path(self.config['model']['fsq']['encoder_path'])
+                    if not path.is_absolute():
+                        self.config['model']['fsq']['encoder_path'] = str(base_dir / path)
     
-    def get_model_config(self, model_type: Optional[str] = None) -> Union[TransformerConfig, FsqConfig]:
+    def get_block_config(self, block_type: str, block_params: Dict[str, Any]) -> BlockConfig:
         """
-        Create model configuration object.
+        Create block configuration based on type.
         
         Args:
-            model_type: Override model type from config
+            block_type: Type of block (self_attention, geometric_attention, etc.)
+            block_params: Parameters for the block
             
         Returns:
-            TransformerConfig or FsqConfig depending on context
+            Appropriate BlockConfig subclass
+        """
+        if block_type == "self_consensus":
+            return SelfConsensusConfig(
+                consensus_num_iterations=block_params['num_iterations'],
+                consensus_connectivity_type=block_params['connectivity_type'],
+                consensus_w=block_params['w'],
+                consensus_r=block_params['r'],
+                consensus_edge_hidden_dim=block_params['edge_hidden_dim']
+            )
+        elif block_type == "reflexive_attention":
+            return ReflexiveAttentionConfig()
+        elif block_type == "self_attention":
+            return SelfAttentionConfig()
+        elif block_type == "geometric_attention":
+            return GeometricAttentionConfig()
+        else:
+            raise ValueError(f"Unknown block type: {block_type}")
+    
+    def get_model_config(self) -> Union[TransformerConfig, TrunkConfig, FSQConfig]:
+        """
+        Create model configuration object based on style.
+        
+        Returns:
+            Appropriate model configuration
         """
         model_cfg = self.config['model']
-        
-        # Override model type if specified
-        if model_type:
-            model_cfg['type'] = model_type
         
         # Calculate vocabulary sizes
         seq_vocab = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)
         struct_vocab = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
         
-        # Create FSQ configuration
-        if 'fsq' in model_cfg:
-            fsq_cfg = FsqConfig(
-                fsq_dim=model_cfg['fsq']['dim'],
-                fsq_levels=model_cfg['fsq']['levels'],
-                model_type=model_cfg['type'],
-                d_model=model_cfg['d_model'],
-                latent_dim=model_cfg['fsq']['latent_dim'],
-                n_heads=model_cfg['n_heads'],
-                n_layers=model_cfg['n_layers'],
-                seq_vocab=seq_vocab,
-                struct_vocab=struct_vocab,
-                max_len=model_cfg['max_len'],
-                dropout=model_cfg['dropout'],
-                ff_mult=model_cfg['ff_mult'],
-                consensus_num_iterations=model_cfg['consensus']['num_iterations'],
-                consensus_connectivity_type=model_cfg['consensus']['connectivity_type'],
-                consensus_w=model_cfg['consensus']['w'],
-                consensus_r=model_cfg['consensus']['r'],
-                consensus_edge_hidden_dim=model_cfg['consensus']['edge_hidden_dim'],
-                stage=self.config['training'].get('stage', 'stage_1')
-            )
-            return fsq_cfg
+        # Get block configuration
+        block_type = model_cfg.get('block_type', 'self_attention')
+        block_params = model_cfg.get('block_params', {})
+        first_block_config = self.get_block_config(block_type, block_params)
         
-        # Create standard transformer configuration
-        return TransformerConfig(
-            d_model=model_cfg['d_model'],
-            n_heads=model_cfg['n_heads'],
-            n_layers=model_cfg['n_layers'],
-            seq_vocab=seq_vocab,
-            struct_vocab=struct_vocab,
-            max_len=model_cfg['max_len'],
-            dropout=model_cfg['dropout'],
-            ff_mult=model_cfg['ff_mult'],
-            consensus_num_iterations=model_cfg['consensus']['num_iterations'],
-            consensus_connectivity_type=model_cfg['consensus']['connectivity_type'],
-            consensus_w=model_cfg['consensus']['w'],
-            consensus_r=model_cfg['consensus']['r'],
-            consensus_edge_hidden_dim=model_cfg['consensus']['edge_hidden_dim']
-        )
+        # Common parameters
+        common_params = {
+            'style': model_cfg['style'],
+            'd_model': model_cfg['d_model'],
+            'n_heads': model_cfg['n_heads'],
+            'n_layers': model_cfg['n_layers'],
+            'max_len': model_cfg['max_len'],
+            'dropout': model_cfg['dropout'],
+            'ff_mult': model_cfg['ff_mult'],
+            'first_block_config': first_block_config,
+            'seq_vocab': seq_vocab,
+            'struct_vocab': struct_vocab
+        }
+        
+        # Create appropriate config based on style
+        if model_cfg['style'] in ['stage_1', 'stage_2']:
+            # FSQ configuration
+            fsq_params = model_cfg.get('fsq', {})
+            config = FSQConfig(
+                **common_params,
+                latent_dim=fsq_params.get('latent_dim', 32),
+                fsq_levels=fsq_params.get('levels', [7, 5, 5, 5, 5]),
+                fsq_encoder_path=fsq_params.get('encoder_path') if model_cfg['style'] == 'stage_2' else None
+            )
+        elif model_cfg['style'] in ['mlm', 'discrete_diffusion']:
+            # Trunk configuration
+            config = TrunkConfig(
+                **common_params,
+                fsq_encoder_path=model_cfg.get('fsq_encoder_path')
+            )
+        else:
+            # Base transformer configuration
+            config = TransformerConfig(**common_params)
+        
+        return config
+    
+    def get_mask_config(self) -> MaskConfig:
+        """Create mask configuration based on strategy."""
+        mask_cfg = self.config['masking']
+        strategy = mask_cfg['strategy']
+        
+        if strategy == 'simple':
+            return SimpleMaskConfig(
+                mask_prob_seq=mask_cfg['simple']['mask_prob_seq'],
+                mask_prob_struct=mask_cfg['simple']['mask_prob_struct']
+            )
+        elif strategy == 'complex':
+            return ComplexMaskConfig()
+        elif strategy == 'none':
+            return NoMaskConfig()
+        elif strategy == 'discrete_diffusion':
+            diff_cfg = mask_cfg['discrete_diffusion']
+            return DiffusionConfig(
+                noise_schedule=diff_cfg['noise_schedule'],
+                sigma_min=diff_cfg['sigma_min'],
+                sigma_max=diff_cfg['sigma_max'],
+                num_timesteps=diff_cfg['num_timesteps']
+            )
+        else:
+            raise ValueError(f"Unknown masking strategy: {strategy}")
+    
+    def get_loss_config(self) -> LossConfig:
+        """Create loss configuration."""
+        loss_cfg = self.config['loss']
+        loss_type = loss_cfg['type']
+        
+        if loss_type == 'cross_entropy':
+            return CrossEntropyLossConfig(
+                seq_loss_weight=loss_cfg['weights']['sequence'],
+                struct_loss_weight=loss_cfg['weights']['structure'],
+                loss_elements=loss_cfg['loss_elements']
+            )
+        elif loss_type == 'kabsch_rmsd':
+            return KabschRMSDLossConfig(
+                rmsd_elements=loss_cfg['rmsd_elements']
+            )
+        elif loss_type == 'diffusion':
+            # Diffusion loss is handled as part of DiffusionConfig
+            return self.get_mask_config()  # Returns DiffusionConfig which is also a LossConfig
+        else:
+            raise ValueError(f"Unknown loss type: {loss_type}")
     
     def get_training_config(self) -> TrainingConfig:
         """Create training configuration object."""
         train_cfg = self.config['training']
-        mask_cfg = self.config['masking']
-        checkpoint_cfg = self.config['checkpoint']
         
-        # Build checkpoint patterns
-        patterns = checkpoint_cfg['patterns']
+        # Get mask and loss configurations
+        mask_config = self.get_mask_config()
         
-        # Create training config
+        # For diffusion, the mask config is also the loss config
+        if isinstance(mask_config, DiffusionConfig):
+            loss_config = mask_config
+        else:
+            loss_config = self.get_loss_config()
+        
         config = TrainingConfig(
-            model_types=[self.config['model']['type']],  # Can be extended for multi-model training
             batch_size=train_cfg['batch_size'],
             max_epochs=train_cfg['max_epochs'],
-            learning_rate=train_cfg['learning_rate'],
-            num_iter=train_cfg['num_iterations'],
-            masking_strategy=mask_cfg['strategy'],
-            data_dir=self.config['data']['data_dir'],
-            checkpoint_dir=checkpoint_cfg['dir'],
-            reference_model_seed=train_cfg.get('reference_model_seed', 1234),
-            seq_loss_weight=train_cfg['loss_weights']['sequence'],
-            struct_loss_weight=train_cfg['loss_weights']['structure'],
-            ce_loss_function_elements=train_cfg.get('ce_loss_elements', 'masked'),
-            simple_checkpoint_pattern=patterns['simple'],
-            complex_checkpoint_pattern=patterns['complex'],
-            discrete_diffusion_checkpoint_pattern=patterns['discrete_diffusion'],
-            fsq_encoder_pattern=patterns['fsq_encoder']
+            learning_rate=float(train_cfg['learning_rate']),
+            mask_config=mask_config,
+            loss_config=loss_config,
+            data_dir=train_cfg['data_dir'],
+            checkpoint_dir=train_cfg['checkpoint_dir']
         )
-        
-        # Add masking-specific parameters
-        if mask_cfg['strategy'] == 'simple':
-            config.mask_prob_seq = mask_cfg['simple']['mask_prob_seq']
-            config.mask_prob_coords = mask_cfg['simple']['mask_prob_coords']
         
         return config
-    
-    def get_diffusion_config(self) -> Optional[DiffusionConfig]:
-        """Create diffusion configuration object if using discrete diffusion."""
-        if self.config['masking']['strategy'] != 'discrete_diffusion':
-            return None
-        
-        diff_cfg = self.config['masking']['discrete_diffusion']
-        
-        return DiffusionConfig(
-            noise_schedule=diff_cfg['noise_schedule'],
-            sigma_min=diff_cfg['sigma_min'],
-            sigma_max=diff_cfg['sigma_max'],
-            num_timesteps=diff_cfg['num_timesteps'],
-            seq_absorb_token=diff_cfg['seq_absorb_token'],
-            struct_absorb_token=diff_cfg['struct_absorb_token']
-        )
     
     def merge_with_args(self, args: argparse.Namespace) -> None:
         """
@@ -189,9 +245,9 @@ class ConfigLoader:
         Args:
             args: Parsed command-line arguments
         """
-        # Override model type
-        if hasattr(args, 'model_type') and args.model_type:
-            self.config['model']['type'] = args.model_type
+        # Override model style
+        if hasattr(args, 'style') and args.style:
+            self.config['model']['style'] = args.style
         
         # Override batch size
         if hasattr(args, 'batch_size') and args.batch_size:
@@ -245,10 +301,10 @@ def create_argument_parser() -> argparse.ArgumentParser:
     
     # Model parameters
     parser.add_argument(
-        '--model-type',
+        '--style',
         type=str,
-        choices=['SA', 'GA', 'RA', 'SC'],
-        help='Model type to train (overrides config file)'
+        choices=['stage_1', 'stage_2', 'mlm', 'discrete_diffusion'],
+        help='Model style (overrides config file)'
     )
     
     # Training parameters
@@ -302,7 +358,7 @@ def load_config_from_args(args: Optional[argparse.Namespace] = None) -> tuple:
         args: Parsed arguments. If None, will parse from sys.argv
         
     Returns:
-        Tuple of (config_loader, model_config, training_config, diffusion_config)
+        Tuple of (config_loader, model_config, training_config)
     """
     if args is None:
         parser = create_argument_parser()
@@ -328,17 +384,17 @@ def load_config_from_args(args: Optional[argparse.Namespace] = None) -> tuple:
     # Create configuration objects
     model_config = config_loader.get_model_config()
     training_config = config_loader.get_training_config()
-    diffusion_config = config_loader.get_diffusion_config()
     
-    return config_loader, model_config, training_config, diffusion_config
+    return config_loader, model_config, training_config
 
 
 # Example usage in training scripts:
 if __name__ == "__main__":
     # Example of how to use in a training script
-    config_loader, model_cfg, train_cfg, diff_cfg = load_config_from_args()
+    config_loader, model_cfg, train_cfg = load_config_from_args()
     
-    print("Model type:", model_cfg.model_type if hasattr(model_cfg, 'model_type') else 'N/A')
+    print("Model style:", model_cfg.style)
     print("Batch size:", train_cfg.batch_size)
     print("Learning rate:", train_cfg.learning_rate)
-    print("Masking strategy:", train_cfg.masking_strategy)
+    print("Mask config type:", type(train_cfg.mask_config).__name__)
+    print("Loss config type:", type(train_cfg.loss_config).__name__)
