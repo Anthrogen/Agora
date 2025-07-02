@@ -1,10 +1,20 @@
 from __future__ import annotations
 import torch
 from dataclasses import dataclass, field
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict, Type
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 import os
 import json
+
+# Global registry to map config types to classes
+CONFIG_REGISTRY: Dict[str, Type['Config']] = {}
+
+def register_config(config_type: str):
+    """Decorator to register configuration classes."""
+    def decorator(cls):
+        CONFIG_REGISTRY[config_type] = cls
+        return cls
+    return decorator
 
 @dataclass
 class Config:
@@ -26,6 +36,33 @@ class Config:
             else:
                 result[key] = value
         return result
+    
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> 'Config':
+        """Recursively build configuration from dictionary with type/params structure."""
+        if 'type' in config_dict and 'params' in config_dict:
+            config_type = config_dict['type']
+            params = config_dict['params']
+            
+            # Get the appropriate class from registry
+            if config_type not in CONFIG_REGISTRY:
+                raise ValueError(f"Unknown config type: {config_type}. Available types: {list(CONFIG_REGISTRY.keys())}")
+            
+            config_class = CONFIG_REGISTRY[config_type]
+            
+            # Recursively process nested configs
+            processed_params = {}
+            for key, value in params.items():
+                if isinstance(value, dict) and 'type' in value and 'params' in value:
+                    # This is a nested config
+                    processed_params[key] = Config.from_dict(value)
+                else:
+                    processed_params[key] = value
+            
+            return config_class(**processed_params)
+        else:
+            # Direct instantiation without type/params structure
+            return cls(**config_dict)
     
     def get_config_dict(self) -> dict:
         """Get the stored configuration dictionary."""
@@ -101,6 +138,7 @@ class BlockConfig():
         result['_block_type'] = self.__class__.__name__
         return result
 
+@register_config("self_consensus_cfg")
 @dataclass
 class SelfConsensusConfig(BlockConfig):
     """SelfConsensus configuration."""
@@ -121,17 +159,20 @@ class SelfConsensusConfig(BlockConfig):
     def __str__(self): return "Self Consensus"
     def initials(self): return "SC"
 
+@register_config("reflexive_attention_cfg")
 @dataclass
 class ReflexiveAttentionConfig(BlockConfig):
     """Reflexive attention configuration."""
     def __str__(self): return "Reflexive Attention"
     def initials(self): return "RA"
 
+@register_config("self_attention_cfg")
 @dataclass
 class SelfAttentionConfig(BlockConfig):
     def __str__(self): return "Self Attention"
     def initials(self): return "SA"
 
+@register_config("geometric_attention_cfg")
 @dataclass
 class GeometricAttentionConfig(BlockConfig):
     def __str__(self): return "Geometric Attention"
@@ -150,6 +191,7 @@ class LossConfig:
         result['_loss_type'] = self.__class__.__name__
         return result
 
+@register_config("cross_entropy_loss_cfg")
 @dataclass
 class CrossEntropyLossConfig(LossConfig):
     """Cross-entropy loss configuration."""
@@ -165,6 +207,7 @@ class CrossEntropyLossConfig(LossConfig):
         assert self.struct_loss_weight is not None
         assert self.loss_elements in ('masked', 'non_beospank', 'non_special')
 
+@register_config("score_entropy_loss_cfg")
 @dataclass
 class ScoreEntropyLossConfig(LossConfig):
     """Score entropy loss configuration for discrete diffusion."""
@@ -175,6 +218,7 @@ class ScoreEntropyLossConfig(LossConfig):
         assert self.seq_loss_weight is not None
         assert self.struct_loss_weight is not None
 
+@register_config("kabsch_rmsd_loss_cfg")
 @dataclass
 class KabschRMSDLossConfig(LossConfig):
     pass
@@ -203,6 +247,7 @@ class MaskConfig:
         result['_mask_type'] = self.__class__.__name__
         return result
 
+@register_config("simple_mask_cfg")
 @dataclass
 class SimpleMaskConfig(MaskConfig):
     """Simple noise configuration."""
@@ -210,17 +255,20 @@ class SimpleMaskConfig(MaskConfig):
     mask_prob_struct:     float = None
     def __str__(self): return "simple"
 
+@register_config("complex_mask_cfg")
 @dataclass
 class ComplexMaskConfig(MaskConfig):
     """Complex noise configuration."""
     def __str__(self): return "complex"
 
+@register_config("no_mask_cfg")
 @dataclass
 class NoMaskConfig(MaskConfig):
     def __str__(self): return "no_mask"
 
+@register_config("diffusion_mask_cfg")
 @dataclass
-class DiffusionConfig(MaskConfig):
+class DiffusionMaskConfig(MaskConfig):
     """Discrete diffusion configuration."""
     # Noise schedule parameters
     noise_schedule:        str  # Type of noise schedule ("linear", "inverted_u", or "uniform")
@@ -270,6 +318,7 @@ class TransformerConfig(Config):
         self._config_dict = self.to_dict()
 
 
+@register_config("trunk_cfg")
 @dataclass
 class TrunkConfig(TransformerConfig):
     """Trunk model configuration."""
@@ -287,6 +336,7 @@ class TrunkConfig(TransformerConfig):
         # Update stored dictionary with trunk-specific fields
         self._config_dict = self.to_dict()
 
+@register_config("fsq_cfg")
 @dataclass
 class FSQConfig(TransformerConfig):
     """Model architecture configuration."""
@@ -316,6 +366,7 @@ class FSQConfig(TransformerConfig):
         # Update stored dictionary with FSQ-specific fields
         self._config_dict = self.to_dict()
 
+@register_config("training_cfg")
 @dataclass
 class TrainingConfig(Config):
     """Training process configuration."""

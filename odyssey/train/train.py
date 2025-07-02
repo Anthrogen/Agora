@@ -28,10 +28,11 @@ from mlm_step import mlm_step
 from discrete_diffusion_step import discrete_diffusion_step
 
 from odyssey.src.configurations import *
-from odyssey.src.config_loader import load_config
+from odyssey.src.config_loader import load_config_from_args
 
 
-model_cfg, train_cfg = load_config("configs/default_config.yaml")
+# Load configs with the new loader - now also returns backup dictionaries
+model_cfg, train_cfg, model_config_dict, train_config_dict = load_config_from_args()
 
 def worker_init_fn(worker_id):
     """Initialize each worker with a deterministic seed."""
@@ -225,7 +226,9 @@ def train(model_cfg, train_cfg):
         'model_type': model_cfg.first_block_cfg.initials(),
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'model_config': model_cfg
+        'model_config': model_cfg,
+        'model_config_dict': model_config_dict,  # Backup dictionary
+        'training_config_dict': train_config_dict  # Backup dictionary
     }, final_checkpoint_path)
     print(f"\nSaved final checkpoint for {model_cfg.first_block_cfg.initials()}")
     

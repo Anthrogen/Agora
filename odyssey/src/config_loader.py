@@ -1,33 +1,28 @@
 """
 Configuration loader for YAML-based experiment configuration.
 
-This module provides utilities to load and validate configuration files,
-merge configurations with command-line arguments, and create configuration
-objects for different components of the system.
+This module provides utilities to load and validate configuration files using
+the new registry-based type/params system for automatic configuration building.
 """
 
 import yaml
 import os
 import argparse
 from pathlib import Path
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Optional, Union, List, Tuple
 from dataclasses import dataclass, field
 import json
 from copy import deepcopy
 
 from odyssey.src.configurations import (
-    Config, TransformerConfig, TrunkConfig, FSQConfig, TrainingConfig,
-    LossConfig, CrossEntropyLossConfig, KabschRMSDLossConfig, ScoreEntropyLossConfig,
-    MaskConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig, DiffusionConfig,
-    BlockConfig, SelfConsensusConfig, ReflexiveAttentionConfig, 
-    SelfAttentionConfig, GeometricAttentionConfig,
+    Config, CONFIG_REGISTRY,
     ConfigurationError
 )
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 
 
 class ConfigLoader:
-    """Handles loading and processing of YAML configuration files."""
+    """Handles loading and processing of YAML configuration files using the registry system."""
     
     def __init__(self, config_path: Union[str, Path]):
         """
@@ -40,264 +35,144 @@ class ConfigLoader:
         if not self.config_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
         
-        # Load the configuration
-        self.config = self._load_yaml()
+        # Load the raw YAML configuration
+        self.raw_config = self._load_yaml()
+        
+        # Build configuration objects from the raw config
+        self.model_config = None
+        self.training_config = None
+        self._build_configs()
         
     def _load_yaml(self) -> Dict[str, Any]:
         """Load YAML configuration file."""
         with open(self.config_path, 'r') as f:
             return yaml.safe_load(f)
     
-    def _resolve_paths(self, base_dir: Optional[Path] = None) -> None:
+    def _build_config_from_dict(self, config_dict: Dict[str, Any]) -> Any:
         """
-        Resolve relative paths in configuration to absolute paths.
+        Recursively build configuration objects from dictionary with type/params structure.
         
         Args:
-            base_dir: Base directory for relative paths. If None, uses config file directory.
+            config_dict: Dictionary with 'type' and 'params' fields
+            
+        Returns:
+            Built configuration object
+        """
+        if not isinstance(config_dict, dict):
+            return config_dict
+            
+        # Check if this is a type/params structure
+        if 'type' in config_dict and 'params' in config_dict:
+            config_type = config_dict['type']
+            params = config_dict['params']
+            
+            # Look up the configuration class in the registry
+            if config_type not in CONFIG_REGISTRY:
+                raise ConfigurationError(f"Unknown configuration type: {config_type}")
+            
+            config_class = CONFIG_REGISTRY[config_type]
+            
+            # Recursively build nested configurations
+            built_params = {}
+            for key, value in params.items():
+                if isinstance(value, dict) and 'type' in value and 'params' in value:
+                    # This is a nested configuration
+                    built_params[key] = self._build_config_from_dict(value)
+                else:
+                    built_params[key] = value
+            
+            # Convert learning rate if it's a string representation of a float
+            if 'learning_rate' in built_params and isinstance(built_params['learning_rate'], str):
+                try:
+                    built_params['learning_rate'] = float(built_params['learning_rate'])
+                except ValueError:
+                    pass
+            
+            # Add vocabulary sizes for transformer configs if not provided
+            if config_type in ['fsq_cfg', 'trunk_cfg']:
+                if 'seq_vocab' not in built_params:
+                    built_params['seq_vocab'] = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)
+                if 'struct_vocab' not in built_params:
+                    built_params['struct_vocab'] = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
+                
+                # For trunk configs, add absorb tokens if not provided
+                if config_type == 'trunk_cfg':
+                    if 'seq_absorb_token' not in built_params:
+                        built_params['seq_absorb_token'] = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS)
+                    if 'struct_absorb_token' not in built_params:
+                        built_params['struct_absorb_token'] = SPECIAL_TOKENS.MASK.value + 4375
+            
+            # Create the configuration object
+            try:
+                return config_class(**built_params)
+            except Exception as e:
+                raise ConfigurationError(f"Failed to create {config_type}: {str(e)}")
+        else:
+            # Not a type/params structure, return as-is
+            return config_dict
+    
+    def _resolve_paths(self, params: Dict[str, Any], base_dir: Optional[Path] = None) -> Dict[str, Any]:
+        """
+        Resolve relative paths in parameters to absolute paths.
+        
+        Args:
+            params: Parameter dictionary
+            base_dir: Base directory for relative paths
+            
+        Returns:
+            Parameters with resolved paths
         """
         if base_dir is None:
-            base_dir = self.config_path.parent.parent  # Assuming config is in configs/
+            base_dir = self.config_path.parent.parent  # Project root
         
-        # Resolve data paths
-        if 'training' in self.config and 'data_dir' in self.config['training']:
-            path = Path(self.config['training']['data_dir'])
-            if not path.is_absolute():
-                self.config['training']['data_dir'] = str(base_dir / path)
+        resolved = deepcopy(params)
         
-        # Resolve checkpoint directory
-        if 'training' in self.config and 'checkpoint_dir' in self.config['training']:
-            path = Path(self.config['training']['checkpoint_dir'])
-            if not path.is_absolute():
-                self.config['training']['checkpoint_dir'] = str(base_dir / path)
+        # List of parameter names that should be treated as paths
+        path_params = ['data_dir', 'checkpoint_dir', 'fsq_encoder_path']
         
-        # Resolve FSQ encoder path if present
-        if 'model' in self.config:
-            if 'fsq_encoder_path' in self.config['model'] and self.config['model']['fsq_encoder_path']:
-                path = Path(self.config['model']['fsq_encoder_path'])
+        for key, value in resolved.items():
+            if key in path_params and value is not None:
+                path = Path(value)
                 if not path.is_absolute():
-                    self.config['model']['fsq_encoder_path'] = str(base_dir / path)
-            
-            # Also check in fsq section for stage_2
-            if 'fsq' in self.config['model'] and 'encoder_path' in self.config['model']['fsq']:
-                if self.config['model']['fsq']['encoder_path']:
-                    path = Path(self.config['model']['fsq']['encoder_path'])
-                    if not path.is_absolute():
-                        self.config['model']['fsq']['encoder_path'] = str(base_dir / path)
+                    resolved[key] = str(base_dir / path)
+            elif isinstance(value, dict):
+                # Recursively resolve paths in nested dictionaries
+                resolved[key] = self._resolve_paths(value, base_dir)
+        
+        return resolved
     
-    def get_block_config(self, block_type: str, block_params: Dict[str, Any]) -> BlockConfig:
-        """
-        Create block configuration based on type.
-        
-        Args:
-            block_type: Type of block (self_attention, geometric_attention, etc.)
-            block_params: Parameters for the block
-            
-        Returns:
-            Appropriate BlockConfig subclass
-        """
-        if block_type == "self_consensus":
-            return SelfConsensusConfig(
-                consensus_num_iterations=block_params['num_iterations'],
-                consensus_connectivity_type=block_params['connectivity_type'],
-                consensus_w=block_params['w'],
-                consensus_r=block_params['r'],
-                consensus_edge_hidden_dim=block_params['edge_hidden_dim']
+    def _build_configs(self) -> None:
+        """Build model and training configurations from raw config."""
+        # Resolve paths in the raw config first
+        if 'model_cfg' in self.raw_config and 'params' in self.raw_config['model_cfg']:
+            self.raw_config['model_cfg']['params'] = self._resolve_paths(
+                self.raw_config['model_cfg']['params']
             )
-        elif block_type == "reflexive_attention":
-            return ReflexiveAttentionConfig()
-        elif block_type == "self_attention":
-            return SelfAttentionConfig()
-        elif block_type == "geometric_attention":
-            return GeometricAttentionConfig()
-        else:
-            raise ValueError(f"Unknown block type: {block_type}")
+        
+        if 'train_cfg' in self.raw_config and 'params' in self.raw_config['train_cfg']:
+            self.raw_config['train_cfg']['params'] = self._resolve_paths(
+                self.raw_config['train_cfg']['params']
+            )
+        
+        # Build model configuration
+        if 'model_cfg' not in self.raw_config:
+            raise ConfigurationError("Configuration must include 'model_cfg' section")
+        
+        self.model_config = self._build_config_from_dict(self.raw_config['model_cfg'])
+        
+        # Build training configuration
+        if 'train_cfg' not in self.raw_config:
+            raise ConfigurationError("Configuration must include 'train_cfg' section")
+        
+        self.training_config = self._build_config_from_dict(self.raw_config['train_cfg'])
     
-    def get_model_config(self) -> Union[TransformerConfig, TrunkConfig, FSQConfig]:
-        """
-        Create model configuration object based on style.
-        
-        Returns:
-            Appropriate model configuration
-        """
-        model_cfg = self.config['model']
-        
-        # Validate required fields
-        required_fields = ['style', 'd_model', 'n_heads', 'n_layers', 'max_len', 'dropout', 'ff_mult']
-        for field in required_fields:
-            if field not in model_cfg:
-                raise ValueError(f"Missing required model field: {field}")
-        
-        # Calculate vocabulary sizes
-        seq_vocab = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)
-        struct_vocab = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
-        
-        # Get block configuration
-        block_type = model_cfg.get('block_type', 'self_attention')
-        block_params = model_cfg.get('block_params', {})
-        first_block_config = self.get_block_config(block_type, block_params)
-        
-        # Common parameters
-        common_params = {
-            'style': model_cfg['style'],
-            'd_model': model_cfg['d_model'],
-            'n_heads': model_cfg['n_heads'],
-            'n_layers': model_cfg['n_layers'],
-            'max_len': model_cfg['max_len'],
-            'dropout': model_cfg['dropout'],
-            'ff_mult': model_cfg['ff_mult'],
-            'first_block_cfg': first_block_config,
-            'reference_model_seed': model_cfg.get('reference_model_seed', 42),
-            'seq_vocab': seq_vocab,
-            'struct_vocab': struct_vocab
-        }
-        
-        # Create appropriate config based on style
-        if model_cfg['style'] in ['stage_1', 'stage_2']:
-            # FSQ configuration
-            if 'fsq' not in model_cfg:
-                raise ValueError(f"FSQ parameters required for {model_cfg['style']} style")
-            
-            fsq_params = model_cfg['fsq']
-            if 'latent_dim' not in fsq_params or 'levels' not in fsq_params:
-                raise ValueError("FSQ config must include 'latent_dim' and 'levels'")
-            
-            config = FSQConfig(
-                **common_params,
-                latent_dim=fsq_params['latent_dim'],
-                fsq_levels=fsq_params['levels'],
-                fsq_encoder_path=fsq_params.get('encoder_path') if model_cfg['style'] == 'stage_2' else None
-            )
-        elif model_cfg['style'] in ['mlm', 'discrete_diffusion']:
-            # Trunk configuration
-            if 'fsq_encoder_path' not in model_cfg:
-                raise ValueError(f"fsq_encoder_path required for {model_cfg['style']} style")
-            
-            seq_absorb_token = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS)
-            struct_absorb_token = SPECIAL_TOKENS.MASK.value + 4375
-            config = TrunkConfig(
-                **common_params,
-                fsq_encoder_path=model_cfg['fsq_encoder_path'],
-                seq_absorb_token=seq_absorb_token,
-                struct_absorb_token=struct_absorb_token
-            )
-        else:
-            raise ValueError(f"Unknown model style: {model_cfg['style']}")
-        
-        return config
+    def get_model_config(self) -> Config:
+        """Get the built model configuration."""
+        return self.model_config
     
-    def get_mask_config(self) -> MaskConfig:
-        """Create mask configuration based on strategy."""
-        if 'masking' not in self.config:
-            raise ValueError("Configuration must include 'masking' section")
-        
-        mask_cfg = self.config['masking']
-        if 'strategy' not in mask_cfg:
-            raise ValueError("Masking configuration must specify 'strategy'")
-        
-        strategy = mask_cfg['strategy']
-        
-        if strategy == 'simple':
-            if 'simple' not in mask_cfg:
-                raise ValueError("Simple masking requires 'simple' configuration section")
-            simple_cfg = mask_cfg['simple']
-            if 'mask_prob_seq' not in simple_cfg or 'mask_prob_struct' not in simple_cfg:
-                raise ValueError("Simple masking requires 'mask_prob_seq' and 'mask_prob_struct'")
-            
-            return SimpleMaskConfig(
-                mask_prob_seq=simple_cfg['mask_prob_seq'],
-                mask_prob_struct=simple_cfg['mask_prob_struct']
-            )
-        elif strategy == 'complex':
-            return ComplexMaskConfig()
-        elif strategy == 'none':
-            return NoMaskConfig()
-        elif strategy == 'discrete_diffusion':
-            if 'discrete_diffusion' not in mask_cfg:
-                raise ValueError("Discrete diffusion masking requires 'discrete_diffusion' configuration section")
-            
-            diff_cfg = mask_cfg['discrete_diffusion']
-            required_fields = ['noise_schedule', 'sigma_min', 'sigma_max', 'num_timesteps']
-            for field in required_fields:
-                if field not in diff_cfg:
-                    raise ValueError(f"Discrete diffusion masking requires '{field}'")
-            
-            return DiffusionConfig(
-                noise_schedule=diff_cfg['noise_schedule'],
-                sigma_min=diff_cfg['sigma_min'],
-                sigma_max=diff_cfg['sigma_max'],
-                num_timesteps=diff_cfg['num_timesteps']
-            )
-        else:
-            raise ValueError(f"Unknown masking strategy: {strategy}. Valid options: simple, complex, none, discrete_diffusion")
-    
-    def get_loss_config(self) -> LossConfig:
-        """Create loss configuration."""
-        loss_cfg = self.config['loss']
-        if 'type' not in loss_cfg:
-            raise ValueError("Loss configuration must specify 'type'")
-        
-        loss_type = loss_cfg['type']
-        
-        if loss_type == 'cross_entropy':
-            if 'weights' not in loss_cfg:
-                raise ValueError("Cross-entropy loss requires 'weights' section")
-            if 'loss_elements' not in loss_cfg:
-                raise ValueError("Cross-entropy loss requires 'loss_elements'")
-            
-            weights = loss_cfg['weights']
-            if 'sequence' not in weights or 'structure' not in weights:
-                raise ValueError("Loss weights must include 'sequence' and 'structure'")
-            
-            return CrossEntropyLossConfig(
-                seq_loss_weight=weights['sequence'],
-                struct_loss_weight=weights['structure'],
-                loss_elements=loss_cfg['loss_elements']
-            )
-        elif loss_type == 'kabsch_rmsd':
-            return KabschRMSDLossConfig()
-        elif loss_type == 'score_entropy':
-            if 'weights' not in loss_cfg:
-                raise ValueError("Score entropy loss requires 'weights' section")
-            
-            weights = loss_cfg['weights']
-            if 'sequence' not in weights or 'structure' not in weights:
-                raise ValueError("Loss weights must include 'sequence' and 'structure'")
-            
-            return ScoreEntropyLossConfig(
-                seq_loss_weight=weights['sequence'],
-                struct_loss_weight=weights['structure']
-            )
-        else:
-            raise ValueError(f"Unknown loss type: {loss_type}. Valid options: cross_entropy, kabsch_rmsd, score_entropy")
-    
-    def get_training_config(self) -> TrainingConfig:
-        """Create training configuration object."""
-        if 'training' not in self.config:
-            raise ValueError("Configuration must include 'training' section")
-        
-        train_cfg = self.config['training']
-        
-        # Validate required fields
-        required_fields = ['batch_size', 'max_epochs', 'learning_rate', 'data_dir', 'checkpoint_dir']
-        for field in required_fields:
-            if field not in train_cfg:
-                raise ValueError(f"Missing required training field: {field}")
-        
-        # Get mask and loss configurations
-        mask_config = self.get_mask_config()
-        loss_config = self.get_loss_config()
-        
-        config = TrainingConfig(
-            batch_size=train_cfg['batch_size'],
-            max_epochs=train_cfg['max_epochs'],
-            learning_rate=float(train_cfg['learning_rate']),
-            mask_config=mask_config,
-            loss_config=loss_config,
-            data_dir=train_cfg['data_dir'],
-            checkpoint_dir=train_cfg['checkpoint_dir']
-        )
-        
-        return config
+    def get_training_config(self) -> Config:
+        """Get the built training configuration."""
+        return self.training_config
     
     def merge_with_args(self, args: argparse.Namespace) -> None:
         """
@@ -307,25 +182,39 @@ class ConfigLoader:
         Args:
             args: Parsed command-line arguments
         """
+        # For the new system, we need to rebuild configs after merging
+        # This is more complex with the registry system, so we'll update raw config
+        # and rebuild
+        
+        modified = False
+        
         # Override model style
         if hasattr(args, 'style') and args.style:
-            self.config['model']['style'] = args.style
+            if 'model_cfg' in self.raw_config and 'params' in self.raw_config['model_cfg']:
+                self.raw_config['model_cfg']['params']['style'] = args.style
+                modified = True
         
         # Override batch size
         if hasattr(args, 'batch_size') and args.batch_size:
-            self.config['training']['batch_size'] = args.batch_size
+            if 'train_cfg' in self.raw_config and 'params' in self.raw_config['train_cfg']:
+                self.raw_config['train_cfg']['params']['batch_size'] = args.batch_size
+                modified = True
         
         # Override learning rate
         if hasattr(args, 'learning_rate') and args.learning_rate:
-            self.config['training']['learning_rate'] = args.learning_rate
+            if 'train_cfg' in self.raw_config and 'params' in self.raw_config['train_cfg']:
+                self.raw_config['train_cfg']['params']['learning_rate'] = args.learning_rate
+                modified = True
         
         # Override epochs
         if hasattr(args, 'epochs') and args.epochs:
-            self.config['training']['max_epochs'] = args.epochs
+            if 'train_cfg' in self.raw_config and 'params' in self.raw_config['train_cfg']:
+                self.raw_config['train_cfg']['params']['max_epochs'] = args.epochs
+                modified = True
         
-        # Override device
-        if hasattr(args, 'device') and args.device:
-            self.config['experiment']['device'] = args.device
+        # Rebuild configs if modified
+        if modified:
+            self._build_configs()
     
     def save_config(self, output_path: Union[str, Path]) -> None:
         """
@@ -338,41 +227,51 @@ class ConfigLoader:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         with open(output_path, 'w') as f:
-            yaml.dump(self.config, f, default_flow_style=False, sort_keys=False)
+            yaml.dump(self.raw_config, f, default_flow_style=False, sort_keys=False)
     
     def validate_config_consistency(self) -> None:
         """Validate that configuration combinations make sense."""
-        model_style = self.config['model']['style']
-        loss_type = self.config['loss']['type']
-        mask_strategy = self.config['masking']['strategy']
+        if not self.model_config or not self.training_config:
+            return
+        
+        model_style = self.model_config.style
+        
+        # Get loss and mask types from training config
+        loss_type = type(self.training_config.loss_config).__name__.replace('Config', '').lower()
+        mask_type = type(self.training_config.mask_config).__name__.replace('Config', '').lower()
         
         # Validate loss type for model style
-        if model_style in ['stage_1', 'stage_2'] and loss_type != 'kabsch_rmsd':
+        if model_style in ['stage_1', 'stage_2'] and 'kabschrmsd' not in loss_type:
             print(f"Warning: FSQ models typically use 'kabsch_rmsd' loss, but got '{loss_type}'")
         
-        if model_style == 'mlm' and loss_type != 'cross_entropy':
+        if model_style == 'mlm' and 'crossentropy' not in loss_type:
             print(f"Warning: MLM models typically use 'cross_entropy' loss, but got '{loss_type}'")
         
         if model_style == 'discrete_diffusion':
-            if loss_type != 'score_entropy':
+            if 'scoreentropy' not in loss_type:
                 print(f"Warning: Discrete diffusion models should use 'score_entropy' loss, but got '{loss_type}'")
-            if mask_strategy != 'discrete_diffusion':
-                print(f"Warning: Discrete diffusion models should use 'discrete_diffusion' masking, but got '{mask_strategy}'")
+            if 'diffusion' not in mask_type:
+                print(f"Warning: Discrete diffusion models should use 'diffusion' masking, but got '{mask_type}'")
         
         # Validate stage 2 requirements
         if model_style == 'stage_2':
-            if mask_strategy != 'none':
-                print(f"Warning: Stage 2 training typically uses 'none' masking, but got '{mask_strategy}'")
-            fsq_params = self.config['model'].get('fsq', {})
-            if 'encoder_path' not in fsq_params or not fsq_params['encoder_path']:
-                raise ValueError("Stage 2 training requires fsq.encoder_path to be specified")
+            if 'nomask' not in mask_type:
+                print(f"Warning: Stage 2 training typically uses 'no' masking, but got '{mask_type}'")
+            if hasattr(self.model_config, 'fsq_encoder_path'):
+                if not self.model_config.fsq_encoder_path:
+                    raise ValueError("Stage 2 training requires fsq_encoder_path to be specified")
     
     def print_config(self) -> None:
         """Print configuration in a readable format."""
         print("="*60)
-        print("Configuration:")
+        print("Raw Configuration:")
         print("="*60)
-        print(yaml.dump(self.config, default_flow_style=False, sort_keys=False))
+        print(yaml.dump(self.raw_config, default_flow_style=False, sort_keys=False))
+        print("="*60)
+        print("\nBuilt Model Config:")
+        print(self.model_config)
+        print("\nBuilt Training Config:")
+        print(self.training_config)
         print("="*60)
 
 
@@ -439,23 +338,22 @@ def create_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_config_from_args(args: Optional[argparse.Namespace] = None) -> tuple:
+def load_config_from_args(args: Optional[argparse.Namespace] = None) -> Tuple[Config, Config, Dict, Dict]:
     """
-    Load configuration from command-line arguments.
+    Load configuration from command-line arguments using the new registry system.
     
     Args:
         args: Parsed arguments. If None, will parse from sys.argv
         
     Returns:
-        Tuple of (config_loader, model_config, training_config)
+        Tuple of (model_config, training_config, model_config_dict, training_config_dict)
     """
     if args is None:
         parser = create_argument_parser()
         args = parser.parse_args()
     
-    # Load configuration
+    # Load configuration with new loader
     config_loader = ConfigLoader(args.config)
-    config_loader._resolve_paths()
     
     # Merge with command-line arguments
     config_loader.merge_with_args(args)
@@ -473,26 +371,34 @@ def load_config_from_args(args: Optional[argparse.Namespace] = None) -> tuple:
         config_loader.save_config(args.save_config)
         print(f"Configuration saved to: {args.save_config}")
     
-    # Create configuration objects
+    # Get configuration objects
     try:
         model_config = config_loader.get_model_config()
         training_config = config_loader.get_training_config()
+        
+        # Get configuration dictionaries for backup
+        model_config_dict = model_config.get_config_dict()
+        training_config_dict = training_config.get_config_dict()
+        
     except Exception as e:
         print(f"\nError creating configuration: {e}")
         print("\nPlease check your configuration file follows the correct format.")
         print("See configs/configuration_constructor.md for detailed documentation.")
         raise
     
-    return config_loader, model_config, training_config
+    return model_config, training_config, model_config_dict, training_config_dict
 
 
 # Example usage in training scripts:
 if __name__ == "__main__":
     # Example of how to use in a training script
-    config_loader, model_cfg, train_cfg = load_config_from_args()
+    model_cfg, train_cfg, model_dict, train_dict = load_config_from_args()
     
     print("Model style:", model_cfg.style)
+    print("Model type:", type(model_cfg).__name__)
     print("Batch size:", train_cfg.batch_size)
     print("Learning rate:", train_cfg.learning_rate)
     print("Mask config type:", type(train_cfg.mask_config).__name__)
     print("Loss config type:", type(train_cfg.loss_config).__name__)
+    print("\nModel config dict keys:", list(model_dict.keys()))
+    print("Training config dict keys:", list(train_dict.keys()))

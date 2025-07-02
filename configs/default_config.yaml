@@ -1,87 +1,96 @@
 # Odyssey Default Configuration File
 # FSQ Stage 1 Training Configuration
-#
-# SAFETY TIP: Before modifying this file, create a backup:
-#   cp configs/default_config.yaml configs/backup/default_config_$(date +%Y%m%d).yaml
-#
-# Or use the built-in backup features:
-#   python train_from_config.py --config configs/default_config.yaml \
-#     --save-config configs/backup/default_config_backup.yaml
 
 # =============================================================================
 # Model Configuration
 # =============================================================================
-model:
-  # Model style determines the type of model and training approach
-  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
-  style: "stage_1"
-  
-  # Core transformer parameters
-  d_model: 768              # Model dimension (hidden size)
-  n_heads: 12               # Number of attention heads
-  n_layers: 12              # Number of transformer layers
-  max_len: 2048             # Maximum sequence length
-  dropout: 0.1              # Dropout rate
-  ff_mult: 4                # Feedforward multiplier (ff_dim = d_model * ff_mult)
-  reference_model_seed: 42  # Seed for model initialization
-  
-  # Block type for first transformer block
-  # Options: "self_attention", "geometric_attention", "reflexive_attention", "self_consensus"
-  block_type: "self_consensus"
-  
-  # Block-specific parameters
-  block_params:
-    # Self-Consensus parameters (used when block_type is "self_consensus")
-    num_iterations: 1       # Number of consensus gradient iterations
-    connectivity_type: "local_window"  # "local_window" or "top_w"
-    w: 2                    # Window size for local_window, or number of connections for top_w
-    r: 24                   # Rank of Lambda_ij matrices
-    edge_hidden_dim: 12     # Hidden dimension for edge networks
-  
-  # FSQ parameters (required for stage_1)
-  fsq:
-    latent_dim: 32          # Pre-quantized continuous latent dimension
-    levels: [7, 5, 5, 5, 5] # Quantization levels for each dimension
+model_cfg:
+  type: "fsq_cfg"  # Options: "fsq_cfg", "trunk_cfg"
+  params:
+    style: "stage_1"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
+    
+    # Core transformer parameters
+    d_model: 768
+    n_heads: 12
+    n_layers: 12
+    max_len: 2048
+    dropout: 0.1
+    ff_mult: 4
+    reference_model_seed: 42
+    
+    # First block configuration
+    first_block_cfg:
+      type: "self_consensus_cfg"  # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
+      params:
+        consensus_num_iterations: 1
+        consensus_connectivity_type: "local_window"  # Options: "local_window", "top_w"
+        consensus_w: 2
+        consensus_r: 24
+        consensus_edge_hidden_dim: 12
+    
+    # FSQ-specific parameters
+    latent_dim: 32
+    fsq_levels: [7, 5, 5, 5, 5]
+    fsq_encoder_path: null  # Required for stage_2
 
 # =============================================================================
 # Training Configuration
 # =============================================================================
-training:
-  # Basic training parameters
-  batch_size: 32
-  max_epochs: 100
-  learning_rate: 1e-4
-  
-  # Data paths
-  data_dir: "sample_data/1k"
-  checkpoint_dir: "checkpoints"
+train_cfg:
+  type: "training_cfg"
+  params:
+    batch_size: 32
+    max_epochs: 100
+    learning_rate: 1e-4
+    data_dir: "sample_data/1k"
+    checkpoint_dir: "checkpoints"
+    
+    # Loss configuration
+    loss_config:
+      type: "kabsch_rmsd_loss_cfg"  # Options: "cross_entropy_loss_cfg", "kabsch_rmsd_loss_cfg", "score_entropy_loss_cfg"
+      params: {}
+    
+    # Masking configuration
+    mask_config:
+      type: "simple_mask_cfg"  # Options: "simple_mask_cfg", "complex_mask_cfg", "no_mask_cfg", "diffusion_mask_cfg"
+      params:
+        mask_prob_seq: 0.2
+        mask_prob_struct: 0.2
 
 # =============================================================================
-# Loss Configuration
+# Configuration Options Reference
 # =============================================================================
-loss:
-  # Loss type: "cross_entropy", "kabsch_rmsd", "score_entropy"
-  type: "kabsch_rmsd"  # FSQ stage 1 uses RMSD loss
-
-# =============================================================================
-# Masking Configuration
-# =============================================================================
-masking:
-  # Masking strategy: "simple", "complex", "discrete_diffusion", "none"
-  strategy: "simple"
-  
-  # Simple masking parameters
-  simple:
-    mask_prob_seq: 0.2      # Probability of masking sequence tokens
-    mask_prob_struct: 0.2   # Probability of masking structure tokens
-  
-  # Complex masking parameters
-  # complex:
-  #   # Add parameters when ComplexMaskConfig is fully defined
-  
-  # Discrete diffusion parameters (not used for stage_1)
-  # discrete_diffusion:
-  #   noise_schedule: "linear"  # "linear", "inverted_u", or "uniform"
-  #   sigma_min: 0.31
-  #   sigma_max: 5.68
-  #   num_timesteps: 100
+# Model Configurations:
+# --------------------
+# FSQConfig (fsq_cfg):
+#   - style: "stage_1" or "stage_2"
+#   - Additional params: latent_dim, fsq_levels, fsq_encoder_path
+#
+# TrunkConfig (trunk_cfg):
+#   - style: "mlm" or "discrete_diffusion"
+#   - Additional params: fsq_encoder_path (required)
+#
+# Block Configurations:
+# --------------------
+# self_attention_cfg: No additional params
+# geometric_attention_cfg: No additional params
+# reflexive_attention_cfg: No additional params
+# self_consensus_cfg:
+#   - consensus_num_iterations, consensus_connectivity_type, consensus_w, consensus_r, consensus_edge_hidden_dim
+#
+# Loss Configurations:
+# -------------------
+# cross_entropy_loss_cfg:
+#   - seq_loss_weight, struct_loss_weight, loss_elements
+# kabsch_rmsd_loss_cfg: No params
+# score_entropy_loss_cfg:
+#   - seq_loss_weight, struct_loss_weight
+#
+# Masking Configurations:
+# ----------------------
+# simple_mask_cfg:
+#   - mask_prob_seq, mask_prob_struct
+# complex_mask_cfg: TBD
+# no_mask_cfg: No params
+# diffusion_mask_cfg:
+#   - noise_schedule, sigma_min, sigma_max, num_timesteps

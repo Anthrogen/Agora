@@ -1,61 +1,46 @@
 # Configuration for MLM (Masked Language Modeling) training
 
-# =============================================================================
-# Model Configuration
-# =============================================================================
-model:
-  style: "mlm"
-  
-  # Core transformer parameters
-  d_model: 128
-  n_heads: 1
-  n_layers: 3
-  max_len: 2048
-  dropout: 0.1
-  ff_mult: 4
-  reference_model_seed: 42
-  
-  # Block type for first transformer block
-  block_type: "self_consensus"
-  
-  # Block-specific parameters
-  block_params:
-    num_iterations: 1
-    connectivity_type: "local_window"
-    w: 2
-    r: 8
-    edge_hidden_dim: 24
-  
-  # FSQ encoder path for trunk models
-  fsq_encoder_path: "checkpoints/fsq/SC_stage_1_simple_model.pt"
+model_cfg:
+  type: "trunk_cfg"
+  params:
+    style: "mlm"
+    d_model: 128
+    n_heads: 1
+    n_layers: 3
+    max_len: 2048
+    dropout: 0.1
+    ff_mult: 4
+    reference_model_seed: 42
+    
+    first_block_cfg:
+      type: "self_consensus_cfg"
+      params:
+        consensus_num_iterations: 1
+        consensus_connectivity_type: "local_window"
+        consensus_w: 2
+        consensus_r: 8
+        consensus_edge_hidden_dim: 24
+    
+    fsq_encoder_path: "checkpoints/fsq/SC_stage_1_simple_model.pt"
 
-# =============================================================================
-# Training Configuration
-# =============================================================================
-training:
-  batch_size: 4
-  max_epochs: 50
-  learning_rate: 1e-5
-  
-  # Data paths
-  data_dir: "sample_data/1k"
-  checkpoint_dir: "checkpoints/transformer_trunk"
-
-# =============================================================================
-# Loss Configuration
-# =============================================================================
-loss:
-  type: "cross_entropy"
-  weights:
-    sequence: 1.0
-    structure: 1.0
-  loss_elements: "masked"
-
-# =============================================================================
-# Masking Configuration
-# =============================================================================
-masking:
-  strategy: "simple"
-  simple:
-    mask_prob_seq: 0.15
-    mask_prob_struct: 0.15
+train_cfg:
+  type: "training_cfg"
+  params:
+    batch_size: 4
+    max_epochs: 50
+    learning_rate: 1e-5
+    data_dir: "sample_data/1k"
+    checkpoint_dir: "checkpoints/transformer_trunk"
+    
+    loss_config:
+      type: "cross_entropy_loss_cfg"
+      params:
+        seq_loss_weight: 1.0
+        struct_loss_weight: 1.0
+        loss_elements: "masked"
+    
+    mask_config:
+      type: "simple_mask_cfg"
+      params:
+        mask_prob_seq: 0.15
+        mask_prob_struct: 0.15

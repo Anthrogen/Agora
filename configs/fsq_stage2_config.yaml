@@ -1,58 +1,44 @@
 # Configuration for FSQ Stage 2 training
 # Fine-tunes with pre-trained FSQ encoder using no masking
 
-# =============================================================================
-# Model Configuration
-# =============================================================================
-model:
-  style: "stage_2"
-  
-  # Core transformer parameters
-  d_model: 128
-  n_heads: 1
-  n_layers: 3
-  max_len: 2048
-  dropout: 0.1
-  ff_mult: 4
-  reference_model_seed: 42
-  
-  # Block type for first transformer block
-  block_type: "self_consensus"
-  
-  # Block-specific parameters
-  block_params:
-    num_iterations: 1
-    connectivity_type: "local_window"
-    w: 2
-    r: 8
-    edge_hidden_dim: 24
-  
-  # FSQ parameters
-  fsq:
+model_cfg:
+  type: "fsq_cfg"
+  params:
+    style: "stage_2"
+    d_model: 128
+    n_heads: 1
+    n_layers: 3
+    max_len: 2048
+    dropout: 0.1
+    ff_mult: 4
+    reference_model_seed: 42
+    
+    first_block_cfg:
+      type: "self_consensus_cfg"
+      params:
+        consensus_num_iterations: 1
+        consensus_connectivity_type: "local_window"
+        consensus_w: 2
+        consensus_r: 8
+        consensus_edge_hidden_dim: 24
+    
     latent_dim: 32
-    levels: [7, 5, 5, 5, 5]
-    encoder_path: "checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt"
+    fsq_levels: [7, 5, 5, 5, 5]
+    fsq_encoder_path: "checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt"
 
-# =============================================================================
-# Training Configuration
-# =============================================================================
-training:
-  batch_size: 4
-  max_epochs: 1
-  learning_rate: 1e-5
-  
-  # Data paths
-  data_dir: "sample_data/1k"
-  checkpoint_dir: "checkpoints/fsq"
-
-# =============================================================================
-# Loss Configuration
-# =============================================================================
-loss:
-  type: "kabsch_rmsd"
-
-# =============================================================================
-# Masking Configuration
-# =============================================================================
-masking:
-  strategy: "none"
+train_cfg:
+  type: "training_cfg"
+  params:
+    batch_size: 4
+    max_epochs: 1
+    learning_rate: 1e-5
+    data_dir: "sample_data/1k"
+    checkpoint_dir: "checkpoints/fsq"
+    
+    loss_config:
+      type: "kabsch_rmsd_loss_cfg"
+      params: {}
+    
+    mask_config:
+      type: "no_mask_cfg"
+      params: {}
