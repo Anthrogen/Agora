@@ -1,13 +1,13 @@
 # Odyssey Default Configuration File
-# Transformer Trunk MLM Training Configuration
+# FSQ Stage 1 Training Configuration
 
 # =============================================================================
 # Model Configuration
 # =============================================================================
 model_cfg:
-  type: "trunk_cfg"  # Options: "fsq_cfg", "trunk_cfg"
+  type: "fsq_cfg"  # Options: "fsq_cfg", "trunk_cfg"
   params:
-    style: "mlm"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
+    style: "stage_1"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
     
     # Core transformer parameters
     d_model: 128
@@ -17,7 +17,9 @@ model_cfg:
     dropout: 0.1
     ff_mult: 4
     reference_model_seed: 42
-    fsq_encoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_simple_model.pt"
+    latent_dim: 32
+    fsq_levels: [7, 5, 5, 5, 5]
+    fsq_encoder_path: null  # Required for stage_2
     
     # First block configuration
     first_block_cfg:
@@ -45,15 +47,12 @@ train_cfg:
     max_epochs: 50
     learning_rate: 0.00001
     data_dir: "/workspace/demo/Odyssey/sample_data/1k.csv"
-    checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/transformer_trunk"
+    checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/fsq"
     
     # Loss configuration
     loss_config:
-      type: "cross_entropy_loss_cfg"
-      params:
-        seq_loss_weight: 1.0
-        struct_loss_weight: 1.0
-        loss_elements: "masked"  # Different loss element strategy
+      type: "kabsch_rmsd_loss_cfg"  # Options: "cross_entropy_loss_cfg", "kabsch_rmsd_loss_cfg", "score_entropy_loss_cfg"
+      params: {}
     
     # Masking configuration
     mask_config:
@@ -63,3 +62,9 @@ train_cfg:
         mask_prob_struct: 0.2
       # type: "complex_mask_cfg"
       # params: {}
+      # type: "diffusion_cfg"
+      # params:
+      #   noise_schedule: "uniform"
+      #   sigma_min: 0.31
+      #   sigma_max: 5.68
+      #   num_timesteps: 100

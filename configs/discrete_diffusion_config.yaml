@@ -1,10 +1,15 @@
-# Configuration for Discrete Diffusion training
-# Uses TrunkConfig with discrete diffusion masking and score entropy loss
+# Odyssey Default Configuration File
+# Transformer Trunk Discrete Diffusion Training Configuration
 
+# =============================================================================
+# Model Configuration
+# =============================================================================
 model_cfg:
-  type: "trunk_cfg"
+  type: "trunk_cfg"  # Options: "fsq_cfg", "trunk_cfg"
   params:
-    style: "discrete_diffusion"
+    style: "discrete_diffusion"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
+    
+    # Core transformer parameters
     d_model: 128
     n_heads: 1
     n_layers: 3
@@ -12,35 +17,46 @@ model_cfg:
     dropout: 0.1
     ff_mult: 4
     reference_model_seed: 42
+    fsq_encoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt"
     
+    # First block configuration
     first_block_cfg:
-      type: "self_consensus_cfg"
+      type: "self_consensus_cfg"  # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
       params:
         consensus_num_iterations: 1
-        consensus_connectivity_type: "local_window"
+        consensus_connectivity_type: "local_window"  # Options: "local_window", "top_w"
         consensus_w: 2
-        consensus_r: 8
-        consensus_edge_hidden_dim: 24
-    
-    fsq_encoder_path: "checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt"
+        consensus_r: 24
+        consensus_edge_hidden_dim: 12
+      # type: "self_attention_cfg"
+      # params: {}
+      # type: "geometric_attention_cfg"
+      # params: {}
+      # type: "reflexive_attention_cfg"
+      # params: {}
 
+# =============================================================================
+# Training Configuration
+# =============================================================================
 train_cfg:
   type: "training_cfg"
   params:
     batch_size: 4
     max_epochs: 150
-    learning_rate: 1e-5
-    data_dir: "sample_data/1k"
-    checkpoint_dir: "checkpoints/transformer_trunk"
+    learning_rate: 0.00001
+    data_dir: "/workspace/demo/Odyssey/sample_data/1k.csv"
+    checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/transformer_trunk"
     
+    # Loss configuration
     loss_config:
-      type: "score_entropy_loss_cfg"
+      type: "score_entropy_loss_cfg"  # Options: "cross_entropy_loss_cfg", "kabsch_rmsd_loss_cfg", "score_entropy_loss_cfg"
       params:
         seq_loss_weight: 1.0
         struct_loss_weight: 1.0
     
+    # Masking configuration
     mask_config:
-      type: "diffusion_mask_cfg"
+      type: "diffusion_cfg"
       params:
         noise_schedule: "uniform"
         sigma_min: 0.31

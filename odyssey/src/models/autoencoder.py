@@ -230,20 +230,6 @@ class FSQDecoder(nn.Module):
         x_rec = out.view(B, L, num_atoms, 3)  # [B, L, num_atoms, 3]
         
         return x_rec
-        
-    def decode_from_tokens(self, indices: torch.Tensor, quantizer: FSQ):
-        """
-        Convenience method to decode directly from token indices.
-        
-        Args:
-          indices: [B, L] discrete token indices
-          quantizer: FSQ quantizer instance to map indices to embeddings
-        Returns:
-          x_rec: [B, L, 3, 3] reconstructed coordinates
-        """
-        # Convert indices to embeddings
-        z_q = quantizer.embed(indices)
-        return self.forward(z_q)
 
 # --------------------------------------------------------------------------- #
 #  Top-level model                                                             #
@@ -276,6 +262,10 @@ class Autoencoder(nn.Module):
         
         # Expose quantizer for easier access
         self.quantizer = self.encoder.quantizer
+
+    @property
+    def quantizer(self):
+        return self.encoder.quantizer
 
     def forward(self, x: torch.Tensor,
         coords: Optional[torch.Tensor] = None,  # [B, L, 3, 3] or [B, L, 4, 3] for GA/RA

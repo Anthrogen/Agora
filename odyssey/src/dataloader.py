@@ -1,13 +1,20 @@
 import torch
 import numpy as np
+import random
 from torch.utils.data import DataLoader
 from typing import Tuple
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from odyssey.src.tokenizer_bos_eos_pad import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer
+from odyssey.src.tokenizer import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer
 import math
 from abc import abstractmethod
 
 from odyssey.src.configurations import DiffusionConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig
+
+def worker_init_fn(worker_id):
+    """Initialize each worker with a deterministic seed."""
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 # --------------------------------------------------------------------------- #
 #  Noise Schedules for complex masking                                        #

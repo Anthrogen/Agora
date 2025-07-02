@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "odyssey"
 version = "0.1.0"
 description = "Odyssey - Protein Structure Modeling"
-authors = [{ name="Sean Moushegian", email="sean@anthrogen.com" }, {name="Shyam Venkatasubramanian", email="shyam@anthrogen.com"}]
+authors = [{ name="Sean Moushegian", email="sean@anthrogen.com" }, {name="Shyam Venkatasubramanian", email="shyam@anthrogen.com"}, {name="Connor Lee", email="connor@anthrogen.com"}]
 requires-python = ">=3.8"
 dependencies = [
     "torch>=2.0.0",
@@ -16,6 +16,7 @@ dependencies = [
     "tqdm>=4.65.0",
     "pandas>=1.3.0",
     "scipy>=1.7.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

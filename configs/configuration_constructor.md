@@ -73,7 +73,7 @@ All configuration types are registered and can be used via their type identifier
 ### Masking Configuration Types
 - `simple_mask_cfg` - Simple random masking
 - `complex_mask_cfg` - Complex masking patterns
-- `diffusion_mask_cfg` - Diffusion-based masking
+- `diffusion_cfg` - Diffusion-based masking
 - `no_mask_cfg` - No masking (for evaluation)
 
 ---
@@ -256,7 +256,7 @@ mask_config:
 ### Diffusion Masking
 ```yaml
 mask_config:
-  type: "diffusion_mask_cfg"
+  type: "diffusion_cfg"
   params:
     noise_schedule: "linear"  # Options: "linear", "inverted_u", "uniform"
     sigma_min: 0.31
@@ -401,7 +401,7 @@ train_cfg:
         struct_loss_weight: 1.0
     
     mask_config:
-      type: "diffusion_mask_cfg"
+      type: "diffusion_cfg"
       params:
         noise_schedule: "inverted_u"
         sigma_min: 0.1

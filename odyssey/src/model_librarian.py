@@ -6,28 +6,51 @@ It provides methods of loading and saving models to and from checkpoints/.
 import torch
 import os
 from typing import Dict
+from dataclasses import replace
 from odyssey.src.models.transformer import TransformerTrunk
 from odyssey.src.models.blocks import StandardTransformerBlock
-from odyssey.src.models.autoencoder import Autoencoder
+from odyssey.src.models.autoencoder import Autoencoder, FSQEncoder
+from odyssey.src.configurations import *
 
-
-def ensure_identical_parameters_all_models(models: Dict[str, TransformerTrunk | Autoencoder], seed: int):
+def ensure_identical_parameters_transformers(models: Dict[str, TransformerTrunk], seed: int):
+    """Ensure all models have identical parameters where possible.
+    
+    Strategy:
+    1. Set random seed for reproducible initialization
+    2. Copy shared embeddings and output layers from first model
+    3. For transformer layers beyond the first (which is architecture-specific),
+       copy entire StandardTransformerBlock state dicts when both models use them
+    
+    Args:
+        models: Dictionary mapping model type to model instance
+        seed: Random seed for consistent initialization
     """
-    I write this function in the hopes that we minimally disrupt this module's interface when we unify the below code.
-    I think that there should be a registration system for the trainable parameters of models.
-    """
-    if len(models) == 0: return
+    if len(models) == 0: 
+        return
+    
+    torch.manual_seed(seed)
+    ref_model = next(iter(models.values()))
+    
+    with torch.no_grad():
+        for model_type, model in models.items():
+            if model is not ref_model:
+                # Copy embeddings
+                model.seq_embed.load_state_dict(ref_model.seq_embed.state_dict())
+                model.struct_embed.load_state_dict(ref_model.struct_embed.state_dict())
+                
+                # Copy output layers
+                model.final_norm.load_state_dict(ref_model.final_norm.state_dict())
+                model.seq_logits.load_state_dict(ref_model.seq_logits.state_dict())
+                model.struct_logits.load_state_dict(ref_model.struct_logits.state_dict())
+                
+                # For layers beyond the first (which is architecture-specific),
+                # copy entire StandardTransformerBlocks when both models use them
+                for i in range(1, min(len(model.layers), len(ref_model.layers))):
+                    if (isinstance(model.layers[i], StandardTransformerBlock) and 
+                        isinstance(ref_model.layers[i], StandardTransformerBlock)):
+                        model.layers[i].load_state_dict(ref_model.layers[i].state_dict())
 
-    first_key = list(models.keys())[0]
-
-    if isinstance(models[first_key], TransformerTrunk):
-        ensure_identical_parameters_all_transformers(models, seed)
-    elif isinstance(models[first_key], Autoencoder):
-        ensure_identical_parameters_all_autoencoders(models, seed)
-    else:
-        raise ValueError(f"Model type {type(models[first_key])} is neither a TransformerTrunk nor an Autoencoder")
-
-def ensure_identical_parameters_all_autoencoders(models: Dict[str, Autoencoder], seed: int):
+def ensure_identical_parameters_autoencoders(models: Dict[str, Autoencoder], seed: int):
     """Ensure all models have identical parameters where possible.
     
     This is only relevant for stage 1 where different architectures (SA, GA, RA, C) 
@@ -54,8 +77,6 @@ def ensure_identical_parameters_all_autoencoders(models: Dict[str, Autoencoder],
             if model is not ref_model:
                 # Copy encoder components
                 # Input projection and conv blocks are shared
-                #TODO: this needs to be in the model.
-                #e.g. model.load(state_dictionary) and it can unpack what it needs internally.
                 model.encoder.input_proj.load_state_dict(ref_model.encoder.input_proj.state_dict())
                 model.encoder.encoder_conv1.load_state_dict(ref_model.encoder.encoder_conv1.state_dict())
                 model.encoder.encoder_conv2.load_state_dict(ref_model.encoder.encoder_conv2.state_dict())
@@ -82,44 +103,94 @@ def ensure_identical_parameters_all_autoencoders(models: Dict[str, Autoencoder],
                         isinstance(model.decoder.layers[i], StandardTransformerBlock)):
                         model.decoder.layers[i].load_state_dict(ref_model.decoder.layers[i].state_dict())
 
-def ensure_identical_parameters_all_transformers(models: Dict[str, TransformerTrunk], seed: int):
-    """Ensure all models have identical parameters where possible.
-    
-    Strategy:
-    1. Set random seed for reproducible initialization
-    2. Copy shared embeddings, output layers, and time embeddings from first model
-    3. For transformer layers beyond the first (which is architecture-specific),
-       copy entire StandardTransformerBlock state dicts when both models use them
+def load_model_from_empty(model_cfg, device):
+    """
+    Create a model, synchronized with a baseline Self-Attention model.
     
     Args:
-        models: Dictionary mapping model type to model instance
-        seed: Random seed for consistent initialization
+        model_cfg: Model configuration object
+        device: Device to place models on
+        
+    Returns:
+        model: The target model (either SA or synchronized with SA)
     """
-    if len(models) == 0: return
+    # Set seed for model creation
+    torch.manual_seed(model_cfg.reference_model_seed)
     
-    torch.manual_seed(seed)
-    ref_model = next(iter(models.values()))
-    
-    with torch.no_grad():
-        for model_type, model in models.items():
-            if model is not ref_model:
-                # Copy embeddings
-                model.seq_embed.load_state_dict(ref_model.seq_embed.state_dict())
-                model.struct_embed.load_state_dict(ref_model.struct_embed.state_dict())
-                
-                # Copy output layers
-                model.final_norm.load_state_dict(ref_model.final_norm.state_dict())
-                model.seq_logits.load_state_dict(ref_model.seq_logits.state_dict())
-                model.struct_logits.load_state_dict(ref_model.struct_logits.state_dict())
-                
-                # Copy time embedding network if present (for diffusion models)
-                if hasattr(model, 'time_embed') and hasattr(ref_model, 'time_embed'):
-                    model.time_embed.load_state_dict(ref_model.time_embed.state_dict())
-                
-                # For layers beyond the first (which is architecture-specific),
-                # copy entire StandardTransformerBlocks when both models use them
-                for i in range(1, min(len(model.layers), len(ref_model.layers))):
-                    if (isinstance(model.layers[i], StandardTransformerBlock) and 
-                        isinstance(ref_model.layers[i], StandardTransformerBlock)):
-                        model.layers[i].load_state_dict(ref_model.layers[i].state_dict())
+    # Determine constructor and sync function based on model type
+    desired_constructor = Autoencoder if isinstance(model_cfg, FSQConfig) else TransformerTrunk
+    sync_function = ensure_identical_parameters_autoencoders if isinstance(model_cfg, FSQConfig) else ensure_identical_parameters_transformers
 
+    # Create SA reference model
+    model_cfg_sa = replace(model_cfg, first_block_cfg=SelfAttentionConfig())
+    model_sa = desired_constructor(model_cfg_sa).to(device)
+
+    if isinstance(model_cfg.first_block_cfg, SelfAttentionConfig): model = model_sa
+    else:
+        # Synchronize model with baseline SA model
+        model_target = desired_constructor(model_cfg).to(device)
+        
+        # Synchronize target model with SA reference
+        print(f"Synchronizing {model_cfg.first_block_cfg.initials()} shared parameters with SA reference...")
+        temp_models = {"SA": model_sa, model_cfg.first_block_cfg.initials(): model_target}
+        sync_function(temp_models, model_cfg.reference_model_seed)
+        
+        # Keep target model, delete SA reference
+        model = model_target
+        del model_sa; del temp_models
+
+    return model
+
+def save_model_checkpoint(path, model, model_cfg, train_cfg, optimizer):
+    # Save final checkpoint
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'model_config': model_cfg,
+        'train_config': train_cfg,
+        'model_config_dict': model_cfg.to_dict(),  # Backup dictionary
+        'training_config_dict': train_cfg.to_dict()  # Backup dictionary
+    }, path)
+
+
+
+def load_model_from_checkpoint(model_path, device, freeze=True):
+    """
+    Load model from checkpoint. Handles both FSQ encoders and full models.
+    
+    Args:
+        model_path: Path to the model checkpoint
+        device: Device to place the model on
+        freeze: Whether to freeze the model parameters
+        
+    Returns:
+        model: Loaded model (FSQ encoder for Autoencoder configs, full model for others)
+    """
+    # Load checkpoint with dynamic path based on model type
+    # TODO also, we should be using os.path.join rather than / wherever possible.
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    model_cfg = checkpoint['model_config']
+    train_cfg = checkpoint['train_config']
+
+    constructor = FSQEncoder if isinstance(model_cfg, FSQConfig) else TransformerTrunk
+    
+    # Determine model type based on config instance
+    if isinstance(model_cfg, FSQConfig):
+        # FSQConfig - Load FSQ encoder from Autoencoder checkpoint
+        encoder_state = {k.removeprefix('encoder.'): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
+    elif isinstance(model_cfg, TrunkConfig):
+        pass
+    else:
+        raise ValueError(f"Unknown model config type: {type(model_cfg).__name__}. Expected FSQConfig or TrunkConfig.")
+
+    model = constructor(model_cfg)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    print(f"Loaded {type(model_cfg).__name__} model weights from: {model_path}")
+
+    if freeze:
+        model.eval()
+        model.requires_grad_(False)
+
+    model = model.to(device)
+    
+    return model, model_cfg, train_cfg

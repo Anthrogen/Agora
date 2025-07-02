@@ -101,7 +101,7 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
         # Forward pass through frozen encoder to get z_q
         with torch.no_grad():
             four_atom = batch.masked_data['coords'][:, :, :4, :]  # [B, L, 4, 3] for encoder
-            z_q = model.encoder.quantizer.indices_to_codes(batch.masked_data['struct'])
+            z_q = model.quantizer.indices_to_codes(batch.masked_data['struct'])
 
         # Zero out BOS/EOS/PAD positions in z_q
         z_q[batch.beospank['coords']] = 0.0

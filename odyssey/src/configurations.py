@@ -71,10 +71,10 @@ class Config:
         else:
             return self.to_dict()
     
-    @classmethod
-    def from_dict(cls, config_dict: dict) -> 'Config':
-        """Create configuration from dictionary. Override in subclasses for nested configs."""
-        return cls(**config_dict)
+    # @classmethod
+    # def from_dict(cls, config_dict: dict) -> 'Config':
+    #     """Create configuration from dictionary. Override in subclasses for nested configs."""
+    #     return cls(**config_dict)
     
     def save_to_json(self, filepath: str) -> None:
         """Save configuration to JSON file."""
@@ -266,9 +266,9 @@ class ComplexMaskConfig(MaskConfig):
 class NoMaskConfig(MaskConfig):
     def __str__(self): return "no_mask"
 
-@register_config("diffusion_mask_cfg")
+@register_config("diffusion_cfg")  
 @dataclass
-class DiffusionMaskConfig(MaskConfig):
+class DiffusionConfig(MaskConfig):
     """Discrete diffusion configuration."""
     # Noise schedule parameters
     noise_schedule:        str  # Type of noise schedule ("linear", "inverted_u", or "uniform")
@@ -296,10 +296,11 @@ class TransformerConfig(Config):
     ff_mult:                        int = None
     first_block_cfg:                BlockConfig = None
     reference_model_seed:           int = None
+    fsq_encoder_path:               str = None
 
     # TODO: These need to go.  seq_vocab should come from voacbulary.py and struuct_vocab should come from the FSQEncoder object.
-    seq_vocab:                      int = None  # Sequence tokens + special tokens
-    struct_vocab:                   int = None  # FSQ tokens + special tokens
+    seq_vocab:                      int = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)  # Sequence tokens + special tokens
+    struct_vocab:                   int = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
 
     def __post_init__(self):
         assert self.style in ('stage_1', 'stage_2', 'mlm', 'discrete_diffusion')
@@ -322,9 +323,8 @@ class TransformerConfig(Config):
 @dataclass
 class TrunkConfig(TransformerConfig):
     """Trunk model configuration."""
-    fsq_encoder_path:                  str = None
-    seq_absorb_token:                  int = None # Absorbing sequence state tokens (using MASK token index)
-    struct_absorb_token:               int = None # Absorbing structure state tokens (using MASK token index)
+    seq_absorb_token:                  int = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS) # Absorbing sequence state tokens (using MASK token index)
+    struct_absorb_token:               int = SPECIAL_TOKENS.MASK.value + 4375 # Absorbing structure state tokens (using MASK token index)
 
     def __post_init__(self):
         # Call parent's __post_init__ to set ff_hidden_dim and other attributes
@@ -343,7 +343,6 @@ class FSQConfig(TransformerConfig):
     # Transformer parameters
     latent_dim:                     int = None # pre-quantized CONTINUOUS latent dimension.
     fsq_levels:                     list[int] = None # codebook
-    fsq_encoder_path:               str = None
 
     def __post_init__(self):
         # Call parent's __post_init__ to set ff_hidden_dim and other attributes
