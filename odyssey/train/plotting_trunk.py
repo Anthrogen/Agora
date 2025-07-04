@@ -194,7 +194,7 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
 if __name__ == "__main__":
     # Default parameters - can be modified as needed
     checkpoint_dir = "../checkpoints/transformer_trunk"  # Correct path for trunk models
-    model_types = ["SC"]  # Including SC for SelfConsensus
+    model_types = ["SC", "SA"]  # Including SC for SelfConsensus
     style = "mlm"  # Can be "mlm" or "discrete_diffusion" 
     mask_config = "simple"  # Can be "simple", "complex", or "discrete_diffusion"
     output_file = f"validation_losses_{style}_{mask_config}.png"

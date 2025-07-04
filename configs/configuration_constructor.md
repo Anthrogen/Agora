@@ -4,34 +4,47 @@ This guide provides a comprehensive reference for all configuration options avai
 
 ## New Configuration System Overview
 
-The configuration system now uses a **registry-based approach** with hierarchical type/params structure:
+The configuration system now uses a **simplified hierarchical approach** with list support:
 
-1. **Type-based Resolution**: Each configuration section specifies a `type` field that maps to a registered configuration class
-2. **Automatic Building**: The config loader recursively builds configurations by looking for `type` and `params` fields
-3. **Registry Pattern**: All configuration classes are registered with decorators for automatic discovery
+1. **Direct Type Headers**: Configuration types are used directly as headers (e.g., `trunk_cfg:` instead of `type: "trunk_cfg"`)
+2. **List Support**: Any parameter can be specified as a list using YAML dash notation (`-`)
+3. **Multi-level Lists**: Lists can span across hierarchy levels, allowing multiple configuration options at any level
+4. **Registry Pattern**: All configuration classes are registered with decorators for automatic discovery
 
 ## Configuration Structure
 
-All configurations now follow this hierarchical pattern:
+All configurations now follow this simplified hierarchical pattern with list support:
 
 ```yaml
 model_cfg:
-  type: "config_type"  # Maps to registered configuration class
-  params:
+  config_type:  # Configuration type used directly as header
     # All parameters for this configuration type
     param1: value1
     param2: value2
     
-    # Nested configurations also use type/params
+    # Lists can be used for parameters
+    list_param:
+      - item1
+      - item2
+    
+    # Nested configurations can include multiple options as lists
     nested_cfg:
-      type: "nested_type"
-      params:
-        nested_param1: value1
+      - option1_type:
+      - option2_type:
+      - option3_type:
+        param1: value1
+        list_param:
+          - item1
+          - item2
 
 train_cfg:
-  type: "training_cfg"
-  params:
+  training_cfg:
     # Training parameters...
+    
+    # Configuration sections can also use lists
+    loss_config:
+      loss_type:
+        param1: value1
 ```
 
 ## Table of Contents
@@ -50,31 +63,31 @@ train_cfg:
 
 ## Configuration Registry
 
-All configuration types are registered and can be used via their type identifier:
+All configuration types are registered and used directly as headers:
 
 ### Model Configuration Types
-- `fsq_cfg` - FSQ model configuration (stage_1 and stage_2)
-- `trunk_cfg` - Trunk model configuration (mlm and discrete_diffusion)
+- `fsq_cfg:` - FSQ model configuration (stage_1 and stage_2)
+- `trunk_cfg:` - Trunk model configuration (mlm and discrete_diffusion)
 
 ### Block Configuration Types
-- `self_attention_cfg` - Standard transformer self-attention
-- `geometric_attention_cfg` - Geometric-aware attention
-- `reflexive_attention_cfg` - Reflexive attention mechanism
-- `self_consensus_cfg` - Consensus-based attention with parameters
+- `self_attention_cfg:` - Standard transformer self-attention
+- `geometric_attention_cfg:` - Geometric-aware attention
+- `reflexive_attention_cfg:` - Reflexive attention mechanism
+- `self_consensus_cfg:` - Consensus-based attention with parameters
 
 ### Training Configuration Types
-- `training_cfg` - Standard training configuration
+- `training_cfg:` - Standard training configuration
 
 ### Loss Configuration Types
-- `cross_entropy_loss_cfg` - Cross-entropy loss for sequence/structure
-- `kabsch_rmsd_loss_cfg` - RMSD loss for structural alignment
-- `score_entropy_loss_cfg` - Score entropy loss for diffusion
+- `cross_entropy_loss_cfg:` - Cross-entropy loss for sequence/structure
+- `kabsch_rmsd_loss_cfg:` - RMSD loss for structural alignment
+- `score_entropy_loss_cfg:` - Score entropy loss for diffusion
 
 ### Masking Configuration Types
-- `simple_mask_cfg` - Simple random masking
-- `complex_mask_cfg` - Complex masking patterns
-- `diffusion_cfg` - Diffusion-based masking
-- `no_mask_cfg` - No masking (for evaluation)
+- `simple_mask_cfg:` - Simple random masking
+- `complex_mask_cfg:` - Complex masking patterns
+- `diffusion_cfg:` - Diffusion-based masking
+- `no_mask_cfg:` - No masking (for evaluation)
 
 ---
 
@@ -86,8 +99,7 @@ For FSQ stage 1 and stage 2 training:
 
 ```yaml
 model_cfg:
-  type: "fsq_cfg"
-  params:
+  fsq_cfg:
     style: "stage_1"  # or "stage_2"
     
     # Core transformer parameters
@@ -99,14 +111,23 @@ model_cfg:
     ff_mult: 4
     reference_model_seed: 42
     
-    # First block configuration
+    # First block configuration - multiple options as list
     first_block_cfg:
-      type: "self_attention_cfg"
-      params: {}
+      - self_attention_cfg:
+      - geometric_attention_cfg:
+      - reflexive_attention_cfg:
+      - self_consensus_cfg:
+        consensus_num_iterations: 1
+        consensus_connectivity_type: "local_window"
+        consensus_w:
+          - 2
+          - 3
+        consensus_r: 24
+        consensus_edge_hidden_dim: 12
     
     # FSQ-specific parameters
     latent_dim: 32
-    fsq_levels: [7, 5, 5, 5, 5]
+    fsq_levels: "7x5x5x5x5"
     fsq_encoder_path: null  # Required for stage_2, null for stage_1
 ```
 
@@ -116,8 +137,7 @@ For MLM and discrete diffusion training:
 
 ```yaml
 model_cfg:
-  type: "trunk_cfg"
-  params:
+  trunk_cfg:
     style: "mlm"  # or "discrete_diffusion"
     
     # Core transformer parameters
@@ -129,10 +149,25 @@ model_cfg:
     ff_mult: 4
     reference_model_seed: 42
     
-    # First block configuration
+    # First block configuration - multiple options as list
     first_block_cfg:
-      type: "geometric_attention_cfg"
-      params: {}
+      - self_attention_cfg:
+      - geometric_attention_cfg:
+      - reflexive_attention_cfg:
+      - self_consensus_cfg:
+        consensus_num_iterations: 1
+        consensus_connectivity_type: "local_window"
+        consensus_w:
+          - 2
+          - 3
+        consensus_r: 24
+        consensus_edge_hidden_dim: 12
+    
+    # Loss configuration options
+    loss_config:
+      - cross_entropy_loss_cfg:
+      - kabsch_rmsd_loss_cfg:
+      - score_entropy_loss_cfg:
     
     # Trunk-specific parameter
     fsq_encoder_path: "checkpoints/fsq/encoder.pt"  # Required
@@ -143,34 +178,48 @@ model_cfg:
 #### Self-Attention Block
 ```yaml
 first_block_cfg:
-  type: "self_attention_cfg"
-  params: {}  # No additional parameters
+  - self_attention_cfg:  # No additional parameters
 ```
 
 #### Geometric Attention Block
 ```yaml
 first_block_cfg:
-  type: "geometric_attention_cfg"
-  params: {}  # No additional parameters
+  - geometric_attention_cfg:  # No additional parameters
 ```
 
 #### Reflexive Attention Block
 ```yaml
 first_block_cfg:
-  type: "reflexive_attention_cfg"
-  params: {}  # No additional parameters
+  - reflexive_attention_cfg:  # No additional parameters
 ```
 
 #### Self-Consensus Block
 ```yaml
 first_block_cfg:
-  type: "self_consensus_cfg"
-  params:
-    num_iterations: 1
-    connectivity_type: "local_window"  # or "top_w"
-    w: 2
-    r: 24
-    edge_hidden_dim: 12
+  - self_consensus_cfg:
+    consensus_num_iterations: 1
+    consensus_connectivity_type: "local_window"  # or "scored_window"
+    consensus_w:
+      - 2
+      - 3
+    consensus_r: 24
+    consensus_edge_hidden_dim: 12
+```
+
+#### Multiple Block Options
+```yaml
+first_block_cfg:
+  - self_attention_cfg:
+  - geometric_attention_cfg:
+  - reflexive_attention_cfg:
+  - self_consensus_cfg:
+    consensus_num_iterations: 1
+    consensus_connectivity_type: "local_window"
+    consensus_w:
+      - 2
+      - 3
+    consensus_r: 24
+    consensus_edge_hidden_dim: 12
 ```
 
 ---
@@ -179,26 +228,23 @@ first_block_cfg:
 
 ```yaml
 train_cfg:
-  type: "training_cfg"
-  params:
+  training_cfg:
     batch_size: 32
     max_epochs: 100
     learning_rate: 1e-4
     data_dir: "sample_data/1k"
     checkpoint_dir: "checkpoints"
     
-    # Nested loss configuration
+    # Loss configuration
     loss_config:
-      type: "cross_entropy_loss_cfg"
-      params:
+      cross_entropy_loss_cfg:
         seq_loss_weight: 1.0
         struct_loss_weight: 1.0
         loss_elements: "masked"
     
-    # Nested mask configuration
+    # Mask configuration
     mask_config:
-      type: "simple_mask_cfg"
-      params:
+      simple_mask_cfg:
         mask_prob_seq: 0.15
         mask_prob_struct: 0.15
 ```
@@ -210,8 +256,7 @@ train_cfg:
 ### Cross Entropy Loss
 ```yaml
 loss_config:
-  type: "cross_entropy_loss_cfg"
-  params:
+  cross_entropy_loss_cfg:
     seq_loss_weight: 1.0
     struct_loss_weight: 1.0
     loss_elements: "masked"  # Options: "masked", "non_beospank", "non_special"
@@ -220,15 +265,23 @@ loss_config:
 ### Kabsch RMSD Loss
 ```yaml
 loss_config:
-  type: "kabsch_rmsd_loss_cfg"
-  params: {}  # No additional parameters
+  kabsch_rmsd_loss_cfg:  # No additional parameters
 ```
 
 ### Score Entropy Loss
 ```yaml
 loss_config:
-  type: "score_entropy_loss_cfg"
-  params:
+  score_entropy_loss_cfg:
+    seq_loss_weight: 1.0
+    struct_loss_weight: 1.0
+```
+
+### Multiple Loss Options
+```yaml
+loss_config:
+  - cross_entropy_loss_cfg:
+  - kabsch_rmsd_loss_cfg:
+  - score_entropy_loss_cfg:
     seq_loss_weight: 1.0
     struct_loss_weight: 1.0
 ```
@@ -240,8 +293,7 @@ loss_config:
 ### Simple Masking
 ```yaml
 mask_config:
-  type: "simple_mask_cfg"
-  params:
+  simple_mask_cfg:
     mask_prob_seq: 0.15
     mask_prob_struct: 0.15
 ```
@@ -249,15 +301,13 @@ mask_config:
 ### Complex Masking
 ```yaml
 mask_config:
-  type: "complex_mask_cfg"
-  params: {}  # Parameters TBD
+  complex_mask_cfg:  # Parameters TBD
 ```
 
 ### Diffusion Masking
 ```yaml
 mask_config:
-  type: "diffusion_cfg"
-  params:
+  diffusion_cfg:
     noise_schedule: "linear"  # Options: "linear", "inverted_u", "uniform"
     sigma_min: 0.31
     sigma_max: 5.68
@@ -267,8 +317,22 @@ mask_config:
 ### No Masking
 ```yaml
 mask_config:
-  type: "no_mask_cfg"
-  params: {}
+  no_mask_cfg:  # No additional parameters
+```
+
+### Multiple Masking Options
+```yaml
+mask_config:
+  - simple_mask_cfg:
+    mask_prob_seq: 0.15
+    mask_prob_struct: 0.15
+  - complex_mask_cfg:
+  - diffusion_cfg:
+    noise_schedule: "uniform"
+    sigma_min: 0.31
+    sigma_max: 5.68
+    num_timesteps: 100
+  - no_mask_cfg:
 ```
 
 ---
@@ -278,8 +342,7 @@ mask_config:
 ### Example 1: FSQ Stage 1 Training
 ```yaml
 model_cfg:
-  type: "fsq_cfg"
-  params:
+  fsq_cfg:
     style: "stage_1"
     d_model: 128
     n_heads: 8
@@ -290,16 +353,14 @@ model_cfg:
     reference_model_seed: 42
     
     first_block_cfg:
-      type: "self_attention_cfg"
-      params: {}
+      - self_attention_cfg:
     
     latent_dim: 32
-    fsq_levels: [7, 5, 5, 5, 5]
+    fsq_levels: "7x5x5x5x5"
     fsq_encoder_path: null
 
 train_cfg:
-  type: "training_cfg"
-  params:
+  training_cfg:
     batch_size: 64
     max_epochs: 70
     learning_rate: 1e-4
@@ -307,12 +368,10 @@ train_cfg:
     checkpoint_dir: "checkpoints/fsq"
     
     loss_config:
-      type: "kabsch_rmsd_loss_cfg"
-      params: {}
+      kabsch_rmsd_loss_cfg:
     
     mask_config:
-      type: "simple_mask_cfg"
-      params:
+      simple_mask_cfg:
         mask_prob_seq: 0.15
         mask_prob_struct: 0.15
 ```
@@ -320,8 +379,7 @@ train_cfg:
 ### Example 2: MLM with Self-Consensus
 ```yaml
 model_cfg:
-  type: "trunk_cfg"
-  params:
+  trunk_cfg:
     style: "mlm"
     d_model: 768
     n_heads: 12
@@ -332,19 +390,18 @@ model_cfg:
     reference_model_seed: 42
     
     first_block_cfg:
-      type: "self_consensus_cfg"
-      params:
-        num_iterations: 2
-        connectivity_type: "local_window"
-        w: 3
-        r: 32
-        edge_hidden_dim: 16
+      - self_consensus_cfg:
+        consensus_num_iterations: 2
+        consensus_connectivity_type: "local_window"
+        consensus_w:
+          - 3
+        consensus_r: 32
+        consensus_edge_hidden_dim: 16
     
     fsq_encoder_path: "checkpoints/fsq/best_encoder.pt"
 
 train_cfg:
-  type: "training_cfg"
-  params:
+  training_cfg:
     batch_size: 32
     max_epochs: 100
     learning_rate: 5e-5
@@ -352,15 +409,13 @@ train_cfg:
     checkpoint_dir: "checkpoints/mlm"
     
     loss_config:
-      type: "cross_entropy_loss_cfg"
-      params:
+      cross_entropy_loss_cfg:
         seq_loss_weight: 1.0
         struct_loss_weight: 1.0
         loss_elements: "non_beospank"
     
     mask_config:
-      type: "simple_mask_cfg"
-      params:
+      simple_mask_cfg:
         mask_prob_seq: 0.2
         mask_prob_struct: 0.2
 ```
@@ -368,8 +423,7 @@ train_cfg:
 ### Example 3: Discrete Diffusion
 ```yaml
 model_cfg:
-  type: "trunk_cfg"
-  params:
+  trunk_cfg:
     style: "discrete_diffusion"
     d_model: 768
     n_heads: 12
@@ -380,14 +434,12 @@ model_cfg:
     reference_model_seed: 42
     
     first_block_cfg:
-      type: "geometric_attention_cfg"
-      params: {}
+      - geometric_attention_cfg:
     
     fsq_encoder_path: "checkpoints/fsq/best_encoder.pt"
 
 train_cfg:
-  type: "training_cfg"
-  params:
+  training_cfg:
     batch_size: 16
     max_epochs: 200
     learning_rate: 1e-4
@@ -395,14 +447,12 @@ train_cfg:
     checkpoint_dir: "checkpoints/diffusion"
     
     loss_config:
-      type: "score_entropy_loss_cfg"
-      params:
+      score_entropy_loss_cfg:
         seq_loss_weight: 1.0
         struct_loss_weight: 1.0
     
     mask_config:
-      type: "diffusion_cfg"
-      params:
+      diffusion_cfg:
         noise_schedule: "inverted_u"
         sigma_min: 0.1
         sigma_max: 10.0
@@ -412,8 +462,7 @@ train_cfg:
 ### Example 4: FSQ Stage 2 with Reflexive Attention
 ```yaml
 model_cfg:
-  type: "fsq_cfg"
-  params:
+  fsq_cfg:
     style: "stage_2"
     d_model: 256
     n_heads: 8
@@ -424,16 +473,14 @@ model_cfg:
     reference_model_seed: 42
     
     first_block_cfg:
-      type: "reflexive_attention_cfg"
-      params: {}
+      - reflexive_attention_cfg:
     
     latent_dim: 32
-    fsq_levels: [7, 5, 5, 5, 5]
+    fsq_levels: "7x5x5x5x5"
     fsq_encoder_path: "checkpoints/stage1/best_encoder.pt"
 
 train_cfg:
-  type: "training_cfg"
-  params:
+  training_cfg:
     batch_size: 48
     max_epochs: 30
     learning_rate: 5e-5
@@ -441,12 +488,10 @@ train_cfg:
     checkpoint_dir: "checkpoints/stage2"
     
     loss_config:
-      type: "kabsch_rmsd_loss_cfg"
-      params: {}
+      kabsch_rmsd_loss_cfg:
     
     mask_config:
-      type: "no_mask_cfg"
-      params: {}
+      no_mask_cfg:
 ```
 
 ---
@@ -502,30 +547,7 @@ torch.save({
 
 To convert from the old flat configuration format to the new hierarchical format:
 
-### Old Format:
-```yaml
-model:
-  style: "stage_1"
-  d_model: 128
-  block_type: "self_attention"
-  block_params: {}
-  fsq:
-    latent_dim: 32
-
-training:
-  batch_size: 64
-  learning_rate: 1e-4
-
-loss:
-  type: "kabsch_rmsd"
-
-masking:
-  strategy: "simple"
-  simple:
-    mask_prob_seq: 0.15
-```
-
-### New Format:
+### Old Format (type/params structure):
 ```yaml
 model_cfg:
   type: "fsq_cfg"
@@ -536,8 +558,6 @@ model_cfg:
       type: "self_attention_cfg"
       params: {}
     latent_dim: 32
-    fsq_levels: [7, 5, 5, 5, 5]
-    fsq_encoder_path: null
 
 train_cfg:
   type: "training_cfg"
@@ -553,21 +573,94 @@ train_cfg:
         mask_prob_seq: 0.15
 ```
 
+### New Format (simplified with lists):
+```yaml
+model_cfg:
+  fsq_cfg:
+    style: "stage_1"
+    d_model: 128
+    first_block_cfg:
+      - self_attention_cfg:
+      - geometric_attention_cfg:
+      - self_consensus_cfg:
+        consensus_num_iterations: 1
+        consensus_w:
+          - 2
+          - 3
+    latent_dim: 32
+    fsq_levels: "7x5x5x5x5"
+    fsq_encoder_path: null
+
+train_cfg:
+  training_cfg:
+    batch_size: 64
+    learning_rate: 1e-4
+    loss_config:
+      kabsch_rmsd_loss_cfg:
+    mask_config:
+      simple_mask_cfg:
+        mask_prob_seq: 0.15
+```
+
 Key changes:
-1. Add `type` field to each configuration section
-2. Wrap parameters in `params` field
-3. Use registered type names (e.g., `fsq_cfg`, `training_cfg`)
-4. Flatten nested configurations (e.g., `fsq.latent_dim` → `latent_dim`)
-5. Move loss and masking into training configuration
+1. Remove `type:` and `params:` fields - use configuration type directly as header
+2. Support lists using YAML dash notation (`-`) for multiple options
+3. Lists can contain both empty configurations and configurations with parameters
+4. Parameters can themselves be lists (e.g., `consensus_w: [2, 3]` or dash notation)
+5. Cleaner, more readable structure with less nesting
 
 ---
 
 ## Tips for Using the New System
 
-1. **Always specify type**: Every configuration section must have a `type` field
-2. **Use registered names**: Type names must match registered configuration classes
-3. **Hierarchical nesting**: Child configurations also use type/params structure
-4. **Validation**: The config loader validates types and parameters automatically
-5. **Auto-completion**: IDEs can provide better support with explicit types
+1. **Use configuration types as headers**: Replace `type:` and `params:` with the configuration type directly as the header
+2. **Leverage lists for options**: Use YAML dash notation (`-`) to specify multiple configuration options at any level
+3. **Mix empty and parameterized configs**: Lists can contain both configurations without parameters and those with parameters
+4. **Use lists for parameter values**: Any parameter can be a list using either `[item1, item2]` or dash notation
+5. **Hierarchical nesting**: Child configurations follow the same pattern - type as header with optional parameters
+6. **Validation**: The config loader validates types and parameters automatically
+7. **Clean structure**: The new format reduces nesting and improves readability
+
+## List Usage Examples
+
+### Single vs List Parameters
+```yaml
+# Single value
+consensus_w: 2
+
+# List with bracket notation  
+consensus_w: [2, 3]
+
+# List with dash notation
+consensus_w:
+  - 2
+  - 3
+```
+
+### Multiple Configuration Options
+```yaml
+# Multiple options in a list
+first_block_cfg:
+  - self_attention_cfg:
+  - geometric_attention_cfg:
+  - self_consensus_cfg:
+    consensus_num_iterations: 1
+```
+
+### Nested Lists
+```yaml
+# Lists can be used at any level
+model_cfg:
+  - fsq_cfg:
+    first_block_cfg:
+      - self_attention_cfg:
+      - self_consensus_cfg:
+        consensus_w:
+          - 2
+          - 3
+  - trunk_cfg:
+    first_block_cfg:
+      - geometric_attention_cfg:
+```
 
 For more examples, see the configuration files in the `configs/` directory.

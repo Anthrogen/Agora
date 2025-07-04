@@ -70,7 +70,7 @@ def train(model_cfg, train_cfg):
     print(f"Creating {model_cfg.first_block_cfg.initials()} target model...")
     model = load_model_from_empty(model_cfg, device)
     fsq_encoder = None
-    if load_fsq_encoder: fsq_encoder = load_model_from_checkpoint(model_cfg.fsq_encoder_path, device)
+    if load_fsq_encoder: fsq_encoder, _, _ = load_model_from_checkpoint(model_cfg.fsq_encoder_path, device)
 
     if isinstance(model, Autoencoder):
         if fsq_encoder is not None:
@@ -108,8 +108,6 @@ def train(model_cfg, train_cfg):
     #  Importantly, the split needs to be reproducible between this train script and validation.py -- this way we can legitimately validate on a common data directory without data leakage.
     train_ds, val_ds = random_split(dataset, [train_size, val_size], generator=g_val)
     
-
-        
     # Pass appropriate FSQ encoder
     train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, tracks, device, batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked, fsq_encoder=fsq_encoder)
     val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, tracks, device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked, fsq_encoder=fsq_encoder)
@@ -122,11 +120,11 @@ def train(model_cfg, train_cfg):
     epoch_metrics = []  # List of dicts; one per epoch
     # -------------------- Training loop -------------------- #
     for epoch in range(train_cfg.max_epochs):
-        # Reset epoch accumulators
+        # Reset epoch accumulators - now track sum and count separately
         train_metrics_sum = {}
-        train_sample_count = 0
+        train_metrics_count = {}
         val_metrics_sum = {}
-        val_sample_count = 0
+        val_metrics_count = {}
         
         # Training
         model.train()
@@ -139,21 +137,21 @@ def train(model_cfg, train_cfg):
                 # Train single model on batch
                 train_metrics = step_fn(model, optimizer, batch_data, model_cfg, train_cfg, train_mode=True)
                 
-                # Accumulate metrics (step functions return loss*batch_size)
-                batch_size = len(batch_data.masked_data['coords'])
-                for k, v in train_metrics.items():
+                # Accumulate metrics (step functions now return (value, count) tuples)
+                for k, (value, count) in train_metrics.items():
                     if k not in train_metrics_sum:
                         train_metrics_sum[k] = 0.0
-                    train_metrics_sum[k] += v  # v is already loss * batch_size
-                train_sample_count += batch_size
+                        train_metrics_count[k] = 0
+                    train_metrics_sum[k] += value * count  # value is per-element, so multiply by count
+                    train_metrics_count[k] += count
                 
                 # Update progress bar with running average
-                running_avg = {k: v / train_sample_count for k, v in train_metrics_sum.items()}
+                running_avg = {k: train_metrics_sum[k] / train_metrics_count[k] for k in train_metrics_sum.keys()}
                 prefix = model_cfg.first_block_cfg.initials()
                 pbar.set_postfix({f"{prefix}_{k}": f"{v:.3f}" for k, v in running_avg.items()})
         
         # Calculate final training epoch averages
-        epoch_train_metrics = {k: v / train_sample_count for k, v in train_metrics_sum.items()}
+        epoch_train_metrics = {k: train_metrics_sum[k] / train_metrics_count[k] for k in train_metrics_sum.keys()}
         
         # -------------------- Validation -------------------- #
         model.eval()
@@ -165,16 +163,16 @@ def train(model_cfg, train_cfg):
                 # Validate single model on batch
                 val_metrics = step_fn(model, optimizer, batch_data, model_cfg, train_cfg, train_mode=False)
                 
-                # Accumulate validation metrics
-                batch_size = len(batch_data.masked_data['coords'])
-                for k, v in val_metrics.items():
+                # Accumulate validation metrics (step functions now return (value, count) tuples)
+                for k, (value, count) in val_metrics.items():
                     if k not in val_metrics_sum:
                         val_metrics_sum[k] = 0.0
-                    val_metrics_sum[k] += v  # v is already loss * batch_size
-                val_sample_count += batch_size
+                        val_metrics_count[k] = 0
+                    val_metrics_sum[k] += value * count  # value is per-element, so multiply by count
+                    val_metrics_count[k] += count
         
         # Calculate final validation epoch averages
-        epoch_val_metrics = {k: v / val_sample_count for k, v in val_metrics_sum.items()}
+        epoch_val_metrics = {k: val_metrics_sum[k] / val_metrics_count[k] for k in val_metrics_sum.keys()}
         
         # Print epoch summary
         print(f"\nEpoch {epoch+1}/{train_cfg.max_epochs} - {model_cfg.first_block_cfg.initials()}:")

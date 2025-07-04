@@ -4,6 +4,7 @@ It provides methods of loading and saving models to and from checkpoints/.
 """
 
 import torch
+import numpy as np
 import os
 from typing import Dict
 from dataclasses import replace
@@ -122,7 +123,10 @@ def load_model_from_empty(model_cfg, device):
     sync_function = ensure_identical_parameters_autoencoders if isinstance(model_cfg, FSQConfig) else ensure_identical_parameters_transformers
 
     # Create SA reference model
-    model_cfg_sa = replace(model_cfg, first_block_cfg=SelfAttentionConfig())
+    # model_cfg_sa = replace(model_cfg, first_block_cfg=SelfAttentionConfig())
+    model_cfg_sa = model_cfg.make_copy()
+    model_cfg_sa.first_block_cfg = SelfAttentionConfig()
+    
     model_sa = desired_constructor(model_cfg_sa).to(device)
 
     if isinstance(model_cfg.first_block_cfg, SelfAttentionConfig): model = model_sa
@@ -152,8 +156,6 @@ def save_model_checkpoint(path, model, model_cfg, train_cfg, optimizer):
         'training_config_dict': train_cfg.to_dict()  # Backup dictionary
     }, path)
 
-
-
 def load_model_from_checkpoint(model_path, device, freeze=True):
     """
     Load model from checkpoint. Handles both FSQ encoders and full models.
@@ -179,12 +181,15 @@ def load_model_from_checkpoint(model_path, device, freeze=True):
         # FSQConfig - Load FSQ encoder from Autoencoder checkpoint
         encoder_state = {k.removeprefix('encoder.'): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
     elif isinstance(model_cfg, TrunkConfig):
-        pass
+        encoder_state = checkpoint['model_state_dict']
     else:
         raise ValueError(f"Unknown model config type: {type(model_cfg).__name__}. Expected FSQConfig or TrunkConfig.")
 
     model = constructor(model_cfg)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    if isinstance(model_cfg, FSQConfig):
+        model.load_state_dict(encoder_state)
+    else:
+        model.load_state_dict(checkpoint['model_state_dict'])
     print(f"Loaded {type(model_cfg).__name__} model weights from: {model_path}")
 
     if freeze:
@@ -194,3 +199,67 @@ def load_model_from_checkpoint(model_path, device, freeze=True):
     model = model.to(device)
     
     return model, model_cfg, train_cfg
+
+def save_summary_history(arrays_list, output_file, name_prefix="name", header_list=None):
+    """
+    arrays_list: List of numpy arrays
+    output_file: Path to output CSV file
+    name_prefix: Prefix for super-headers
+    header_list: List of lists containing column headers for each array
+    """
+    if arrays_list is None:
+        return
+
+    for idx in range(len(arrays_list)):
+        arrays_list[idx] = np.array(arrays_list[idx])
+    
+    # Calculate dimensions
+    max_rows = max(arr.shape[0] for arr in arrays_list)
+    total_cols = sum(arr.shape[1] if arr.ndim > 1 else 1 for arr in arrays_list)
+    
+    # Create giant array with NaN
+    giant_array = np.full((max_rows, total_cols), np.nan)
+    
+    # Fill data and create headers
+    col_offset = 0
+    superheaders = []
+    column_headers = []
+    
+    for i, arr in enumerate(arrays_list):
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        
+        rows, cols = arr.shape
+        giant_array[:rows, col_offset:col_offset+cols] = arr
+        
+        # Superheader
+        superheaders.append(f"{name_prefix}_{i:03d}")
+        superheaders.extend([''] * (cols - 1))
+        
+        # Column headers
+        if header_list is not None and i < len(header_list):
+            headers = header_list[i]
+            # Ensure we have the right number of headers
+            if len(headers) < cols:
+                headers = headers + [''] * (cols - len(headers))
+            column_headers.extend(headers[:cols])
+        else:
+            # Default headers if not provided
+            column_headers.extend([f'col_{j}' for j in range(cols)])
+        
+        col_offset += cols
+    
+    # Save to CSV
+    with open(output_file, 'w') as f:
+        # Write superheader
+        f.write(','.join(superheaders) + '\n')
+        
+        # Write column headers if provided
+        if header_list:
+            f.write(','.join(column_headers) + '\n')
+        
+        # Write data rows
+        for row in giant_array:
+            # Convert row to strings, replacing nan with empty string
+            row_str = ['' if np.isnan(val) else str(val) for val in row]
+            f.write(','.join(row_str) + '\n')

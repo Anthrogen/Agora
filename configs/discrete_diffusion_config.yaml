@@ -5,8 +5,7 @@
 # Model Configuration
 # =============================================================================
 model_cfg:
-  type: "trunk_cfg"  # Options: "fsq_cfg", "trunk_cfg"
-  params:
+  trunk_cfg:
     style: "discrete_diffusion"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
     
     # Core transformer parameters
@@ -17,30 +16,25 @@ model_cfg:
     dropout: 0.1
     ff_mult: 4
     reference_model_seed: 42
-    fsq_encoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt"
+    fsq_encoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/SA_stage_1_discrete_diffusion_model.pt"
     
     # First block configuration
-    first_block_cfg:
-      type: "self_consensus_cfg"  # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
-      params:
-        consensus_num_iterations: 1
-        consensus_connectivity_type: "local_window"  # Options: "local_window", "top_w"
-        consensus_w: 2
-        consensus_r: 24
-        consensus_edge_hidden_dim: 12
-      # type: "self_attention_cfg"
-      # params: {}
-      # type: "geometric_attention_cfg"
-      # params: {}
-      # type: "reflexive_attention_cfg"
-      # params: {}
+    first_block_cfg: 
+      # self_consensus_cfg:
+      #   consensus_num_iterations: 1
+      #   consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
+      #   consensus_w: 2
+      #   consensus_r: 24
+      #   consensus_edge_hidden_dim: 12
+      self_attention_cfg: {}
+      # geometric_attention_cfg: {}
+      # reflexive_attention_cfg: {}
 
 # =============================================================================
 # Training Configuration
 # =============================================================================
 train_cfg:
-  type: "training_cfg"
-  params:
+  training_cfg:
     batch_size: 4
     max_epochs: 150
     learning_rate: 0.00001
@@ -49,15 +43,13 @@ train_cfg:
     
     # Loss configuration
     loss_config:
-      type: "score_entropy_loss_cfg"  # Options: "cross_entropy_loss_cfg", "kabsch_rmsd_loss_cfg", "score_entropy_loss_cfg"
-      params:
+      score_entropy_loss_cfg: # Options: "cross_entropy_loss_cfg", "kabsch_rmsd_loss_cfg", "score_entropy_loss_cfg"
         seq_loss_weight: 1.0
         struct_loss_weight: 1.0
     
     # Masking configuration
     mask_config:
-      type: "diffusion_cfg"
-      params:
+      diffusion_mask_cfg:
         noise_schedule: "uniform"
         sigma_min: 0.31
         sigma_max: 5.68

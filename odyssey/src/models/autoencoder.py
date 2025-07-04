@@ -76,6 +76,7 @@ class FSQEncoder(nn.Module):
         Returns:
           z_q: [B, L, fsq_dim], indices: [B, L] discrete codes
         """
+        assert coord_mask is None or coord_mask.dtype == torch.bool
         B, L, _, _ = x.shape
         
         # Flatten per residue to 9-dim and project to d_model

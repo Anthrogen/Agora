@@ -156,10 +156,10 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
 
 if __name__ == "__main__":
     # Default parameters - can be modified as needed
-    checkpoint_dir = "../checkpoints/fsq"  # Relative to train folder
+    checkpoint_dir = "../../checkpoints/fsq"  # Relative to train folder
     model_types = ["SC", "SA"]  # Including SC for SelfConsensus
     style = "stage_1"  # Can be "stage_1" or "stage_2"
-    mask_config = "complex"  # Can be "simple", "complex", "discrete_diffusion", or "no_mask"
+    mask_config = "discrete_diffusion"  # Can be "simple", "complex", "discrete_diffusion", or "no_mask"
     output_file = f"validation_losses_{style}_{mask_config}.png"
     
     # Create the plots

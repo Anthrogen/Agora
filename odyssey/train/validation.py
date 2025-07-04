@@ -15,18 +15,20 @@ import matplotlib.pyplot as plt
 
 # Import required modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from src.models.transformer import TransformerTrunk
-from src.models.autoencoder import FSQEncoder
-from src.dataset import ProteinDataset
-from src.dataloader import _get_training_dataloader, MaskedBatch, worker_init_fn
-from src.losses import score_entropy_loss
-from src.dataloader import _get_noise_levels
+from odyssey.src.models.transformer import TransformerTrunk
+from odyssey.src.models.autoencoder import FSQEncoder
+from odyssey.src.dataset import ProteinDataset
+from odyssey.src.dataloader import _get_training_dataloader, MaskedBatch, worker_init_fn
+from odyssey.src.losses import score_entropy_loss
+from odyssey.src.dataloader import _get_noise_levels
+from odyssey.src.model_librarian import load_model_from_checkpoint
+from odyssey.src.configurations import *
 
 from mlm_step import mlm_step
 from discrete_diffusion_step import discrete_diffusion_step
 from fsq_step import stage_1_step, stage_2_step
 
-def compute_mask_prob_for_time(t: int, diffusion_cfg: DiffusionConfig) -> float:
+def compute_mask_prob_for_time(t: int, diffusion_cfg: DiffusionMaskConfig) -> float:
     """Compute mask probability for a given time index using the diffusion schedule."""
     # Get noise levels
     inst_noise_levels, cumulative_noise_levels = _get_noise_levels(
@@ -44,13 +46,13 @@ def compute_mask_prob_for_time(t: int, diffusion_cfg: DiffusionConfig) -> float:
     
     return mask_prob.item()
 
-def evaluate_mlm_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, model_cfg: ModelConfig, train_cfg: TrainingConfig) -> Dict[str, float]:
+def evaluate_mlm_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, model_cfg: TransformerConfig, train_cfg: TrainingConfig) -> Dict[str, float]:
     """Evaluate an MLM model using cross-entropy loss on a single batch."""
     with torch.no_grad():
         retval = mlm_step({model_type : model}, optimizer=None, batch=batch, model_cfg=model_cfg, train_cfg=train_cfg, train_mode=False)
         return retval[model_type]
 
-def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, timestep: int, model_cfg: ModelConfig, diffusion_cfg: DiffusionConfig,
+def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, timestep: int, model_cfg: TransformerConfig, diffusion_cfg: DiffusionMaskConfig,
                            train_cfg: TrainingConfig, device: torch.device) -> Dict[str, float]:
     """Evaluate a diffusion model using score entropy loss on a single batch."""
 
@@ -74,16 +76,14 @@ def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, model_
         retval = discrete_diffusion_step({model_type: model}, optimizer=None, batch=batch, model_cfg=model_cfg, train_cfg=train_cfg, train_mode=False)
         return retval[model_type]
 
-
-
 def validate(model_checkpoint_path: str, fsq_encoder_checkpoint_path: str = None):
-
     tracks = {'seq': False, 'struct': False, 'coords': True}
     min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
     dataset_mode = "backbone"
     step_fn = mlm_step
     data_dir = "../../../sample_data/1k.csv"
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     ###########################################################################
     #  Model and Config loading from checkpoint
@@ -92,7 +92,7 @@ def validate(model_checkpoint_path: str, fsq_encoder_checkpoint_path: str = None
     # If FSQ encoder needed, load it
     fsq_encoder = None
     if fsq_encoder_checkpoint_path:
-        fsq_encoder, _ = load_model_from_checkpoint(fsq_encoder_checkpoint_path, device)
+        fsq_encoder, _, _ = load_model_from_checkpoint(fsq_encoder_checkpoint_path, device)
 
     ###########################################################################
     #  Data Loading
@@ -114,11 +114,9 @@ def validate(model_checkpoint_path: str, fsq_encoder_checkpoint_path: str = None
     # Pass appropriate FSQ encoder
     val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, tracks, device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, worker_init_fn=worker_init_fn, min_unmasked=min_unmasked, fsq_encoder=fsq_encoder)
 
-
     ###########################################################################
     #  Validation Loop
     ###########################################################################
-
     # Prepare containers to store epoch-level history for CSV saving
     epoch_metrics = []  # List of dicts; one per epoch
 

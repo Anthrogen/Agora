@@ -42,9 +42,11 @@ from odyssey.src.dataloader import _get_training_dataloader, MaskedBatch
 from odyssey.src.dataset import ProteinDataset
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import cross_entropy_loss, calculate_accuracy
-from odyssey.src.configurations import TrunkConfig, TrainingConfig
+from odyssey.src.configurations import TrunkConfig, TrainingConfig, CrossEntropyLossConfig
 
 def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: TrunkConfig, train_cfg: TrainingConfig, train_mode: bool = True) -> Dict[str, float]:
+    assert isinstance(train_cfg.loss_config, CrossEntropyLossConfig)
+    assert train_cfg.loss_config.loss_elements == "masked"
     """Perform a single MLM step with train/validation mode."""
     masked_seq, masked_struct, masked_coords = batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords']
     mask_seq, mask_struct, mask_coords= batch.masks['seq'], batch.masks['struct'], batch.masks['coords']
@@ -81,13 +83,37 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, batch: M
         else:
             raise ValueError(f"What is {train_cfg.loss_config.loss_elements}?")
 
-        loss_seq = cross_entropy_loss(seq_logits, batch.unmasked_data['seq'], loss_elements_seq)
-        loss_struct = cross_entropy_loss(struct_logits, batch.unmasked_data['struct'], loss_elements_struct)
+        # Find which batch elements have valid loss elements and count effective batch sizes
+        valid_seq_mask = loss_elements_seq.any(dim=1)  # [B]
+        valid_struct_mask = loss_elements_struct.any(dim=1)  # [B]
+        effective_batch_size_seq = valid_seq_mask.sum().item()
+        effective_batch_size_struct = valid_struct_mask.sum().item()
+        
+        # Compute losses only on valid sequences and structures
+        if effective_batch_size_seq > 0:
+            seq_logits_valid = seq_logits[valid_seq_mask]
+            seq_labels_valid = batch.unmasked_data['seq'][valid_seq_mask]
+            loss_elements_seq_valid = loss_elements_seq[valid_seq_mask]
+                
+            loss_seq = cross_entropy_loss(seq_logits_valid, seq_labels_valid, loss_elements_seq_valid)
+            seq_acc = calculate_accuracy(seq_logits_valid, seq_labels_valid, loss_elements_seq_valid)
+        else:
+            loss_seq = torch.tensor(0.0, device=seq_logits.device)
+            seq_acc = torch.tensor(0.0, device=seq_logits.device)
+        
+        if effective_batch_size_struct > 0:
+            struct_logits_valid = struct_logits[valid_struct_mask]
+            struct_labels_valid = batch.unmasked_data['struct'][valid_struct_mask]
+            loss_elements_struct_valid = loss_elements_struct[valid_struct_mask]
+                
+            loss_struct = cross_entropy_loss(struct_logits_valid, struct_labels_valid, loss_elements_struct_valid)
+            struct_acc = calculate_accuracy(struct_logits_valid, struct_labels_valid, loss_elements_struct_valid)
+        else:
+            loss_struct = torch.tensor(0.0, device=struct_logits.device)
+            struct_acc = torch.tensor(0.0, device=struct_logits.device)
 
+        # Compute combined loss
         loss = train_cfg.loss_config.seq_loss_weight * loss_seq + train_cfg.loss_config.struct_loss_weight * loss_struct
-
-        seq_acc = calculate_accuracy(seq_logits, batch.unmasked_data['seq'], loss_elements_seq)
-        struct_acc = calculate_accuracy(struct_logits, batch.unmasked_data['struct'], loss_elements_struct)
         
         if train_mode:
             # Backward pass
@@ -95,5 +121,5 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, batch: M
             loss.backward()
             optimizer.step()
         
-        # Return metrics
-        return {'loss': loss.item()*B, 'loss_seq': loss_seq.item()*B, 'loss_struct': loss_struct.item()*B, 'seq_acc': seq_acc.item()*B, 'struct_acc': struct_acc.item()*B}
+        # Return metrics as tuples (value, effective_batch_size)
+        return {'loss': (loss.item(), B), 'loss_seq': (loss_seq.item(), effective_batch_size_seq), 'loss_struct': (loss_struct.item(), effective_batch_size_struct), 'seq_acc': (seq_acc.item(), effective_batch_size_seq), 'struct_acc': (struct_acc.item(), effective_batch_size_struct)}

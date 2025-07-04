@@ -8,7 +8,7 @@ from odyssey.src.tokenizer import SequenceTokenizer, StructureTokenizer, Coordin
 import math
 from abc import abstractmethod
 
-from odyssey.src.configurations import DiffusionConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig
+from odyssey.src.configurations import DiffusionMaskConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig
 
 def worker_init_fn(worker_id):
     """Initialize each worker with a deterministic seed."""
@@ -122,12 +122,12 @@ def _get_training_dataloader(dataset, model_cfg, train_cfg, tracks, device, min_
         return SimpleDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
     elif isinstance(train_cfg.mask_config, ComplexMaskConfig):
         return ComplexDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
-    elif isinstance(train_cfg.mask_config, DiffusionConfig):
+    elif isinstance(train_cfg.mask_config, DiffusionMaskConfig):
         return DiffusionDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
     elif isinstance(train_cfg.mask_config, NoMaskConfig):
         return NoMaskDataLoader(dataset, model_cfg, train_cfg, tracks, device, **kwargs)
     else:
-        raise ValueError(f"Unknown mask config type: {type(train_cfg.mask_config)}. Expected SimpleMaskConfig, ComplexMaskConfig, DiffusionConfig, or NoMaskConfig.")
+        raise ValueError(f"Unknown mask config type: {type(train_cfg.mask_config)}. Expected SimpleMaskConfig, ComplexMaskConfig, DiffusionMaskConfig, or NoMaskConfig.")
     
 
 class MaskingDataLoader(DataLoader):
@@ -234,7 +234,7 @@ class DiffusionDataLoader(MaskingDataLoader):
 
         # Store diffusion config
         self.diffusion_cfg = train_cfg.mask_config
-        assert isinstance(self.diffusion_cfg, DiffusionConfig)
+        assert isinstance(self.diffusion_cfg, DiffusionMaskConfig)
 
         # Pre-compute noise levels
         self.inst_noise_levels, self.cumulative_noise_levels = _get_noise_levels(

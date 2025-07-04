@@ -38,9 +38,10 @@ from odyssey.src.dataloader import MaskedBatch, SimpleDataLoader, ComplexDataLoa
 from odyssey.src.dataset import ProteinDataset
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
-from odyssey.src.configurations import FSQConfig, TrainingConfig
+from odyssey.src.configurations import FSQConfig, TrainingConfig, KabschRMSDLossConfig
 
 def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: FSQConfig, train_cfg: TrainingConfig, train_mode=True) -> Dict[str, float]:
+    assert isinstance(train_cfg.loss_config, KabschRMSDLossConfig)
     # Stage 1: Masked coordinate reconstruction
     B, L, H, _ = batch.masked_data['coords'].shape
 
@@ -83,10 +84,11 @@ def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
             optimizer.step()
         
         # Return metrics
-        return {'loss': loss.item()*B, 'rmsd': rmsd.item()*B}
+        return {'loss': (loss.item(), B), 'rmsd': (rmsd.item(), B)}
 
 
 def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: FSQConfig, train_cfg: TrainingConfig, train_mode=True) -> Dict[str, float]:
+    assert isinstance(train_cfg.loss_config, KabschRMSDLossConfig)
     # Stage 2: Full structure reconstruction from frozen encoder
     B, L, H, _ = batch.masked_data['coords'].shape
     
@@ -143,4 +145,4 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
             optimizer.step()
         
         # Return metrics
-        return {'loss': loss.item()*B, 'rmsd': rmsd.item()*B}
+        return {'loss': (loss.item(), B), 'rmsd': (rmsd.item(), B)}

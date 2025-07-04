@@ -12,7 +12,7 @@ class SelfConsensus(nn.Module):
     
     Key design:
     • Multi-head architecture: consensus operates independently in each head subspace
-    • Configurable connectivity: top-w or local window
+    • Configurable connectivity: scored_window or local_window
     • Per-edge learnable matrices R_ij = alpha_ij I + Lambda_ij Lambda_ij^T
     • Learnable step sizes eta^(t) for each iteration (shared across heads)
     • Complexity varies by connectivity type
@@ -24,8 +24,8 @@ class SelfConsensus(nn.Module):
         heads: int = 8,  # Number of attention heads
         dropout: float = 0.1,
         num_iterations: int = 2, # Number of consensus gradient iterations
-        connectivity_type: str = "local_window",  # "top_w" or "local_window"
-        w: int = 4,  # Window size for local_window, or w value for top_w
+        connectivity_type: str = "local_window",  # "scored_window" or "local_window"
+        w: int = 4,  # Window size for local_window, or w value for scored_window mode
         r: int = 8,  # Rank of Lambda_ij matrices
         edge_hidden_dim: int = 16,
         max_len: int = 2048,  # Maximum sequence length
@@ -35,16 +35,16 @@ class SelfConsensus(nn.Module):
             dim: Model dimension
             heads: Number of attention heads
             num_iterations: Number of consensus gradient iterations to unroll
-            connectivity_type: Type of connectivity pattern ("top_w" or "local_window")
-            w: Window size for local_window mode, or w value for top_w mode
+            connectivity_type: Type of connectivity pattern ("scored_window" or "local_window")
+            w: Window size for local_window mode, or w value for scored_window mode
             r: Rank of Lambda_ij in R_ij = alpha_ij I + Lambda_ij Lambda_ij^T
             edge_hidden_dim: Hidden dimension for edge parameter networks
             max_len: Maximum sequence length (for step size initialization)
         """
         super().__init__()
         
-        if connectivity_type not in ["local_window", "top_w"]:
-            raise ValueError(f"connectivity_type must be 'local_window' or 'top_w', got '{connectivity_type}'")
+        if connectivity_type not in ["local_window", "scored_window"]:
+            raise ValueError(f"connectivity_type must be 'local_window' or 'scored_window', got '{connectivity_type}'")
         
         self.dim = dim
         self.heads = heads
@@ -62,8 +62,8 @@ class SelfConsensus(nn.Module):
         # Rotary position embeddings
         self.rope = RotaryEmbedding(self.head_dim, max_position_embeddings=max_len)
         
-        # For top-w connectivity, we need similarity scores
-        if connectivity_type == "top_w":
+        # For scored_window connectivity, we need similarity scores
+        if connectivity_type == "scored_window":
             self.similarity_scorer = nn.Sequential(
                 nn.Linear(2 * dim, edge_hidden_dim),
                 nn.GELU(),
@@ -95,8 +95,8 @@ class SelfConsensus(nn.Module):
         self.out_proj = nn.Linear(dim, dim)
         self.dropout = nn.Dropout(dropout)
     
-    def get_top_w_connectivity(self, x, B, L, device):
-        """Get top-w connectivity pattern based on similarity scores."""
+    def get_scored_window_connectivity(self, x, B, L, device):
+        """Get scored_window connectivity pattern based on similarity scores."""
         # Compute all pairwise features at once
         x_i = x.unsqueeze(2)  # [B, L, 1, D]
         x_j = x.unsqueeze(1)  # [B, 1, L, D]
@@ -113,8 +113,8 @@ class SelfConsensus(nn.Module):
         mask = torch.eye(L, device=device, dtype=torch.bool)
         scores.masked_fill_(mask, float('-inf'))
         
-        # Get top-w indices for each position
-        _, top_w_indices = torch.topk(scores, self.w, dim=-1)  # [B, L, w]
+        # Get scored_window indices for each position
+        _, scored_window_indices = torch.topk(scores, self.w, dim=-1)  # [B, L, w]
         
         # Create source indices (each position repeated w times)
         batch_indices = torch.arange(B, device=device).view(B, 1, 1).expand(-1, L, self.w)
@@ -122,7 +122,7 @@ class SelfConsensus(nn.Module):
         
         # Flatten to create edge lists
         edge_i = source_indices.reshape(B, -1)  # [B, L*w]
-        edge_j = top_w_indices.reshape(B, -1)   # [B, L*w]
+        edge_j = scored_window_indices.reshape(B, -1)   # [B, L*w]
         
         return edge_i, edge_j
     
@@ -162,8 +162,8 @@ class SelfConsensus(nn.Module):
     
     def get_connectivity(self, x, B, L, device):
         """Get connectivity pattern based on configured type."""
-        if self.connectivity_type == "top_w":
-            return self.get_top_w_connectivity(x, B, L, device)
+        if self.connectivity_type == "scored_window":
+            return self.get_scored_window_connectivity(x, B, L, device)
         elif self.connectivity_type == "local_window":
             return self.get_local_window_edges(B, L, device)
         else:

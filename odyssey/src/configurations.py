@@ -5,6 +5,7 @@ from typing import List, Optional, Any, Dict, Type
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 import os
 import json
+from copy import deepcopy
 
 # Global registry to map config types to classes
 CONFIG_REGISTRY: Dict[str, Type['Config']] = {}
@@ -21,6 +22,7 @@ class Config:
     def to_dict(self) -> dict:
         """Convert configuration to dictionary, handling nested dataclasses."""
         # List of computed fields to exclude
+        # Can we do this better with inheritance?
         computed_fields = {'ff_hidden_dim', 'fsq_dim'}
         
         result = {}
@@ -36,88 +38,35 @@ class Config:
             else:
                 result[key] = value
         return result
-    
+
+    def make_copy(self):
+        return deepcopy(self)
+
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> 'Config':
         """Recursively build configuration from dictionary with type/params structure."""
-        if 'type' in config_dict and 'params' in config_dict:
-            config_type = config_dict['type']
-            params = config_dict['params']
-            
-            # Get the appropriate class from registry
-            if config_type not in CONFIG_REGISTRY:
-                raise ValueError(f"Unknown config type: {config_type}. Available types: {list(CONFIG_REGISTRY.keys())}")
-            
-            config_class = CONFIG_REGISTRY[config_type]
-            
-            # Recursively process nested configs
-            processed_params = {}
-            for key, value in params.items():
-                if isinstance(value, dict) and 'type' in value and 'params' in value:
-                    # This is a nested config
-                    processed_params[key] = Config.from_dict(value)
-                else:
-                    processed_params[key] = value
-            
-            return config_class(**processed_params)
+        processed_dict = {}
+        config_type = next(iter(config_dict.keys()))
+        constructor = CONFIG_REGISTRY[config_type]
+
+        if config_dict[config_type] is None:
+            return constructor()
+
         else:
-            # Direct instantiation without type/params structure
-            return cls(**config_dict)
-    
+            for key, value in config_dict[config_type].items():
+                if isinstance(value, dict) and any(k in CONFIG_REGISTRY for k in value.keys()):
+                    # This is a nested config - call from_dict on the Config class
+                    processed_dict[key] = Config.from_dict(value)
+                else:
+                    processed_dict[key] = value
+            return constructor(**processed_dict)
+
     def get_config_dict(self) -> dict:
         """Get the stored configuration dictionary."""
         if hasattr(self, '_config_dict'):
             return dict(self._config_dict)  # Return a copy
         else:
             return self.to_dict()
-    
-    # @classmethod
-    # def from_dict(cls, config_dict: dict) -> 'Config':
-    #     """Create configuration from dictionary. Override in subclasses for nested configs."""
-    #     return cls(**config_dict)
-    
-    def save_to_json(self, filepath: str) -> None:
-        """Save configuration to JSON file."""
-        config_dict = self.get_config_dict()
-        config_dict['_config_class'] = self.__class__.__name__
-        with open(filepath, 'w') as f:
-            json.dump(config_dict, f, indent=2)
-    
-    @staticmethod
-    def load_from_json(filepath: str) -> 'Config':
-        """Load configuration from JSON file."""
-        with open(filepath, 'r') as f:
-            config_dict = json.load(f)
-        
-        # Remove the class name marker
-        class_name = config_dict.pop('_config_class', 'Config')
-        
-        # Import all config classes to ensure they're available
-        import odyssey.src.configurations as configs
-        
-        # Get the appropriate class
-        config_class = getattr(configs, class_name, Config)
-        
-        # Handle nested configs if needed
-        if 'first_block_cfg' in config_dict and isinstance(config_dict['first_block_cfg'], dict):
-            block_dict = config_dict['first_block_cfg'].copy()
-            block_class_name = block_dict.pop('_block_type', 'BlockConfig')
-            block_class = getattr(configs, block_class_name, BlockConfig)
-            config_dict['first_block_cfg'] = block_class(**block_dict)
-        
-        if 'mask_config' in config_dict and isinstance(config_dict['mask_config'], dict):
-            mask_dict = config_dict['mask_config'].copy()
-            mask_class_name = mask_dict.pop('_mask_type', 'MaskConfig')
-            mask_class = getattr(configs, mask_class_name, MaskConfig)
-            config_dict['mask_config'] = mask_class(**mask_dict)
-        
-        if 'loss_config' in config_dict and isinstance(config_dict['loss_config'], dict):
-            loss_dict = config_dict['loss_config'].copy()
-            loss_class_name = loss_dict.pop('_loss_type', 'LossConfig')
-            loss_class = getattr(configs, loss_class_name, LossConfig)
-            config_dict['loss_config'] = loss_class(**loss_dict)
-        
-        return config_class(**config_dict)
 
 ################################################################################
 # Transformer Block Configurations
@@ -144,14 +93,14 @@ class SelfConsensusConfig(BlockConfig):
     """SelfConsensus configuration."""
     # Consensus-specific parameters
     consensus_num_iterations:       int   # Number of consensus gradient iterations
-    consensus_connectivity_type:    str   # "local_window" or "top_w"
-    consensus_w:                    int   # Window size for local_window, or w value for top_w
+    consensus_connectivity_type:    str   # "local_window" or "scored_window"
+    consensus_w:                    int   # Window size for local_window, or w value for scored_window
     consensus_r:                    int   # Rank of Lambda_ij matrices
     consensus_edge_hidden_dim:      int   # Hidden dim for edge networks
 
     def __post_init__(self):
         assert self.consensus_num_iterations > 0
-        assert self.consensus_connectivity_type in ('local_window', 'top_w')
+        assert self.consensus_connectivity_type in ('local_window', 'scored_window')
         assert self.consensus_w > 0
         assert self.consensus_r > 0
         assert self.consensus_edge_hidden_dim > 0
@@ -266,9 +215,9 @@ class ComplexMaskConfig(MaskConfig):
 class NoMaskConfig(MaskConfig):
     def __str__(self): return "no_mask"
 
-@register_config("diffusion_cfg")  
+@register_config("diffusion_mask_cfg")  
 @dataclass
-class DiffusionConfig(MaskConfig):
+class DiffusionMaskConfig(MaskConfig):
     """Discrete diffusion configuration."""
     # Noise schedule parameters
     noise_schedule:        str  # Type of noise schedule ("linear", "inverted_u", or "uniform")
@@ -342,11 +291,15 @@ class FSQConfig(TransformerConfig):
     """Model architecture configuration."""
     # Transformer parameters
     latent_dim:                     int = None # pre-quantized CONTINUOUS latent dimension.
-    fsq_levels:                     list[int] = None # codebook
+    fsq_levels:                     str = None # codebook
 
     def __post_init__(self):
         # Call parent's __post_init__ to set ff_hidden_dim and other attributes
         super().__post_init__()
+
+        self.fsq_levels = self.fsq_levels.split('x')
+        # print(f"DEBUG: fsq_levels: {self.fsq_levels}")
+        self.fsq_levels = [int(str(l)) for l in self.fsq_levels]
 
         self.fsq_dim = len(self.fsq_levels)
         assert self.fsq_dim > 0
@@ -364,6 +317,13 @@ class FSQConfig(TransformerConfig):
         
         # Update stored dictionary with FSQ-specific fields
         self._config_dict = self.to_dict()
+
+    def make_copy(self):
+        d = self.to_dict()
+        codebook = d['fsq_levels']
+        new_d = {key: deepcopy(getattr(self, key)) for key in d.keys()}
+        new_d['fsq_levels'] = "".join(str(c) + "x" for c in codebook)[:-1]
+        return FSQConfig(**new_d)
 
 @register_config("training_cfg")
 @dataclass
@@ -409,6 +369,7 @@ class TrainingConfig(Config):
         assert isinstance(self.loss_config, LossConfig)
 
         assert self.data_dir is not None and os.path.exists(self.data_dir), f"Data directory {self.data_dir} does not exist."
+        assert not isinstance(self.checkpoint_dir, list) and ',' not in str(self.checkpoint_dir) and ';' not in str(self.checkpoint_dir), f"Multiple checkpoint directories not allowed: {self.checkpoint_dir}"
         assert self.checkpoint_dir is not None and os.path.exists(self.checkpoint_dir), f"Checkpoint directory {self.checkpoint_dir} does not exist."
         
         # Store configuration as dictionary for safety
@@ -417,6 +378,34 @@ class TrainingConfig(Config):
 class ConfigurationError(Exception):
     def __init__(self, message):
         self.message = message
-        
+
     def __str__(self):
         return self.message
+
+
+_toy_train_cfg = TrainingConfig(
+    batch_size=4,
+    max_epochs=1,
+    learning_rate=1e-5,
+    mask_config=ComplexMaskConfig(),
+    loss_config=KabschRMSDLossConfig(),
+    data_dir="/workspace/demo/Odyssey/sample_data/1k.csv",
+    checkpoint_dir="/workspace/demo/Odyssey/checkpoints/fsq"
+)
+
+_toy_model_cfg = FSQConfig(
+    style='stage_2',
+    d_model=128,
+    n_heads=1,
+    n_layers=3,
+    max_len=2048,
+    dropout=0.1,
+    ff_mult=4,
+    first_block_cfg=SelfAttentionConfig(),
+    reference_model_seed=42,
+    latent_dim=32,
+    fsq_levels="7x5x5x5x5",
+    fsq_encoder_path="/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt",
+    seq_vocab=len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS),
+    struct_vocab=4375 + len(SPECIAL_TOKENS)
+)

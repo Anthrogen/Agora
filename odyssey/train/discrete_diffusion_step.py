@@ -35,9 +35,10 @@ from odyssey.src.dataset import ProteinDataset
 from odyssey.src.dataloader import DiffusionDataLoader, MaskedBatch
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import score_entropy_loss
-from odyssey.src.configurations import TrunkConfig, TrainingConfig
+from odyssey.src.configurations import TrunkConfig, TrainingConfig, ScoreEntropyLossConfig
 
 def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: TrunkConfig, train_cfg: TrainingConfig, train_mode: bool = True) -> Dict[str, float]:
+    assert isinstance(train_cfg.loss_config, ScoreEntropyLossConfig)
     """Perform a single step with discrete diffusion."""
     seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
     seq_x_0, struct_x_0 = batch.unmasked_data['seq'], batch.unmasked_data['struct']
@@ -80,4 +81,4 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
             optimizer.step()
         
         # Return metrics
-        return {'loss': loss.item()*B, 'loss_seq': loss_seq.item()*B, 'loss_struct': loss_struct.item()*B}
+        return {'loss': (loss.item(), B), 'loss_seq': (loss_seq.item(), B), 'loss_struct': (loss_struct.item(), B)}
