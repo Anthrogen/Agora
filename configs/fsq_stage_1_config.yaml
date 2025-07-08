@@ -40,7 +40,7 @@ train_cfg:
     batch_size: 4
     max_epochs: 50
     learning_rate: 0.00001
-    data_dir: "/workspace/demo/Odyssey/sample_data/1k.csv"
+    data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/fsq"
     
     # Loss configuration

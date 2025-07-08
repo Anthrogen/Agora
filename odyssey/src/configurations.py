@@ -290,7 +290,6 @@ class TransformerConfig(Config):
         assert isinstance(self.n_layers, int) and self.n_layers > 0
         assert isinstance(self.max_len, int) and self.max_len > 0
         assert isinstance(self.first_block_cfg, BlockConfig)
-        assert isinstance(self.context_cfg, BlockConfig)
 
         # TODO: get rid of
         assert self.seq_vocab > 0
