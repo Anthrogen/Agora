@@ -68,7 +68,7 @@ class FSQEncoder(nn.Module):
         self,
         x: torch.Tensor,
         coords: Optional[torch.Tensor] = None,  # [B, L, 3, 3] or [B, L, 4, 3] for RA
-        coord_mask: Optional[torch.Tensor] = None  # [B, L] boolean mask
+        mask: Optional[torch.Tensor] = None  # [B, L] boolean mask
         ):
         """
         Args:
@@ -76,7 +76,7 @@ class FSQEncoder(nn.Module):
         Returns:
           z_q: [B, L, fsq_dim], indices: [B, L] discrete codes
         """
-        assert coord_mask is None or coord_mask.dtype == torch.bool
+        assert mask is None or mask.dtype == torch.bool
         B, L, _, _ = x.shape
         
         # Flatten per residue to 9-dim and project to d_model
@@ -95,14 +95,14 @@ class FSQEncoder(nn.Module):
             if model_type in ("GA") and block is self.layers[0]:
                 # First block may require coordinates
                 assert coords is not None, "Coordinates required for geometric first layer"
-                h = block(h, coords[:,:,:3,:], coord_mask)
+                h = block(h, coords[:,:,:3,:], mask)
             elif model_type in ("RA") and block is self.layers[0]:
                 # First block may require coordinates
                 assert coords is not None, "Coordinates required for reflexive first layer"
-                h = block(h, coords, coord_mask)
+                h = block(h, coords, mask)
             else:
                 # Standard blocks don't need coordinates
-                h = block(h)
+                h = block(h, mask=mask)
         
         # Project to FSQ dimension
         z = self.encoder_proj(h)            # [B, L, fsq_dim]
@@ -186,13 +186,13 @@ class FSQDecoder(nn.Module):
         self,
         z_q: torch.Tensor,  # [B, L, fsq_dim] quantized vectors
         coords: Optional[torch.Tensor] = None,  # [B, L, 3, 3] or [B, L, 4, 3] for RA
-        coord_mask: Optional[torch.Tensor] = None,  # [B, L] boolean mask
+        mask: Optional[torch.Tensor] = None,  # [B, L] boolean mask
     ) -> torch.Tensor:
         """
         Args:
           z_q: [B, L, fsq_dim] quantized vectors
           coords: Optional coordinates for GA/RA models
-          coord_mask: Optional mask for GA/RA models
+          mask: Optional mask for GA/RA models
         Returns:
           x_rec: [B, L, num_atoms, 3] reconstructed coordinates
                  where num_atoms = in_dim // 3
@@ -208,14 +208,14 @@ class FSQDecoder(nn.Module):
             if model_type in ("GA") and block is self.layers[0]:
                 # First block may require coordinates
                 assert coords is not None, "Coordinates required for geometric first layer"
-                h = block(h, coords[:,:,:3,:], coord_mask)
+                h = block(h, coords[:,:,:3,:], mask)
             elif model_type in ("RA") and block is self.layers[0]:
                 # First block may require coordinates
                 assert coords is not None, "Coordinates required for reflexive first layer"
-                h = block(h, coords, coord_mask)
+                h = block(h, coords, mask)
             else:
                 # Standard blocks don't need coordinates
-                h = block(h)
+                h = block(h, mask=mask)
         
         # Convolutional blocks
         h_conv = h.transpose(1, 2)          # [B, d_model, L]
@@ -270,21 +270,21 @@ class Autoencoder(nn.Module):
 
     def forward(self, x: torch.Tensor,
         coords: Optional[torch.Tensor] = None,  # [B, L, 3, 3] or [B, L, 4, 3] for GA/RA
-        coord_mask: Optional[torch.Tensor] = None,  # [B, L] boolean mask
+        mask: Optional[torch.Tensor] = None,  # [B, L] boolean mask
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
           x: [B, L, 3, 3] - main coordinate input
           coords: Optional additional coordinates for GA/RA models
-          coord_mask: Optional mask for GA/RA models
+          mask: Optional mask for GA/RA models
         Returns:
           x_rec: [B, L, num_atoms, 3] - reconstructed coordinates (num_atoms depends on stage)
           indices: [B, L] discrete codes
         """
         # Encode
-        z_q, indices = self.encoder(x, coords, coord_mask)
+        z_q, indices = self.encoder(x, coords, mask)
         
         # Decode
-        x_rec = self.decoder(z_q, coords, coord_mask)
+        x_rec = self.decoder(z_q, coords, mask)
         
         return x_rec, indices 

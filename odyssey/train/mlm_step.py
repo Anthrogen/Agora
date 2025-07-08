@@ -51,23 +51,26 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, batch: M
     masked_seq, masked_struct, masked_coords = batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords']
     mask_seq, mask_struct, mask_coords= batch.masks['seq'], batch.masks['struct'], batch.masks['coords']
     seq_tokens, struct_tokens = batch.unmasked_data['seq'], batch.unmasked_data['struct']
+    ss8_tokens, sasa_tokens = batch.unmasked_data['ss8'], batch.unmasked_data['sasa']
     B, L = masked_seq.shape
 
     assert torch.all(mask_coords == mask_struct), f"mask_coords and mask_struct differ in some positions:\nmask_coords:\n{mask_coords}\nmask_struct:\n{mask_struct}"
 
-    # Create coord_mask for GA/RA models
+    # Create mask for GA/RA/SA/SC models and for SS8/SASA
     nonspecial_elements_coords = (~batch.beospank['coords']) & (~mask_struct)
-    # We need one non-special element in coords for GA/RA models.
+    nonbeospank_elements = ~batch.beospank['coords']
+    nonbeospank_ss8 = ~batch.beospank['ss8']
+    nonbeospank_sasa = ~batch.beospank['sasa']
     assert nonspecial_elements_coords.any(dim=1).all()
     
-    inputs = (masked_seq, masked_struct) # Prepare model input
+    inputs = (masked_seq, masked_struct, ss8_tokens, sasa_tokens) # Prepare model input
     model.train(train_mode)
     
     with torch.set_grad_enabled(train_mode):
         # Forward pass
         model_type = model.cfg.first_block_cfg.initials()
-        if model_type in ("GA", "RA"): outputs = model(inputs, masked_coords, nonspecial_elements_coords)
-        else: outputs = model(inputs)
+        if model_type in ("GA", "RA"): outputs = model(inputs, masked_coords, nonspecial_elements_coords, nonbeospank_ss8, nonbeospank_sasa)
+        else: outputs = model(inputs, mask=nonbeospank_elements, mask_ss8=nonbeospank_ss8, mask_sasa=nonbeospank_sasa)
         seq_logits, struct_logits = outputs
 
         if train_cfg.loss_config.loss_elements == "masked":

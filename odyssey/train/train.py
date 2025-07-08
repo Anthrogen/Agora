@@ -32,22 +32,22 @@ from odyssey.src.model_librarian import ensure_identical_parameters_transformers
 
 
 
-def train(model_cfg, train_cfg):
+def train(model_cfg, train_cfg, eager=False, verbose=False):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     os.makedirs(train_cfg.checkpoint_dir, exist_ok=True)
 
     # Use different masking strategies for stage 1 vs stage 2
     if model_cfg.style == "stage_1":
-        tracks = {'seq': False, 'struct': False, 'coords': True}
+        tracks = {'seq': False, 'struct': False, 'coords': True, 'ss8': False, 'sasa': False}
         min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
     elif model_cfg.style == "stage_2":
-        tracks = {'seq': True, 'struct': True, 'coords': True}
+        tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': False, 'sasa': False}
         min_unmasked = {'seq': 0, 'struct': 0, 'coords': 0}
     elif model_cfg.style == "mlm":
-        tracks = {'seq': True, 'struct': True, 'coords': True}
+        tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True}
         min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
     elif model_cfg.style == "discrete_diffusion":
-        tracks = {'seq': True, 'struct': True, 'coords': True}
+        tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True}
         min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
 
     load_fsq_encoder = model_cfg.style in {"mlm", "discrete_diffusion", "stage_2"}
@@ -100,7 +100,7 @@ def train(model_cfg, train_cfg):
     g_val = torch.Generator()
     g_val.manual_seed(data_seed + 5000)
 
-    dataset = ProteinDataset(train_cfg.data_dir, mode=dataset_mode, max_length=model_cfg.max_len - 2)
+    dataset = ProteinDataset(train_cfg.data_dir, mode=dataset_mode, max_length=model_cfg.max_len - 2, eager=eager, verbose=verbose)
     val_size = max(1, int(0.2 * len(dataset)))
     train_size = len(dataset) - val_size
 
@@ -152,6 +152,20 @@ def train(model_cfg, train_cfg):
         
         # Calculate final training epoch averages
         epoch_train_metrics = {k: train_metrics_sum[k] / train_metrics_count[k] for k in train_metrics_sum.keys()}
+
+        if verbose:
+            if isinstance(model, Autoencoder):
+                # Print encoder and decoder parameters:
+                print("Enocder parameters:")
+                for p in model.encoder.parameters():
+                    print(p.value)
+                    break
+
+                print("Decoder parameters:")
+                for p in model.decoder.parameters():
+                    print(p.value)
+                    break
+
         
         # -------------------- Validation -------------------- #
         model.eval()

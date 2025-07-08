@@ -4,7 +4,7 @@ import random
 from torch.utils.data import DataLoader
 from typing import Tuple
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from odyssey.src.tokenizer import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer
+from odyssey.src.tokenizer import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer, SS8Tokenizer, SASATokenizer
 import math
 from abc import abstractmethod
 
@@ -16,11 +16,10 @@ def worker_init_fn(worker_id):
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
+_DEFAULT_MIN_UNMASKED = {'seq': 0, 'struct': 0, 'coords': 0}
 # --------------------------------------------------------------------------- #
 #  Noise Schedules for complex masking                                        #
 # --------------------------------------------------------------------------- #
-_DEFAULT_MIN_UNMASKED = {'seq': 0, 'struct': 0, 'coords': 0}
-#TODO: make min_unmasked positional in base class constructor MaskingDataLoader.
 def _get_noise_levels(s_min, s_max, T, schedule_type="linear"):
     """Generate instantaneous and cumulative noise levels for discrete diffusion.
     
@@ -134,7 +133,7 @@ class MaskingDataLoader(DataLoader):
     """DataLoader that applies masking during collation."""
     
     def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None,  
-                  propogate_coords_mask=True, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
+                  propagate_coords_mask=True, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
 
         self.device = device if device is not None else torch.device("cpu")
         self.L = model_cfg.max_len
@@ -143,17 +142,18 @@ class MaskingDataLoader(DataLoader):
         # Override collate_fn with our custom one
         kwargs['collate_fn'] = self._mask_collate
         super().__init__(dataset, **kwargs)
-
     
         # Initialize tokenizers
         self.sequence_tokenizer = SequenceTokenizer(self.L)
         self.coordinates_tokenizer = CoordinatesTokenizer(self.L)
         self.structure_tokenizer = StructureTokenizer(self.L, fsq_encoder, reapply_bos_eos_pad=True)
+        self.ss8_tokenizer = SS8Tokenizer(self.L)
+        self.sasa_tokenizer = SASATokenizer(self.L)
 
         if tracks['struct']:
             assert fsq_encoder is not None
 
-        self.propogate_coords_mask = propogate_coords_mask
+        self.propagate_coords_mask = propagate_coords_mask
         self.tracks = tracks
         self.min_unmasked = min_unmasked
 
@@ -162,17 +162,17 @@ class MaskingDataLoader(DataLoader):
         if len(data)==0: return None # Return None if all items were filtered out
 
         batch = MaskedBatch(data, self.tracks, self.sequence_tokenizer, self.structure_tokenizer, self.coordinates_tokenizer, 
-                          device=self.device, min_unmasked=self.min_unmasked, generator=self.generator)
+                              self.ss8_tokenizer, self.sasa_tokenizer, device=self.device, min_unmasked=self.min_unmasked, generator=self.generator)
     
         self.sample_masks(batch)
 
-        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa')]:
             #print(f"Iterative over track {track}")
             batch.apply_mask(track, batch.masks[track])
 
         if self.tracks['struct']:
             batch.apply_mask('struct', batch.masks['coords'])
-
+ 
         return batch
     
     @abstractmethod
@@ -188,7 +188,7 @@ class SimpleDataLoader(MaskingDataLoader):
         self.simple_mask_prob = {'seq': train_cfg.mask_config.mask_prob_seq, 'coords': train_cfg.mask_config.mask_prob_struct}
 
     def sample_masks(self, batch):
-        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa')]:
 
             # Create masks with fixed probabilities
             mask = torch.rand(batch.B, batch.L, device=self.device) < self.simple_mask_prob[track]
@@ -205,7 +205,7 @@ class ComplexDataLoader(MaskingDataLoader):
         Samples different mask rates for each protein in the batch for structure.
         Within each protein, masking is IID Bernoulli.
         """
-        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa')]:
 
             # Sample mask rates for each protein in batch
             probs = _sample_cosine(batch.B, device=self.device)
@@ -223,8 +223,9 @@ class NoMaskDataLoader(MaskingDataLoader):
         super(NoMaskDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, **kwargs)
     
     def sample_masks(self, batch):
-        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa')]:
             batch.masks[track] = torch.zeros(batch.B, batch.L, device=self.device).bool()
+
 
 class DiffusionDataLoader(MaskingDataLoader):
     """DataLoader that applies discrete diffusion noise process during batch collation."""
@@ -256,7 +257,7 @@ class DiffusionDataLoader(MaskingDataLoader):
 
         batch.metadata.update({'timestep_indices': timestep_indices, 'cumulative_noise': cumulative_noise_level, 'inst_noise': inst_noise_levels})
 
-        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct')]:
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa')]:
 
             mask_prob = 1 - torch.exp(-cumulative_noise_level)
             mask_prob_expanded = mask_prob.expand(batch.B, batch.L)
@@ -265,9 +266,10 @@ class DiffusionDataLoader(MaskingDataLoader):
 
             batch.masks[track] = desired_masks
 
+
 class MaskedBatch():
     def __init__(self, data, tracks, sequence_tokenizer, structure_tokenizer, coordinates_tokenizer,
-                  device=None, min_unmasked={'seq': 0, 'struct': 0, 'coords': 0}, generator=None):
+                  ss8_tokenizer, sasa_tokenizer, device=None, min_unmasked={'seq': 0, 'struct': 0, 'coords': 0}, generator=None):
         
         """Custom collate function that applies discrete diffusion noise."""
         self.device = device if device is not None else torch.device("cpu")
@@ -285,12 +287,12 @@ class MaskedBatch():
 
         # Unpack batch from ProteinDataset
         self.masked_data = {'seq': None, 'struct': None, 'coords': None}
-        self.unmasked_data = {'seq': None, 'struct': None, 'coords': None}
+        self.unmasked_data = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None}
         self.masks = {'seq': None, 'struct': None, 'coords': None}
-        self.beospank = {'seq': None, 'struct': None, 'coords': None}
+        self.beospank = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None}
         self.metadata = {}
 
-        seq_list, coords_list, _ = zip(*data)
+        seq_list, coords_list, ss8_list, sasa_list, _ = zip(*data)
         
         # Stack lengths
         self.B = len(seq_list)
@@ -320,6 +322,24 @@ class MaskedBatch():
             if tracks['struct']:
                 self.unmasked_data['struct'] = torch.stack(coords_results[2], dim=0).to(self.device)
                 self.beospank['struct'] = torch.stack(coords_results[3], dim=0).to(self.device).bool()
+
+        # Tokenize SS8 (secondary structure) data if enabled
+        if tracks['ss8']:
+            ss8_data = []
+            for ss8 in ss8_list:
+                ss8_data.append(ss8_tokenizer.tokenize(ss8))
+            self.unmasked_data['ss8'], self.beospank['ss8'] = zip(*ss8_data)
+            self.unmasked_data['ss8'] = torch.stack(self.unmasked_data['ss8'], dim=0).to(self.device)
+            self.beospank['ss8'] = torch.stack(self.beospank['ss8'], dim=0).to(self.device).bool()
+
+        # Tokenize SASA (solvent accessible surface area) data if enabled
+        if tracks['sasa']:
+            sasa_data = []
+            for sasa in sasa_list:
+                sasa_data.append(sasa_tokenizer.tokenize(sasa))
+            self.unmasked_data['sasa'], self.beospank['sasa'] = zip(*sasa_data)
+            self.unmasked_data['sasa'] = torch.stack(self.unmasked_data['sasa'], dim=0).to(self.device)
+            self.beospank['sasa'] = torch.stack(self.beospank['sasa'], dim=0).to(self.device).bool()
 
 
     def apply_mask(self, track, desired_mask):

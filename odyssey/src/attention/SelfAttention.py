@@ -23,10 +23,11 @@ class SelfAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_dropout = nn.Dropout(dropout)
         
-    def forward(self, x, position_ids=None):
+    def forward(self, x, position_ids=None, mask=None):
         """
         x: [B, L, dim]
         position_ids: Optional [B, L] tensor of position indices
+        mask: Optional [B, L] boolean tensor where True = valid, False = invalid/padding
         """
         B, L, C = x.shape        
                 
@@ -40,6 +41,14 @@ class SelfAttention(nn.Module):
         
         # Attention
         attn = (q @ k.transpose(-2, -1)) * (self.head_dim ** -0.5)  # [B, heads, L, L]
+        
+        # Apply masking if provided
+        if mask is not None:
+            # Mask attention scores where keys (columns) are invalid
+            # Invalid positions shouldn't be attended to
+            score_mask = mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, L_key]
+            attn = attn.masked_fill(~score_mask, float('-inf'))
+        
         attn = attn.softmax(dim=-1)
         attn = self.attn_dropout(attn)
         
@@ -47,5 +56,9 @@ class SelfAttention(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B, L, C)
         x = self.proj(x)
         x = self.proj_dropout(x)
+        
+        # Zero output for invalid positions
+        if mask is not None:
+            x = x * mask.unsqueeze(-1).float()
         
         return x

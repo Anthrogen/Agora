@@ -24,9 +24,9 @@ from odyssey.src.dataset import ProteinDataset
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
 from odyssey.src.configurations import TransformerConfig, TrainingConfig
-from fsq_step import stage_1_step, stage_2_step
-from mlm_step import mlm_step
-from discrete_diffusion_step import discrete_diffusion_step
+from odyssey.train.fsq_step import stage_1_step, stage_2_step
+from odyssey.train.mlm_step import mlm_step
+from odyssey.train.discrete_diffusion_step import discrete_diffusion_step
 from odyssey.src.configurations import *
 from odyssey.src.config_loader import load_config, load_multi_configs
 from odyssey.src.model_librarian import ensure_identical_parameters_transformers, ensure_identical_parameters_autoencoders, load_model_from_empty, load_model_from_checkpoint, save_model_checkpoint, save_summary_history
@@ -35,7 +35,12 @@ from odyssey.train.yaml_expander import expand_yaml_to_directory
 from odyssey.train.generate_experiment_map import generate_experiment_map
 
 
-def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[TrainingConfig]):
+def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[TrainingConfig], verbose=False):
+    # If a user just passes in a single set of configs, listify them.
+    if isinstance(model_cfg_list, TransformerConfig) and isinstance(train_cfg_list, TrainingConfig):
+        model_cfg_list = [model_cfg_list]
+        train_cfg_list = [train_cfg_list]
+
     assert len(model_cfg_list) == len(train_cfg_list), "model_cfg_list and train_cfg_list must have the same length"
     num_models = len(model_cfg_list)
     
@@ -57,16 +62,16 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
     for i, (model_cfg, train_cfg) in enumerate(zip(model_cfg_list, train_cfg_list)):
         # Use different masking strategies for stage 1 vs stage 2
         if model_cfg.style == "stage_1":
-            tracks = {'seq': False, 'struct': False, 'coords': True}
+            tracks = {'seq': False, 'struct': False, 'coords': True, 'ss8': False, 'sasa': False}
             min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
         elif model_cfg.style == "stage_2":
-            tracks = {'seq': True, 'struct': True, 'coords': True}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': False, 'sasa': False}
             min_unmasked = {'seq': 0, 'struct': 0, 'coords': 0}
         elif model_cfg.style == "mlm":
-            tracks = {'seq': True, 'struct': True, 'coords': True}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True}
             min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
         elif model_cfg.style == "discrete_diffusion":
-            tracks = {'seq': True, 'struct': True, 'coords': True}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True}
             min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
 
         tracks_list.append(tracks)
@@ -195,7 +200,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                                   for k in train_metrics_sum_all[model_idx].keys()}
                     prefix = model_cfg.first_block_cfg.initials()
                     pbar.set_postfix({f"{prefix}_{k}": f"{v:.3f}" for k, v in running_avg.items()})
-        
+
         # Validation phase for all models
         for model_idx in range(num_models):
             model, fsq_encoder = models[model_idx]
@@ -251,6 +256,20 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             
             row = [epoch_train_metrics[k] for k in metric_names] + [epoch_val_metrics[k] for k in metric_names]
             epoch_metrics_all[model_idx].append(row)
+
+        if verbose:
+            WINDOW = 3
+            if isinstance(model, Autoencoder):
+                # Print encoder and decoder parameters:
+                print("Enocder parameters:")
+                for p in model.encoder.parameters():
+                    print(p.data[:WINDOW,:WINDOW])
+                    break
+
+                print("Decoder parameters:")
+                for p in model.decoder.parameters():
+                    print(p.data[:WINDOW,:WINDOW])
+                    break
 
     # Save final checkpoints and metrics for all models
     for model_idx in range(num_models):

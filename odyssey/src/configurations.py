@@ -2,7 +2,7 @@ from __future__ import annotations
 import torch
 from dataclasses import dataclass, field
 from typing import List, Optional, Any, Dict, Type
-from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS
 import os
 import json
 from copy import deepcopy
@@ -127,6 +127,34 @@ class GeometricAttentionConfig(BlockConfig):
     def __str__(self): return "Geometric Attention"
     def initials(self): return "GA"
 
+@register_config("cross_consensus_cfg")
+@dataclass
+class CrossConsensusConfig(BlockConfig):
+    """CrossConsensus configuration."""
+    # Consensus-specific parameters (same as SelfConsensus)
+    consensus_num_iterations:       int   # Number of consensus gradient iterations
+    consensus_connectivity_type:    str   # "local_window" or "scored_window"
+    consensus_w:                    int   # Window size for local_window, or w value for scored_window
+    consensus_r:                    int   # Rank of Lambda_ij matrices
+    consensus_edge_hidden_dim:      int   # Hidden dim for edge networks
+
+    def __post_init__(self):
+        assert self.consensus_num_iterations > 0
+        assert self.consensus_connectivity_type in ('local_window', 'scored_window')
+        assert self.consensus_w > 0
+        assert self.consensus_r > 0
+        assert self.consensus_edge_hidden_dim > 0
+
+    def __str__(self): return "Cross Consensus"
+    def initials(self): return "CC"
+
+@register_config("cross_attention_cfg")
+@dataclass
+class CrossAttentionConfig(BlockConfig):
+    """CrossAttention configuration."""
+    def __str__(self): return "Cross Attention"
+    def initials(self): return "CA"
+
 ################################################################################
 # Training Loss Function Configurations
 ################################################################################
@@ -243,13 +271,16 @@ class TransformerConfig(Config):
     max_len:                        int = None
     dropout:                        float = None   # Other architecture params
     ff_mult:                        int = None
-    first_block_cfg:                BlockConfig = None
+    first_block_cfg:                BlockConfig = None  # SelfConsensusConfig, GeometricAttentionConfig, ReflexiveAttentionConfig, or SelfAttentionConfig
+    context_cfg:                    BlockConfig = None  # CrossConsensusConfig or CrossAttentionConfig for SS8/SASA injection
     reference_model_seed:           int = None
     fsq_encoder_path:               str = None
 
     # TODO: These need to go.  seq_vocab should come from voacbulary.py and struuct_vocab should come from the FSQEncoder object.
     seq_vocab:                      int = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)  # Sequence tokens + special tokens
     struct_vocab:                   int = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
+    ss8_vocab:                      int = len(SS8_TOKENS) + len(SPECIAL_TOKENS)  # SS8 tokens + special tokens
+    sasa_vocab:                     int = len(SASA_TOKENS) + len(SPECIAL_TOKENS)  # SASA tokens + special tokens
 
     def __post_init__(self):
         assert self.style in ('stage_1', 'stage_2', 'mlm', 'discrete_diffusion')
@@ -259,10 +290,13 @@ class TransformerConfig(Config):
         assert isinstance(self.n_layers, int) and self.n_layers > 0
         assert isinstance(self.max_len, int) and self.max_len > 0
         assert isinstance(self.first_block_cfg, BlockConfig)
+        assert isinstance(self.context_cfg, BlockConfig)
 
         # TODO: get rid of
         assert self.seq_vocab > 0
         assert self.struct_vocab > 0
+        assert self.ss8_vocab > 0
+        assert self.sasa_vocab > 0
         
         # Store configuration as dictionary for safety
         self._config_dict = self.to_dict()
@@ -381,31 +415,3 @@ class ConfigurationError(Exception):
 
     def __str__(self):
         return self.message
-
-
-_toy_train_cfg = TrainingConfig(
-    batch_size=4,
-    max_epochs=1,
-    learning_rate=1e-5,
-    mask_config=ComplexMaskConfig(),
-    loss_config=KabschRMSDLossConfig(),
-    data_dir="/workspace/demo/Odyssey/sample_data/1k.csv",
-    checkpoint_dir="/workspace/demo/Odyssey/checkpoints/fsq"
-)
-
-_toy_model_cfg = FSQConfig(
-    style='stage_2',
-    d_model=128,
-    n_heads=1,
-    n_layers=3,
-    max_len=2048,
-    dropout=0.1,
-    ff_mult=4,
-    first_block_cfg=SelfAttentionConfig(),
-    reference_model_seed=42,
-    latent_dim=32,
-    fsq_levels="7x5x5x5x5",
-    fsq_encoder_path="/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt",
-    seq_vocab=len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS),
-    struct_vocab=4375 + len(SPECIAL_TOKENS)
-)

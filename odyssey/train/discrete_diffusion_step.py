@@ -44,10 +44,13 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
     seq_x_0, struct_x_0 = batch.unmasked_data['seq'], batch.unmasked_data['struct']
     seq_valid, struct_valid = ~batch.beospank['seq'], ~batch.beospank['struct']
     coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
+    ss8_x_0, sasa_x_0 = batch.unmasked_data['ss8'], batch.unmasked_data['sasa']
     B, L = seq_x_t.shape
 
-    nonspecial_elements_coords = (~batch.masks['coords'] & ~batch.beospank['coords']).bool()
-    #assert not (~unmasked_coords_elements.any(dim=1).any()) # Dataloader should have gauranteed this.
+    nonspecial_elements_coords = (~batch.masks['coords']) & (~batch.beospank['coords'])
+    nonbeospank_elements = ~batch.beospank['coords']
+    nonbeospank_ss8 = ~batch.beospank['ss8']
+    nonbeospank_sasa = ~batch.beospank['sasa']
     assert nonspecial_elements_coords.any(dim=1).all() # Need at least one real residue in each sequence
     
     # Pass raw timestep indices following DiT convention
@@ -57,14 +60,14 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
     timesteps = timesteps.float().unsqueeze(-1)
     
     # Prepare inputs
-    inputs = (seq_x_t, struct_x_t)
+    inputs = (seq_x_t, struct_x_t, ss8_x_0, sasa_x_0)
     model.train(train_mode)
     
     with torch.set_grad_enabled(train_mode):
         # Forward pass with time conditioning
         model_type = model.cfg.first_block_cfg.initials()
-        if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, nonspecial_elements_coords, timesteps)
-        else: outputs = model(inputs, timesteps=timesteps)
+        if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, nonspecial_elements_coords, nonbeospank_ss8, nonbeospank_sasa, timesteps)
+        else: outputs = model(inputs, mask=nonbeospank_elements, mask_ss8=nonbeospank_ss8, mask_sasa=nonbeospank_sasa, timesteps=timesteps)
         seq_logits, struct_logits = outputs
         
         # Compute losses using score entropy loss

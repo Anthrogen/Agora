@@ -10,7 +10,7 @@ from typing import Tuple, Optional
 _GS_EPS = 1e-8  # numerical safety for normalization
 
 
-def _construct_se3_frames_with_cbeta(coords: torch.Tensor, coord_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _construct_se3_frames_with_cbeta(coords: torch.Tensor, mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Build an orthonormal per-residue frame using 4 atoms (N, CA, C, CB)
     Extended version of Algorithm 5 that includes C-beta information.
@@ -35,7 +35,7 @@ def _construct_se3_frames_with_cbeta(coords: torch.Tensor, coord_mask: Optional[
         Backbone coordinates ordered as (N, CA, C, CB).
         CB is always present (virtual CB for glycine).
         Invalid positions should be all zeros.
-    coord_mask : Optional[Tensor[B, L]]
+    mask : Optional[Tensor[B, L]]
         Boolean mask indicating which residues have valid (non-zero) coordinates.
 
     Returns
@@ -49,8 +49,8 @@ def _construct_se3_frames_with_cbeta(coords: torch.Tensor, coord_mask: Optional[
     dtype = coords.dtype
     
     # If no mask provided, detect zero coordinates
-    if coord_mask is None:
-        coord_mask = torch.ones(B, L, dtype=torch.bool, device=device)
+    if mask is None:
+        mask = torch.ones(B, L, dtype=torch.bool, device=device)
     
     # Initialize outputs
     # Identity rotation for all positions (especially important for invalid ones)
@@ -59,7 +59,7 @@ def _construct_se3_frames_with_cbeta(coords: torch.Tensor, coord_mask: Optional[
     t = torch.zeros(B, L, 3, device=device, dtype=dtype)
     
     # Only compute frames for valid positions
-    if coord_mask.any():
+    if mask.any():
         n = coords[..., 0, :]           # N
         ca = coords[..., 1, :]          # CA (origin)
         c = coords[..., 2, :]           # C
@@ -93,17 +93,17 @@ def _construct_se3_frames_with_cbeta(coords: torch.Tensor, coord_mask: Optional[
         # Step 6: Construct rotation matrix using x-bar, y-bar, z-bar as rows
         R_computed = torch.stack((x_bar, y_bar, z_bar), dim=-2)  # [B,L,3,3]
         
-        # Replace R with computed values only where coord_mask is True
-        mask_expanded = coord_mask.unsqueeze(-1).unsqueeze(-1)
+        # Replace R with computed values only where mask is True
+        mask_expanded = mask.unsqueeze(-1).unsqueeze(-1)
         R = torch.where(mask_expanded, R_computed, R)
         
         # Use CA as translation only for valid positions
-        t = torch.where(coord_mask.unsqueeze(-1), ca, t)
+        t = torch.where(mask.unsqueeze(-1), ca, t)
     
-    return R, t, coord_mask
+    return R, t, mask
 
 
-# def _construct_se3_frames_with_cbeta(coords: torch.Tensor, coord_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+# def _construct_se3_frames_with_cbeta(coords: torch.Tensor, mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 #     """
 #     Build a per-residue frame using 4 atoms (N, CA, C, CB).
     
@@ -121,7 +121,7 @@ def _construct_se3_frames_with_cbeta(coords: torch.Tensor, coord_mask: Optional[
 #         Backbone coordinates ordered as (N, CA, C, CB).
 #         CB is always present (virtual CB for glycine).
 #         Invalid positions should be all zeros.
-#     coord_mask : Optional[Tensor[B, L]]
+#     mask : Optional[Tensor[B, L]]
 #         Boolean mask indicating which residues have valid (non-zero) coordinates.
 
 #     Returns
@@ -135,8 +135,8 @@ def _construct_se3_frames_with_cbeta(coords: torch.Tensor, coord_mask: Optional[
 #     dtype = coords.dtype
     
 #     # If no mask provided, detect zero coordinates
-#     if coord_mask is None:
-#         coord_mask = torch.ones(B, L, dtype=torch.bool, device=device)
+#     if mask is None:
+#         mask = torch.ones(B, L, dtype=torch.bool, device=device)
     
 #     # Initialize outputs
 #     # Identity rotation for all positions (especially important for invalid ones)
@@ -145,7 +145,7 @@ def _construct_se3_frames_with_cbeta(coords: torch.Tensor, coord_mask: Optional[
 #     t = torch.zeros(B, L, 3, device=device, dtype=dtype)
     
 #     # Only compute frames for valid positions
-#     if coord_mask.any():
+#     if mask.any():
 #         n = coords[..., 0, :]           # N
 #         ca = coords[..., 1, :]          # CA (origin)
 #         c = coords[..., 2, :]           # C
@@ -164,14 +164,14 @@ def _construct_se3_frames_with_cbeta(coords: torch.Tensor, coord_mask: Optional[
 #         # Construct rotation matrix directly using normalized vectors as rows
 #         R_computed = torch.stack((x_norm, y_norm, z_norm), dim=-2)  # [B,L,3,3]
         
-#         # Replace R with computed values only where coord_mask is True
-#         mask_expanded = coord_mask.unsqueeze(-1).unsqueeze(-1)
+#         # Replace R with computed values only where mask is True
+#         mask_expanded = mask.unsqueeze(-1).unsqueeze(-1)
 #         R = torch.where(mask_expanded, R_computed, R)
         
 #         # Use CA as translation only for valid positions
-#         t = torch.where(coord_mask.unsqueeze(-1), ca, t)
+#         t = torch.where(mask.unsqueeze(-1), ca, t)
     
-#     return R, t, coord_mask
+#     return R, t, mask
 
 
 # --------------------------------------------------------------------------- #
@@ -221,13 +221,13 @@ class ReflexiveAttention(nn.Module):
         B, L, _ = t.shape
         return (t.view(B, L, self.heads, 3).permute(0, 2, 1, 3).contiguous()) # B H L 3
 
-    def forward(self, x: torch.Tensor, coords: torch.Tensor, coord_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, coords: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Parameters
         ----------
         x      : Tensor[B, L, dim]      token embeddings
         coords : Tensor[B, L, 4, 3]     backbone coords (N, CA, C, CB)
-        coord_mask : Optional[Tensor[B, L]]  boolean mask for valid coordinates
+        mask : Optional[Tensor[B, L]]  boolean mask for valid coordinates
 
         Returns
         -------
@@ -241,7 +241,7 @@ class ReflexiveAttention(nn.Module):
         v  = self._split_heads(self.to_v(x))
 
         # (2) construct per-residue frames with C-beta
-        R, t, valid_frames = _construct_se3_frames_with_cbeta(coords, coord_mask)  # [B,L,3,3], [B,L,3], [B,L]
+        R, t, valid_frames = _construct_se3_frames_with_cbeta(coords, mask)  # [B,L,3,3], [B,L,3], [B,L]
         R_T = R.transpose(-1, -2)
         t = t.unsqueeze(1)                             # [B,1,L,3]
 
@@ -270,9 +270,9 @@ class ReflexiveAttention(nn.Module):
         scores = w_r * dir_score - w_d * dist_score
         
         # (4d) Apply coordinate mask to keys - mask out invalid key positions
-        if coord_mask is not None:
+        if mask is not None:
             # Create attention mask: [B, H, L_query, L_key]
-            # Invalid keys (coord_mask=False) should not be attended to
+            # Invalid keys (mask=False) should not be attended to
             key_mask = valid_frames.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, L_key]
             scores = scores.masked_fill(~key_mask, float('-inf'))
 
@@ -294,7 +294,7 @@ class ReflexiveAttention(nn.Module):
         out = self.dropout(self.proj(o))
         
         # (9) Zero output for invalid coordinate positions
-        if coord_mask is not None:
+        if mask is not None:
             out = out * valid_frames.unsqueeze(-1).float()
         
         return out 

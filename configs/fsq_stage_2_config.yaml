@@ -9,7 +9,7 @@ model_cfg:
     style: "stage_2"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
     d_model: 128
     n_heads: 1
-    n_layers: 10
+    n_layers: 40
     max_len: 2048
     dropout: 0.1
     ff_mult: 4
@@ -29,15 +29,16 @@ model_cfg:
       # self_attention_cfg: {}
       # geometric_attention_cfg: {}
       # reflexive_attention_cfg: {}
+    
+    context_cfg: null  # Not needed for stage_2
 
 # =============================================================================
 # Training Configuration
 # =============================================================================
 train_cfg:
-  type: "training_cfg"
-  params:
+  training_cfg:
     batch_size: 4
-    max_epochs: 50
+    max_epochs: 200
     learning_rate: 0.0001
     data_dir: "/workspace/demo/Odyssey/sample_data/1k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/fsq"

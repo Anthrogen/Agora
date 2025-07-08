@@ -38,6 +38,8 @@ def ensure_identical_parameters_transformers(models: Dict[str, TransformerTrunk]
                 # Copy embeddings
                 model.seq_embed.load_state_dict(ref_model.seq_embed.state_dict())
                 model.struct_embed.load_state_dict(ref_model.struct_embed.state_dict())
+                model.ss8_embed.load_state_dict(ref_model.ss8_embed.state_dict())
+                model.sasa_embed.load_state_dict(ref_model.sasa_embed.state_dict())
                 
                 # Copy output layers
                 model.final_norm.load_state_dict(ref_model.final_norm.state_dict())

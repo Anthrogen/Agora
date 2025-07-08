@@ -43,6 +43,9 @@ class RotaryEmbedding(nn.Module):
         self.register_buffer("cos_cached", emb.cos()[None, None, :, :])  # [1, 1, seq_len, dim]
         self.register_buffer("sin_cached", emb.sin()[None, None, :, :])  # [1, 1, seq_len, dim]
         
+        # Update max_position_embeddings to reflect actual cache size
+        self.max_position_embeddings = seq_len
+        
     def _rotate_half(self, x: torch.Tensor) -> torch.Tensor:
         """Rotate half the hidden dims of the input."""
         x1 = x[..., : x.shape[-1] // 2]

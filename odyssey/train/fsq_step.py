@@ -45,8 +45,9 @@ def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
     # Stage 1: Masked coordinate reconstruction
     B, L, H, _ = batch.masked_data['coords'].shape
 
-    # Create coord_mask for GA/RA models (valid positions that are not masked)
+    # Create masks for GA/RA/SA/SC models (valid positions that are not masked)
     unmasked_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
+    nonbeospank_elements = ~batch.beospank['coords']
     assert unmasked_elements.any(dim=1).all()
     
     model.train(train_mode)
@@ -55,7 +56,7 @@ def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
         # Forward pass - use only first 3 atoms for standard coordinates
         three_atom_masked_coords = batch.masked_data['coords'][:, :, :3, :]  # [B, L, 3, 3]
         if model.cfg.first_block_cfg.initials() in ("GA", "RA"): x_rec, _ = model(three_atom_masked_coords, batch.masked_data['coords'], unmasked_elements)
-        else: x_rec, _ = model(three_atom_masked_coords)
+        else: x_rec, _ = model(three_atom_masked_coords, mask=nonbeospank_elements)
 
         # In order to run KABSCH, we need to isolate only unmasked residues into a [U, 3, 3] tensor for each protein in the batch, where U is number of unmasked residues in a given protein.
         pts_pred = []; pts_true = []
@@ -92,8 +93,9 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
     # Stage 2: Full structure reconstruction from frozen encoder
     B, L, H, _ = batch.masked_data['coords'].shape
     
-    # Create coord_mask for GA/RA models
+    # Create masks for GA/RA/SA/SC models
     unmasked_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
+    nonbeospank_elements = ~batch.beospank['coords']
     assert unmasked_elements.any(dim=1).all()
     
     model.train(train_mode)
@@ -105,7 +107,7 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
             four_atom = batch.masked_data['coords'][:, :, :4, :]  # [B, L, 4, 3] for encoder
             z_q = model.quantizer.indices_to_codes(batch.masked_data['struct'])
 
-        # Zero out BOS/EOS/PAD positions in z_q
+        # Zero out BOS/EOS/PAD/UNK positions in z_q
         z_q[batch.beospank['coords']] = 0.0
         
         # Concatenate z_q with seq_tokens along last dimension
@@ -115,7 +117,7 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
         
         # Decoder forward pass
         if model.cfg.first_block_cfg.initials() in ("GA", "RA"): x_rec = model.decoder(decoder_input, four_atom, unmasked_elements)
-        else: x_rec = model.decoder(decoder_input)
+        else: x_rec = model.decoder(decoder_input, mask=nonbeospank_elements)
         
         # x_rec is [B, L, 14, 3] for stage 2
         # Compute loss on all valid positions (no masking in stage 2)

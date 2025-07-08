@@ -29,6 +29,15 @@ model_cfg:
             - 6
           consensus_r: 24
           consensus_edge_hidden_dim: 12
+    
+    context_cfg:
+      cross_consensus_cfg:  # Options: "cross_attention_cfg", "cross_consensus_cfg"
+        consensus_num_iterations: 1
+        consensus_connectivity_type: "local_window"
+        consensus_w: 2
+        consensus_r: 24
+        consensus_edge_hidden_dim: 12
+      # cross_attention_cfg: {}
 
 # =============================================================================
 # Training Configuration

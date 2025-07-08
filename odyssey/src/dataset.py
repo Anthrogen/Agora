@@ -43,7 +43,10 @@ ATOMS = {'V': BACKBONE + ['O', 'CG1', 'CG2'],
          'N': BACKBONE + ['O', 'CG', 'OD1', 'ND2'], 
          'M': BACKBONE + ['O', 'CG', 'SD', 'CE'], 
          'Y': BACKBONE + ['O', 'CG', 'CD1', 'CD2', 'CE1', 'CE2', 'CZ', 'OH'], 
-         'W': BACKBONE + ['O', 'CG', 'CD1', 'CD2', 'NE1', 'CE2', 'CE3', 'CZ2', 'CZ3', 'CH2']}
+         'W': BACKBONE + ['O', 'CG', 'CD1', 'CD2', 'NE1', 'CE2', 'CE3', 'CZ2', 'CZ3', 'CH2'],
+         'X': BACKBONE + ['O'],  # Unknown amino acid - treat like Glycine (minimal sidechain)
+         'U': BACKBONE + ['O', 'SE', 'O', 'H', 'HA', 'HB2', 'HB3'] # Selenocysteine
+}
 
 
 
@@ -63,7 +66,7 @@ class Protein():
     Modes: side_chain, backbone
 
     TODO: this class should have two methods of construction: one from PDB/JSON, one from sequence and coordinate tensors.
-    TODO: furthrmore, we should be able to "dump" to PDB/JSON from this class.
+    TODO: furthermore, we should be able to "dump" to PDB/JSON from this class.
     """
     def __init__(self, file_path, mode="side_chain"):
 
@@ -77,6 +80,22 @@ class Protein():
         atom_names = data["all_atoms"]["atom_names"]
         sequence = data["sequence"]
         atom_coords = torch.Tensor(data["all_atoms"]["atom_coordinates"])
+        ss8 = data["secondary_structure"]
+        sasa = data["sasa"]
+
+        # Handle secondary structure
+        if ss8 is None: ss8 = [None] * len(sequence) # If entire field is None, create array of None with sequence length
+        elif isinstance(ss8, list): # Replace individual NaN/None elements with None
+            for i, x in enumerate(ss8):
+                if x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x)):
+                    ss8[i] = None
+
+        # Handle sasa
+        if sasa is None: sasa = [None] * len(sequence) # If entire field is None, create array of None with sequence length
+        elif isinstance(sasa, list): # Replace individual NaN/None elements with None
+            for i, x in enumerate(sasa):
+                if x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x)):
+                    sasa[i] = None
 
         # Validate that backbone coordinates (N, CA, C) are not null - if any are, this is a malformed file
         backbone_coords = data["backbone_coordinates"]
@@ -139,6 +158,8 @@ class Protein():
         self.coords = all_coords
         self.seq = sequence
         self.len = len(self.seq)
+        self.ss8 = ss8
+        self.sasa = sasa
 
     def bond_angles(self):
         """
@@ -342,6 +363,8 @@ class ProteinDataset(Dataset):
 
         coords = protein.coords[:self.max_length]
         seq = protein.seq[:self.max_length]
+        ss8 = protein.ss8[:self.max_length]
+        sasa = protein.sasa[:self.max_length]
         l = torch.tensor(min(protein.len, self.max_length))
 
         # Optionally center the structure at origin
@@ -350,4 +373,4 @@ class ProteinDataset(Dataset):
             centroid = coords.reshape(-1, 3).mean(dim=0)  # Average position of all atoms
             coords = coords - centroid  # Subtract mean from all coordinates
 
-        return seq, coords, l
+        return seq, coords, ss8, sasa, l

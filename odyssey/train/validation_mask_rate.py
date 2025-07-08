@@ -227,11 +227,7 @@ def validate(path_to_model_checkpoint_discrete_diffusion: str,
     ###########################################################################
     #  Save and plot results
     ###########################################################################
-    # Save to CSV
     results_df = pd.DataFrame(results)
-    results_path = "mask_rate_validation_results.csv"
-    results_df.to_csv(results_path, index=False)
-    print(f"\nResults saved to {results_path}")
     
     # Create visualization plots
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
@@ -311,13 +307,14 @@ def validate(path_to_model_checkpoint_discrete_diffusion: str,
     return results_df
 
 if __name__ == "__main__":
-    path_to_model_checkpoint_discrete_diffusion = '/workspace/demo/Odyssey/checkpoints/transformer_trunk/SC_discrete_diffusion_discrete_diffusion_model.pt'
-    path_to_fsq_encoder_checkpoint_discrete_diffusion = '/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt'
-    path_to_model_checkpoint_simple = '/workspace/demo/Odyssey/checkpoints/transformer_trunk/SC_mlm_simple_model.pt'
-    path_to_fsq_encoder_checkpoint_simple = '/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_simple_model.pt'
-    path_to_model_checkpoint_complex = '/workspace/demo/Odyssey/checkpoints/transformer_trunk/SC_mlm_complex_model.pt'
-    path_to_fsq_encoder_checkpoint_complex = '/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_complex_model.pt'
-    time_steps = [0,9,19,29,39,49,59,69,79,89,99]
+    first_block_type = "SC"
+    path_to_model_checkpoint_discrete_diffusion = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/{first_block_type}_discrete_diffusion_discrete_diffusion_model.pt'
+    path_to_fsq_encoder_checkpoint_discrete_diffusion = f'/workspace/demo/Odyssey/checkpoints/fsq/{first_block_type}_stage_1_discrete_diffusion_model.pt'
+    path_to_model_checkpoint_simple = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/{first_block_type}_mlm_simple_model.pt'
+    path_to_fsq_encoder_checkpoint_simple = f'/workspace/demo/Odyssey/checkpoints/fsq/{first_block_type}_stage_1_simple_model.pt'
+    path_to_model_checkpoint_complex = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/{first_block_type}_mlm_complex_model.pt'
+    path_to_fsq_encoder_checkpoint_complex = f'/workspace/demo/Odyssey/checkpoints/fsq/{first_block_type}_stage_1_complex_model.pt'
+    time_steps = [4,9,14,19,24,29,34,39,44,49,54,59,64,69,74,79,84,89]
     validate(path_to_model_checkpoint_discrete_diffusion, path_to_fsq_encoder_checkpoint_discrete_diffusion, 
              path_to_model_checkpoint_simple, path_to_fsq_encoder_checkpoint_simple, path_to_model_checkpoint_complex, 
              path_to_fsq_encoder_checkpoint_complex, time_steps) 

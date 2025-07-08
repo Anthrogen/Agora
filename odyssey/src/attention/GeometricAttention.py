@@ -10,7 +10,7 @@ from typing import Tuple, Optional
 _GS_EPS = 1e-8  # numerical safety for normalization
 
 
-def _construct_se3_frames(coords: torch.Tensor, coord_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+def _construct_se3_frames(coords: torch.Tensor, mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Build an orthonormal per-residue frame (Jumper et al. Appendix A, Alg. 5)
     **Row-major convention**: row vectors are multiplied on the *right*
@@ -21,7 +21,7 @@ def _construct_se3_frames(coords: torch.Tensor, coord_mask: Optional[torch.Tenso
     coords : Tensor[B, L, 3, 3]
         Backbone coordinates ordered as (N, CA, C).
         Invalid positions should be all zeros.
-    coord_mask : Optional[Tensor[B, L]]
+    mask : Optional[Tensor[B, L]]
         Boolean mask indicating which residues have valid (non-zero) coordinates.
 
     Returns
@@ -33,8 +33,8 @@ def _construct_se3_frames(coords: torch.Tensor, coord_mask: Optional[torch.Tenso
     device = coords.device
     dtype = coords.dtype
     
-    if coord_mask is None:
-        coord_mask = torch.ones(B, L, dtype=torch.bool, device=device)
+    if mask is None:
+        mask = torch.ones(B, L, dtype=torch.bool, device=device)
     
     # Initialize outputs
     # Identity rotation for all positions (especially important for invalid ones)
@@ -43,7 +43,7 @@ def _construct_se3_frames(coords: torch.Tensor, coord_mask: Optional[torch.Tenso
     t = torch.zeros(B, L, 3, device=device, dtype=dtype)
     
     # Only compute frames for valid positions
-    if coord_mask.any():
+    if mask.any():
         n = coords[..., 0, :]   # N
         ca = coords[..., 1, :]  # CA (origin)
         c = coords[..., 2, :]   # C
@@ -67,12 +67,12 @@ def _construct_se3_frames(coords: torch.Tensor, coord_mask: Optional[torch.Tenso
         # Stack to form rotation matrices
         R_computed = torch.stack((x_axis, y_axis, z_axis), dim=-2)
         
-        # Replace R with computed values only where coord_mask is True
-        mask_expanded = coord_mask.unsqueeze(-1).unsqueeze(-1)
+        # Replace R with computed values only where mask is True
+        mask_expanded = mask.unsqueeze(-1).unsqueeze(-1)
         R = torch.where(mask_expanded, R_computed, R)
         
         # Use CA as translation only for valid positions
-        t = torch.where(coord_mask.unsqueeze(-1), ca, t)
+        t = torch.where(mask.unsqueeze(-1), ca, t)
     
     return R, t
 
@@ -121,13 +121,13 @@ class GeometricAttention(nn.Module):
         B, L, _ = t.shape
         return (t.view(B, L, self.heads, 3).permute(0, 2, 1, 3).contiguous()) # B H L 3
 
-    def forward(self, x: torch.Tensor, coords: torch.Tensor, coord_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, coords: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Parameters
         ----------
         x      : Tensor[B, L, dim]      token embeddings
         coords : Tensor[B, L, 3, 3]     backbone coords (N, CA, C)
-        coord_mask : Optional[Tensor[B, L]]  Boolean mask for valid coordinates
+        mask : Optional[Tensor[B, L]]  Boolean mask for valid coordinates
 
         Returns
         -------
@@ -141,7 +141,7 @@ class GeometricAttention(nn.Module):
         v  = self._split_heads(self.to_v(x))
 
         # (2) construct per-residue frames
-        R, t = _construct_se3_frames(coords, coord_mask)  # [B,L,3,3], [B,L,3]
+        R, t = _construct_se3_frames(coords, mask)  # [B,L,3,3], [B,L,3]
         R_T = R.transpose(-1, -2)
         t = t.unsqueeze(1)                             # [B,1,L,3]
 
@@ -170,10 +170,10 @@ class GeometricAttention(nn.Module):
         scores = w_r * dir_score - w_d * dist_score
         
         # (4d) Apply coordinate validity masking
-        if coord_mask is not None:
+        if mask is not None:
             # Mask attention scores where keys (columns) are invalid
             # Invalid positions shouldn't be attended to
-            score_mask = coord_mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, L_key]
+            score_mask = mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, L_key]
             scores = scores.masked_fill(~score_mask, float('-inf'))
 
         # (5) attention softmax + dropout
@@ -194,7 +194,7 @@ class GeometricAttention(nn.Module):
         out = self.dropout(self.proj(o))
         
         # (9) Zero output for invalid coordinate positions before residual
-        if coord_mask is not None:
-            out = out * coord_mask.unsqueeze(-1).float()
+        if mask is not None:
+            out = out * mask.unsqueeze(-1).float()
         
         return out
