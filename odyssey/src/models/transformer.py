@@ -141,8 +141,18 @@ class TransformerTrunk(nn.Module):
         h = seq_emb + struct_emb
         
         # Inject SS8 and SASA context
-        h = h + self.context_ss8(target=h, context=ss8_emb, target_mask=mask, context_mask=mask_ss8)
-        h = h + self.context_sasa(target=h, context=sasa_emb, target_mask=mask, context_mask=mask_sasa)
+        # Only apply context injection to rows that have at least one valid context position
+        if mask_ss8 is not None:
+            valid_ss8_indices = mask_ss8.any(dim=1).nonzero(as_tuple=True)[0]  # Get indices of valid rows
+            if len(valid_ss8_indices) > 0:
+                ss8_context = self.context_ss8(h[valid_ss8_indices], ss8_emb[valid_ss8_indices], mask[valid_ss8_indices], mask_ss8[valid_ss8_indices])
+                h[valid_ss8_indices] = h[valid_ss8_indices] + ss8_context
+        
+        if mask_sasa is not None:
+            valid_sasa_indices = mask_sasa.any(dim=1).nonzero(as_tuple=True)[0]  # Get indices of valid rows
+            if len(valid_sasa_indices) > 0:
+                sasa_context = self.context_sasa(h[valid_sasa_indices], sasa_emb[valid_sasa_indices], mask[valid_sasa_indices], mask_sasa[valid_sasa_indices])
+                h[valid_sasa_indices] = h[valid_sasa_indices] + sasa_context
 
         # Get time embeddings if using AdaLN
         time_emb = None
