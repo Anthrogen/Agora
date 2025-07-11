@@ -40,6 +40,7 @@ def ensure_identical_parameters_transformers(models: Dict[str, TransformerTrunk]
                 model.struct_embed.load_state_dict(ref_model.struct_embed.state_dict())
                 model.ss8_embed.load_state_dict(ref_model.ss8_embed.state_dict())
                 model.sasa_embed.load_state_dict(ref_model.sasa_embed.state_dict())
+                model.plddt_embed.load_state_dict(ref_model.plddt_embed.state_dict())
                 
                 # Copy output layers
                 model.final_norm.load_state_dict(ref_model.final_norm.state_dict())
@@ -157,6 +158,26 @@ def save_model_checkpoint(path, model, model_cfg, train_cfg, optimizer):
         'model_config_dict': model_cfg.to_dict(),  # Backup dictionary
         'training_config_dict': train_cfg.to_dict()  # Backup dictionary
     }, path)
+
+
+def load_autoencoder_from_checkpoint(model_path, device, freeze=True):
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    model_cfg = checkpoint['model_config']
+    train_cfg = checkpoint['train_config']
+    
+    assert isinstance(model_cfg, FSQConfig)
+
+    model = Autoencoder(model_cfg)
+    model.load_state_dict(checkpoint['model_state_dict'])
+
+    if freeze:
+        model.eval()
+        model.requires_grad_(False)
+
+    model = model.to(device)
+    
+    return model, model_cfg, train_cfg
+
 
 def load_model_from_checkpoint(model_path, device, freeze=True):
     """

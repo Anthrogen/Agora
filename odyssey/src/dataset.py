@@ -13,7 +13,6 @@ class Chirality(Enum):
     A = 0   # Achiral amino acid
     L = -1  # Levorotatory amino acid
 
-
 ATOM_N_ENC = 0
 ATOM_CA_ENC = 1
 ATOM_C_ENC = 2
@@ -48,8 +47,6 @@ ATOMS = {'V': BACKBONE + ['O', 'CG1', 'CG2'],
          'U': BACKBONE + ['O', 'SE', 'O', 'H', 'HA', 'HB2', 'HB3'] # Selenocysteine
 }
 
-
-
 for k in ATOMS:
     assert ATOMS[k][ATOM_N_ENC] == "N"
     assert ATOMS[k][ATOM_CA_ENC] == "CA"
@@ -82,20 +79,49 @@ class Protein():
         atom_coords = torch.Tensor(data["all_atoms"]["atom_coordinates"])
         ss8 = data["secondary_structure"]
         sasa = data["sasa"]
+        global_annotation = data["global_annotation"]
+        per_residue_annotation = data["per_residue_annotation"]
+        plddt = data["plddt"]
+        structure_source = data["structure_source"]
 
         # Handle secondary structure
         if ss8 is None: ss8 = [None] * len(sequence) # If entire field is None, create array of None with sequence length
         elif isinstance(ss8, list): # Replace individual NaN/None elements with None
-            for i, x in enumerate(ss8):
-                if x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x)):
-                    ss8[i] = None
+            ss8[:] = [None if (x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x))) else x for x in ss8]
 
         # Handle sasa
         if sasa is None: sasa = [None] * len(sequence) # If entire field is None, create array of None with sequence length
         elif isinstance(sasa, list): # Replace individual NaN/None elements with None
-            for i, x in enumerate(sasa):
-                if x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x)):
-                    sasa[i] = None
+            sasa[:] = [None if (x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x))) else x for x in sasa]
+
+        # Handle global annotations
+        if global_annotation is None or global_annotation == "": global_annotation = []
+        elif isinstance(global_annotation, str): # Split by semicolons and clean up terms
+            terms = global_annotation.split(';')
+            global_annotation = [term.strip() for term in terms if term.strip()]
+
+        # Handle per-residue annotations
+        if not per_residue_annotation: per_residue_annotation = [[None] for _ in range(len(sequence))] # Handles both None and empty dict {}
+        elif isinstance(per_residue_annotation, dict):
+            # Convert dictionary format to list format
+            list_annotations = [[None] for _ in range(len(sequence))]
+            for pos_str, annotations in per_residue_annotation.items():
+                pos_idx = int(pos_str)
+                # Ensure the position is within sequence bounds
+                if 0 <= pos_idx < len(sequence):
+                     # Annotations are always in list format
+                     if isinstance(annotations, list):
+                         list_annotations[pos_idx] = annotations
+
+            # Set the per_residue_annotation to the list of annotations
+            per_residue_annotation = list_annotations
+        
+        # Handle plddt with structure source-specific scaling
+        if plddt is None: plddt = [None] * len(sequence) # If entire field is None, create array of None with sequence length
+        elif isinstance(plddt, list): 
+            # Scale AFDB values from 0-100 to 0-1 (PDB and ESM values are already in 0-1 range, no scaling needed)
+            scaling = (1/100.0) if structure_source == "AFDB" else 1.0
+            plddt[:] = [None if (x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x))) else x * scaling for x in plddt]
 
         # Validate that backbone coordinates (N, CA, C) are not null - if any are, this is a malformed file
         backbone_coords = data["backbone_coordinates"]
@@ -120,12 +146,13 @@ class Protein():
 
             filled = torch.zeros(len(BACKBONE) if not self.mode == "side_chain" else len(ATOMS[sequence[residue_idx]]))
             if sequence[residue_idx] == "G":
-                filled[ATOM_CB_ENC] = 1 # We'll fill it in later.
+                filled[ATOM_CB_ENC] = 1 # We'll fill it in later with a phantom CB.
 
             for atom_idx in range(start_idx, end_idx):
                 atom_name = atom_names[atom_idx]
                 
-                # Skip OXT and hydrogen atoms - these are terminal/additional atoms not part of the residue
+                # Skip OXT - these are terminal/additional atoms not part of the residue
+                # Also skip all hydrogen atoms.
                 if atom_name == "OXT" or atom_name.startswith("H"): continue
                 
                 if self.mode == "side_chain" or ((not self.mode == "side_chain") and (atom_name in BACKBONE)):
@@ -160,6 +187,9 @@ class Protein():
         self.len = len(self.seq)
         self.ss8 = ss8
         self.sasa = sasa
+        self.global_annotation = global_annotation
+        self.per_residue_annotation = per_residue_annotation
+        self.plddt = plddt
 
     def bond_angles(self):
         """
@@ -258,7 +288,7 @@ class ProteinDataset(Dataset):
     PROTEIN_ID_COL = 1
     JSON_PATH_COL = 2 # Within the index.csv file, this is the colun (0-indexed) that points ot member Json Path 
     TOTAL_COLS = 4
-    def __init__(self, index_csv_path: str, center: bool = True, mode: str = "backbone", max_length: int = 2048, eager: bool = False, verbose: bool = False):
+    def __init__(self, index_csv_path: str, center: bool = True, mode: str = "backbone", max_length: int = 2048, max_length_global: int = 512, eager: bool = False, verbose: bool = False):
         """
         Eager: if true, check for malformed files up front. Otherwise, do so on the fly and potentially return None from __getitem__.
         """
@@ -268,6 +298,7 @@ class ProteinDataset(Dataset):
         # Maximum sequence length for padding/truncation
         # Proteins longer than this will be truncated
         self.max_length = max_length
+        self.max_length_global = max_length_global
         self.mode = mode
         self.center = center
         self.verbose = verbose
@@ -365,6 +396,9 @@ class ProteinDataset(Dataset):
         seq = protein.seq[:self.max_length]
         ss8 = protein.ss8[:self.max_length]
         sasa = protein.sasa[:self.max_length]
+        global_annotation = protein.global_annotation[:self.max_length_global]
+        per_residue_annotation = protein.per_residue_annotation[:self.max_length]
+        plddt = protein.plddt[:self.max_length]
         l = torch.tensor(min(protein.len, self.max_length))
 
         # Optionally center the structure at origin
@@ -373,4 +407,4 @@ class ProteinDataset(Dataset):
             centroid = coords.reshape(-1, 3).mean(dim=0)  # Average position of all atoms
             coords = coords - centroid  # Subtract mean from all coordinates
 
-        return seq, coords, ss8, sasa, l
+        return seq, coords, ss8, sasa, global_annotation, per_residue_annotation, plddt, l

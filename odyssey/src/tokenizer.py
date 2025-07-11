@@ -1,5 +1,6 @@
-from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS, PLDDT_TOKENS, GLOBAL_ANNOTATION_TOKENS, PER_RESIDUE_ANNOTATION_TOKENS
 import torch
+from bisect import bisect_right
 
 
 #TODO: get all tokenizers to operate over a whole batch at a time.
@@ -11,7 +12,6 @@ class SequenceTokenizer():
 
     This class does NOT handle MASK tokens.
     """
-
     def __init__(self, full_length):
 
         # Get sequence tokens (amino acids)
@@ -163,7 +163,6 @@ class SS8Tokenizer():
 
     This class does NOT handle MASK tokens.
     """
-
     def __init__(self, full_length):
         # Get SS8 tokens (secondary structure classes)
         ss8 = {name: member.value for name, member in SS8_TOKENS.__members__.items()}
@@ -186,10 +185,10 @@ class SS8Tokenizer():
             padded_ss8: Tensor of SS8 tokens
             ss8_beospank: Boolean mask for BOS/EOS/PAD/None positions
         """
-        # Convert SS8 labels to token indices, mapping None to PAD
+        # Convert SS8 labels to token indices, mapping None to UNK
         ss8_tokens = []
         for label in observation:
-            if label is None: ss8_tokens.append(self.mapping["PAD"])
+            if label is None: ss8_tokens.append(self.mapping["UNK"])
             else: ss8_tokens.append(self.mapping[label])
         
         # Truncate if too long (reserve space for BOS/EOS)
@@ -204,11 +203,11 @@ class SS8Tokenizer():
         padded_ss8[:content_len] = content[:content_len]
 
         # Create beospank mask: 1s for BOS/EOS/PAD/None, 0s for real content
-        ss8_beospank = torch.ones(self.full_length, dtype=torch.bool)
-        # Mark real content (non-None) as 0
-        for i, token in enumerate(ss8_tokens):
-            if token != self.mapping["PAD"]:  # Real SS8 content
-                ss8_beospank[1 + i] = 0  # +1 to account for BOS token
+        ss8_beospank = torch.zeros(self.full_length, dtype=torch.bool)
+        ss8_beospank[padded_ss8 == self.mapping["BOS"]] = 1
+        ss8_beospank[padded_ss8 == self.mapping["EOS"]] = 1
+        ss8_beospank[padded_ss8 == self.mapping["PAD"]] = 1
+        ss8_beospank[padded_ss8 == self.mapping["UNK"]] = 1
 
         # Sanity checks
         assert torch.max(padded_ss8) < len(self.mapping), "SS8 Tokenization failed!"
@@ -235,33 +234,20 @@ class SASATokenizer():
         # Add special tokens with non-conflicting values
         special = {name: member.value + max_sasa_value + 1 
                   for name, member in SPECIAL_TOKENS.__members__.items()}
-
+        
+        self.thresholds = (0.14, 2.09, 6.49, 12.69, 20.23, 29.03, 38.17, 47.43, 56.62, 65.50, 76.08, 86.71, 99.48, 115.35, 137.27)
         self.mapping = {**sasa, **special}
         self.full_length = full_length
 
     def _bin_sasa_value(self, value):
         """Convert continuous SASA value to bin token using optimal quantile-based boundaries."""
-        if value is None: return self.mapping["PAD"]
-        
         # Optimal bin boundaries based on quantile analysis of 22,185 real SASA values
         # Each bin contains approximately equal numbers of residues (~1,386 each)
-        if value < 0.14: return self.mapping["BIN_0"]
-        elif value < 2.09: return self.mapping["BIN_1"]
-        elif value < 6.49: return self.mapping["BIN_2"]
-        elif value < 12.69: return self.mapping["BIN_3"]
-        elif value < 20.23: return self.mapping["BIN_4"]
-        elif value < 29.03: return self.mapping["BIN_5"]
-        elif value < 38.17: return self.mapping["BIN_6"]
-        elif value < 47.43: return self.mapping["BIN_7"]
-        elif value < 56.62: return self.mapping["BIN_8"]
-        elif value < 65.50: return self.mapping["BIN_9"]
-        elif value < 76.08: return self.mapping["BIN_10"]
-        elif value < 86.71: return self.mapping["BIN_11"]
-        elif value < 99.48: return self.mapping["BIN_12"]
-        elif value < 115.35: return self.mapping["BIN_13"]
-        elif value < 137.27: return self.mapping["BIN_14"]
-        else: return self.mapping["BIN_15"]
-        
+        if value is None: return self.mapping["UNK"]
+        idx = bisect_right(self.thresholds, value)
+        return self.mapping[f"BIN_{idx}"]
+
+
     def tokenize(self, observation):
         """
         Args:
@@ -285,11 +271,11 @@ class SASATokenizer():
         padded_sasa[:content_len] = content[:content_len]
 
         # Create beospank mask: 1s for BOS/EOS/PAD/None, 0s for real content
-        sasa_beospank = torch.ones(self.full_length, dtype=torch.bool)
-        # Mark real content (non-None) as 0
-        for i, token in enumerate(sasa_tokens):
-            if token != self.mapping["PAD"]:  # Real SASA content
-                sasa_beospank[1 + i] = 0  # +1 to account for BOS token
+        sasa_beospank = torch.zeros(self.full_length, dtype=torch.bool)
+        sasa_beospank[padded_sasa == self.mapping["BOS"]] = 1
+        sasa_beospank[padded_sasa == self.mapping["EOS"]] = 1
+        sasa_beospank[padded_sasa == self.mapping["PAD"]] = 1
+        sasa_beospank[padded_sasa == self.mapping["UNK"]] = 1
 
         # Sanity checks
         assert torch.max(padded_sasa) < len(self.mapping), "SASA Tokenization failed!"
@@ -297,4 +283,213 @@ class SASATokenizer():
         assert padded_sasa.numel() == self.full_length, "SASA Tokenization failed!"
 
         return padded_sasa, sasa_beospank.bool()
+
+
+class PLDDTTokenizer():
+    """
+    A Tokenizer and Padder for pLDDT tokens.
+
+    This class does NOT handle MASK tokens.
+    """
+    def __init__(self, full_length):
+        # Get pLDDT tokens (binned values)
+        plddt = {name: member.value for name, member in PLDDT_TOKENS.__members__.items()}
+
+        # Get the highest pLDDT token value to avoid conflicts
+        max_plddt_value = max(plddt.values()) if plddt else -1
+
+        # Add special tokens with non-conflicting values
+        special = {name: member.value + max_plddt_value + 1 
+                  for name, member in SPECIAL_TOKENS.__members__.items()}
+
+        self.mapping = {**plddt, **special}
+        self.full_length = full_length
+        self.thresholds = tuple((i+1)/50 for i in range(49))
+
+    def _bin_plddt_value(self, value):
+        """Convert continuous pLDDT value to bin token using uniform intervals."""
+        if value is None: return self.mapping["UNK"]
+        assert value >= 0
+        idx = bisect_right(self.thresholds, value)
+        return self.mapping[f"BIN_{idx}"]
         
+    def tokenize(self, observation):
+        """
+        Args:
+            observation: List of pLDDT values (or None values), e.g., [45.2, None, 12.8, 156.7]
+        Returns:
+            padded_plddt: Tensor of pLDDT tokens
+            plddt_beospank: Boolean mask for BOS/EOS/PAD/None positions
+        """
+        # Convert pLDDT values to binned token indices
+        plddt_tokens = [self._bin_plddt_value(value) for value in observation]
+        
+        # Truncate if too long (reserve space for BOS/EOS) 
+        plddt_tokens = plddt_tokens[:self.full_length-2]
+
+        # Add BOS and EOS tokens
+        content = torch.tensor([self.mapping["BOS"], *plddt_tokens, self.mapping["EOS"]], dtype=torch.long)
+        content_len = content.numel()
+
+        # Add Padding
+        padded_plddt = torch.full((self.full_length,), self.mapping["PAD"], dtype=torch.long)
+        padded_plddt[:content_len] = content[:content_len]
+
+        # Create beospank mask: 1s for BOS/EOS/PAD/None, 0s for real content
+        plddt_beospank = torch.zeros(self.full_length, dtype=torch.bool)
+        plddt_beospank[padded_plddt == self.mapping["BOS"]] = 1
+        plddt_beospank[padded_plddt == self.mapping["EOS"]] = 1
+        plddt_beospank[padded_plddt == self.mapping["PAD"]] = 1
+        plddt_beospank[padded_plddt == self.mapping["UNK"]] = 1
+        
+        # Sanity checks
+        assert torch.max(padded_plddt) < len(self.mapping), "pLDDT Tokenization failed!"
+        assert torch.min(padded_plddt) >= 0, "pLDDT Tokenization failed!"
+        assert padded_plddt.numel() == self.full_length, "pLDDT Tokenization failed!"
+
+        return padded_plddt, plddt_beospank.bool()
+
+
+class GlobalAnnotationTokenizer():
+    """
+    A Tokenizer and Padder for global annotation tokens.
+
+    This class does NOT handle MASK tokens.
+    """
+    def __init__(self, full_length):
+        # Get global annotation tokens (dynamically loaded vocabulary)
+        global_annotation = {name: value for name, value in GLOBAL_ANNOTATION_TOKENS._members.items()}
+
+        # Get the highest global annotation token value to avoid conflicts
+        max_global_annotation_value = max(global_annotation.values()) if global_annotation else -1
+
+        # Add special tokens with non-conflicting values
+        special = {name: member.value + max_global_annotation_value + 1 
+                  for name, member in SPECIAL_TOKENS.__members__.items()}
+
+        self.mapping = {**global_annotation, **special}
+        self.full_length = full_length
+
+    def tokenize(self, observation):
+        """
+        Args:
+            observation: List of global annotation labels (or None values), e.g., ['dimer interface', 'DNA binding site']
+        Returns:
+            padded_global_annotation: Tensor of global annotation tokens
+            global_annotation_beospank: Boolean mask for BOS/EOS/PAD/None positions
+        """
+        # Convert global annotation labels to token indices
+        global_annotation_tokens = []
+        for label in observation:
+            if label in self.mapping: global_annotation_tokens.append(self.mapping[label])
+            else: global_annotation_tokens.append(self.mapping["UNK"])
+        
+        # Truncate if too long (reserve space for BOS/EOS)
+        global_annotation_tokens = global_annotation_tokens[:self.full_length-2]
+
+        # Add BOS and EOS tokens
+        content = torch.tensor([self.mapping["BOS"], *global_annotation_tokens, self.mapping["EOS"]], dtype=torch.long)
+        content_len = content.numel()
+
+        # Add Padding
+        padded_global_annotation = torch.full((self.full_length,), self.mapping["PAD"], dtype=torch.long)
+        padded_global_annotation[:content_len] = content[:content_len]
+
+        # Create beospank mask: 1s for BOS/EOS/PAD/None, 0s for real content
+        global_annotation_beospank = torch.zeros(self.full_length, dtype=torch.bool)
+        global_annotation_beospank[padded_global_annotation == self.mapping["BOS"]] = 1
+        global_annotation_beospank[padded_global_annotation == self.mapping["EOS"]] = 1
+        global_annotation_beospank[padded_global_annotation == self.mapping["PAD"]] = 1
+        global_annotation_beospank[padded_global_annotation == self.mapping["UNK"]] = 1
+
+        # Sanity checks
+        assert torch.max(padded_global_annotation) < len(self.mapping), "Global Annotation Tokenization failed!"
+        assert torch.min(padded_global_annotation) >= 0, "Global Annotation Tokenization failed!"
+        assert padded_global_annotation.numel() == self.full_length, "Global Annotation Tokenization failed!"
+
+        return padded_global_annotation, global_annotation_beospank.bool()
+
+
+class PerResidueAnnotationTokenizer():
+    """
+    A Tokenizer and Padder for per-residue annotation tokens.
+    
+    Handles multiple annotations per residue by creating a fixed-size tensor
+    of shape [full_length, max_annotations_per_residue].
+
+    This class does NOT handle MASK tokens.
+    """
+    def __init__(self, full_length, max_annotations_per_residue):
+        # Get per-residue annotation tokens (dynamically loaded vocabulary)
+        per_residue_annotation = {name: value for name, value in PER_RESIDUE_ANNOTATION_TOKENS._members.items()}
+
+        # Get the highest per-residue annotation token value to avoid conflicts
+        max_annotation_value = max(per_residue_annotation.values()) if per_residue_annotation else -1
+
+        # Add special tokens with non-conflicting values
+        special = {name: member.value + max_annotation_value + 1 
+                  for name, member in SPECIAL_TOKENS.__members__.items()}
+
+        self.mapping = {**per_residue_annotation, **special}
+        self.full_length = full_length
+        self.max_annotations_per_residue = max_annotations_per_residue
+
+    def _process_residue_annotations(self, annotations):
+        """Convert residue annotations to list of token indices, pad/truncate to max_annotations_per_residue."""        
+        # Convert to token IDs
+        tokens = []
+        for term in annotations[:self.max_annotations_per_residue]:  # Truncate to max
+            if term is None:
+                tokens.append(self.mapping["UNK"])
+            else:
+                term = term.strip()
+                if term in self.mapping: tokens.append(self.mapping[term])
+                else: tokens.append(self.mapping["UNK"])
+        
+        # Pad to max_annotations_per_residue
+        while len(tokens) < self.max_annotations_per_residue:
+            tokens.append(self.mapping["PAD"])
+        
+        return tokens
+        
+    def tokenize(self, observation):
+        """
+        Args:
+            observation: List of annotation lists per residue, e.g., 
+                        [["dimer interface","DNA binding site"], None, ["active site"], ...]
+                        Each element is either None or a list of annotation term strings.
+        Returns:
+            padded_annotations: Tensor of annotation tokens [full_length, max_annotations_per_residue]
+            annotation_beospank: Boolean mask for BOS/EOS/PAD/UNK annotation tokens [full_length, max_annotations_per_residue]
+        """
+        # Convert each residue's annotations to token indices
+        residue_annotation_tokens = []
+        for annot in observation:
+            tokens = self._process_residue_annotations(annot)
+            residue_annotation_tokens.append(tokens)
+        
+        # Truncate if too long (reserve space for BOS/EOS)
+        residue_annotation_tokens = residue_annotation_tokens[:self.full_length-2]
+
+        # Add BOS and EOS tokens
+        bos_tokens = [self.mapping["BOS"]] * self.max_annotations_per_residue
+        eos_tokens = [self.mapping["EOS"]] * self.max_annotations_per_residue
+        content = torch.tensor([bos_tokens, *residue_annotation_tokens, eos_tokens], dtype=torch.long)
+        content_len = len(content)
+
+        # Add Padding
+        padded_annotations = torch.full((self.full_length, self.max_annotations_per_residue), self.mapping["PAD"], dtype=torch.long)
+        padded_annotations[:content_len] = content[:content_len] # size: [full_length, max_annotations_per_residue]
+
+        # Create beospank mask: 1s for BOS/EOS/PAD/UNK annotation tokens, 0s for real content - size: [full_length, max_annotations_per_residue]
+        annotation_beospank = (padded_annotations == self.mapping["BOS"]) | \
+                              (padded_annotations == self.mapping["EOS"]) | \
+                              (padded_annotations == self.mapping["PAD"]) | \
+                              (padded_annotations == self.mapping["UNK"])
+        
+        # Sanity checks
+        assert torch.max(padded_annotations) < len(self.mapping), "Per-residue annotation Tokenization failed!"
+        assert torch.min(padded_annotations) >= 0, "Per-residue annotation Tokenization failed!"
+        assert padded_annotations.shape == (self.full_length, self.max_annotations_per_residue), "Per-residue annotation padding shape mismatch!"
+
+        return padded_annotations, annotation_beospank.bool()

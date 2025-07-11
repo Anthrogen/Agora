@@ -96,7 +96,7 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
     # Create masks for GA/RA/SA/SC models
     unmasked_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
     nonbeospank_elements = ~batch.beospank['coords']
-    assert unmasked_elements.any(dim=1).all()
+    assert unmasked_elements.any(dim=1).all(), f"Offending protein: Seq={batch.unmasked_data['seq'][:,:25].tolist()}"
     
     model.train(train_mode)
     model.encoder.eval()  # Encoder is frozen

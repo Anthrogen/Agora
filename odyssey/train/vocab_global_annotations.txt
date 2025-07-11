@@ -1,0 +1,876 @@
+Immunoglobulin V-set domain
+V-set
+GO:0016020
+GO:0005515
+C1-set
+Immunoglobulin C1-set domain
+GO:0005524
+GO:0003735
+GO:0006412
+GO:0005840
+IgV_H
+GO:0003677
+GO:0016491
+GO:0015979
+IgC1_CH1_IgEG
+GO:0003723
+GO:0006508
+GO:0020037
+GO:0006355
+GO:0006468
+GO:0005975
+IgV_L_kappa
+GO:0004672
+GO:0003824
+PIRSR630616-2
+GO:0019031
+PIRSR000628-2
+GO:0005576
+PIRSR000605-50
+PIRSR000615-3
+PIRSR000620-2
+PIRSR000636-1
+PIRSR038189-2
+PIRSR628788-1
+PIRSR000550-1
+PIRSR000551-50
+PIRSR000559-1
+PIRSR000604-1
+PIRSR000661-50
+PIRSR037993-1
+PIRSR037993-2
+PIRSR600239-51
+PIRSR630616-1
+PIRSR637770-1
+PIRSR637770-2
+PIRSR638784-1
+GO:0016887
+GO:0019064
+GO:0055085
+PIRSR000554-1
+PIRSR000556-1
+PIRSR000604-2
+PIRSR000606-51
+PIRSR000617-1
+PIRSR000628-1
+PIRSR000632-1
+PIRSR000666-1
+PIRSR037014-1
+PIRSR037281-3
+PIRSR037568-1
+PIRSR038165-50
+PIRSR038172-1
+PIRSR038189-1
+GO:0055036
+IgC1_L
+PIRSR000615-1
+PIRSR000619-1
+PIRSR000620-1
+PIRSR000624-1
+PIRSR000632-2
+PIRSR037393-1
+PIRSR500947-50
+PIRSR500948-1
+PIRSR500950-50
+PIRSR630220-1
+GO:0008270
+PIRSR000552-1
+PIRSR037281-1
+PIRSR037393-2
+PIRSR037921-1
+PIRSR620777-50
+PIRSR630616-3
+Pkinase
+Protein kinase domain
+PIRSR000636-2
+PIRSR614007-2
+GO:0004553
+GO:0046872
+PIRSR000631-1
+PIRSR037921-2
+Betacoronavirus-like spike glycoprotein S1, N-terminal
+CoV_S1_C
+CoV_S2
+Coronavirus spike glycoprotein S1, C-terminal
+Coronavirus spike glycoprotein S2
+GO:0039654
+GO:0046813
+GO:0075509
+bCoV_S1_N
+AdoMet_MTases
+PIRSR000550-3
+PIRSR000552-2
+PIRSR000556-2
+PIRSR000660-1
+PIRSR000666-2
+PIRSR037014-2
+PIRSR628788-2
+Betacoronavirus spike glycoprotein S1, receptor binding
+bCoV_S1_RBD
+GO:0004252
+PIRSR000551-51
+PIRSR000619-2
+PIRSR037568-2
+SARS-CoV-like_Spike_S1_NTD
+PIRSR611284-2
+GO:0005509
+PIRSR000559-2
+PIRSR000605-51
+PIRSR000660-2
+PIRSR038172-2
+GO:0009523
+PIRSR617711-2
+GO:0005737
+GO:0005506
+GO:0007186
+PIRSR000554-2
+PIRSR500948-2
+PIRSR630220-2
+GO:0009055
+PIRSR000095-1
+PIRSR611284-1
+PIRSR614007-1
+PIRSR617711-1
+GO:0003700
+PIRSR037281-2
+PIRSR000617-2
+PIRSR000624-2
+GO:0000287
+PIRSR614058-1
+GO:0009058
+WD40
+GO:0003676
+GO:0006351
+PIRSR601344-1
+GO:0030089
+GO:0005198
+PDZ domain
+GO:0009522
+PIRSR000094-3
+WD domain, G-beta repeat
+PIRSR000661-51
+GO:0004930
+PIRSR000615-2
+Chloroa_b-bind
+Chlorophyll A-B binding protein
+GO:0003899
+GO:0005634
+GO:0016787
+GO:0008168
+EF-hand domain pair
+FN3
+Fibronectin type III domain
+fn3
+Enoyl-(Acyl carrier protein) reductase
+adh_short_C2
+Phycobilisome
+Phycobilisome protein
+GO:0004497
+ABC transporter
+ABC_tran
+PDZ
+Methyltransferase domain
+PIRSR000081-1
+Phycocyanin
+GO:0051536
+GO:0016616
+GO:0000166
+GO:0051287
+GO:0016705
+Tetratricopeptide repeat
+GO:0009538
+GO:0007165
+Helicase conserved C-terminal domain
+Helicase_C
+GO:0019028
+GO:0043565
+PIRSR000238-1
+Bacterial extracellular solute-binding protein
+EF-hand_7
+Cytochrome P450
+PIRSR602401-1
+p450
+Glutathione S-transferase, C-terminal domain
+Glutathione S-transferase, N-terminal domain
+GO:0019843
+7 transmembrane receptor (rhodopsin family)
+7tm_1
+GO:0000160
+Response regulator receiver domain
+Response_reg
+adh_short
+short chain dehydrogenase
+GO:0006281
+GO:0016829
+ATP synthase alpha/beta family, nucleotide-binding domain
+ATP-synt_ab
+GO:1902600
+GO:0046983
+PIRSR001145-3
+GO:0030170
+GO:0005525
+GO:0003924
+Immunoglobulin domain
+GO:0022900
+4Fe-4S dicluster domain
+PIRSR602399-1
+GO:0004519
+PIRSR038165-51
+PK_Tyr_Ser-Thr
+Protein tyrosine and serine/threonine kinase
+PIRSR602403-1
+IgV_L_lambda
+PIRSR002937-1
+GO:0008200
+GO:0008234
+PIRSR000350-3
+GO:0042597
+PP-binding
+Phosphopantetheine attachment site
+GO:0004812
+PIRSR001149-4
+GO:0003968
+Bacterial regulatory proteins, tetR family
+TetR_N
+EFh
+alpha/beta hydrolase fold
+GST_C
+Main (cytGST)
+Main_(cytGST)
+LSM
+LSM domain
+GO:0006396
+Methyltransf_25
+Cpn60_TCP1
+TCP-1/cpn60 chaperonin family
+GST_N
+2Fe-2S iron-sulfur cluster binding domain
+PIRSR500947-51
+PIRSR620777-51
+GO:0050660
+ILK
+SARS-CoV-2_Spike_S1_RBD
+PIRSR000081-2
+GO:0007155
+GO:0019867
+GO:0006457
+Globin
+Pyridine nucleotide-disulphide oxidoreductase
+AAA
+ATP synthase alpha/beta family, beta-barrel domain
+ATP-synt_ab_N
+GO:0046034
+AAA domain
+ECH_1
+Enoyl-CoA hydratase/isomerase
+crotonase-like
+Trypsin
+GO:0050661
+Zinc finger, C2H2 type
+zf-C2H2
+GO:0006260
+UQ_con
+Ubiquitin-conjugating enzyme
+PIRSR000006-2
+GO:0006099
+Nitroreductase
+Nitroreductase family
+GO:0016301
+PIRSR006809-1
+PIRSR006809-2
+I-set
+Immunoglobulin I-set domain
+Periplasmic binding protein
+PIRSR000385-2
+GO:0015986
+Ig_3
+GO:0006139
+PIRSR005784-1
+PRTases_typeI
+GO:0016747
+DEAD
+DEAD/DEAH box helicase
+AMP-binding
+AMP-binding enzyme
+GO:0008237
+GO:0000398
+PIRSR000209-1
+DUF1968
+Domain of unknown function (DUF1968)
+IgV_TCR_alpha
+fer2
+GO:0022857
+PIRSR000617-4
+GO:0006955
+GO:0006520
+GO:0008233
+Alpha amylase, catalytic domain
+Alpha-amylase
+PIRSR001024-5
+GO:0006284
+PIRSR000077-4
+Thioredoxin
+B domain
+GO:0005618
+Pyr_redox_2
+Pyr_redox_dim
+Pyridine nucleotide-disulphide oxidoreductase, dimerisation domain
+PIRSR036517-1
+GO:0005615
+Ldh_1_C
+Ldh_1_N
+PIRSR000102-3
+lactate/malate dehydrogenase, NAD binding domain
+lactate/malate dehydrogenase, alpha/beta C-terminal domain
+GO:0006310
+PIRSR001174-2
+ATP-synt_VA_C
+C-terminal domain of V and A type ATP synthase
+GO:0008083
+GO:0008236
+GO:0006418
+SBP_bac_1
+PIRSR612803-2
+Kazal-type serine protease inhibitor domain
+Enolase
+Enolase C-terminal domain-like
+MR_MLE_C
+PIRSR615654-3
+PIRSR633978-3
+PIRSR634603-3
+Tryp_SPc
+GO:0000272
+Aminotran_1_2
+Aminotransferase class I and II
+NUDIX
+NUDIX domain
+PIRSR603561-2
+Isoprenoid Synthase Type I
+Isoprenoid_Synthase_Type_I
+GO:0004176
+GO:0004674
+AhpC-TSA
+AhpC/TSA family
+GO:0016209
+Haloacid Dehalogenase
+Haloacid_Dehalogenase
+Zinc finger, C3HC4 type (RING finger)
+GO:0006801
+PIRSR000232-1
+Peripla_BP_2
+GO:0017001
+GO:0004601
+GO:0010181
+HDc
+PIRSR006429-1
+Phosphoribosyl transferase domain
+Pribosyltran
+PAS
+EGF-like domain
+Glutathione Transferase (cytosolic)
+Glutathione_Transferase_(cyto
+LRR_8
+Leucine rich repeat
+S4
+S4 domain
+Aldedh
+Aldehyde dehydrogenase family
+PIRSR000197-1
+PIRSR036489-3
+PIRSR036492-1
+PIRSR617656-1
+PIRSR617656-3
+SDR_c
+GAF domain
+PIRSR614058-2
+GO:0006352
+RPL6p_RPL6a_RPL9e_RPL9o
+Ribosomal protein L6
+Ribosomal_L6
+GO:0042549
+IMP dehydrogenase / GMP reductase domain
+IMPDH
+PIRSR000130-3
+Ank_2
+Ankyrin repeats (3 copies)
+GO:0019684
+FAD binding domain
+GO:0016592
+ABC transporter transmembrane region
+ABC_membrane
+GO:0140359
+GO:0009539
+PIRSR026389-4
+PIRSR000183-3
+GO:0006952
+PIRSR000188-2
+Alpha amylase, C-terminal all-beta domain
+Alpha-amylase_C
+GO:0043169
+PIRSR037293-1
+TRX_family
+PHD
+PHD-finger
+GO:0051082
+GO:0019871
+IgG_binding_B
+Hg-II_reductase_MerA
+PIRSR000350-2
+CCP
+GO:0019752
+Lac_mal_DH
+PIRSR000102-1
+Rhodanese
+Rhodanese-like domain
+2-C-methyl-D-erythritol 4-phosphate cytidylyltransferase
+CDP-ME_synthetase
+GO:0070567
+IspD
+SH3 domain
+SH3_1
+EGF_CA
+PIRSR001155-2
+SBP_bac_8
+Amino_oxidase
+Flavin containing amine oxidoreductase
+PIRSR038051-1
+MR_MLE_N
+Mandelate racemase / muconate lactonizing enzyme, N-terminal domain
+PIRSR633977-3
+PIRSR634611-3
+GO:0006364
+PIRSR001138-1
+PIRSR001141-1
+PIRSR001143-1
+PIRSR001145-1
+PIRSR001146-1
+PIRSR001149-1
+PIRSR001150-1
+PIRSR036370-1
+PIRSR036376-50
+PIRSR037933-1
+PIRSR037935-1
+PIRSR037941-1
+Cellulase
+AAT_like
+Variant SH3 domain
+GO:0004659
+GO:0008299
+PIRSR000138-2
+AHPC
+PIRSR000008-1
+PIRSR000008-2
+GO:0006779
+GO:0004784
+Iron/manganese superoxide dismutases, C-terminal domain
+Sod_Fe_C
+PIRSR001549-1
+RNA recognition motif
+RRM_1
+Beta-lactamase enzyme family
+Beta-lactamase2
+GO:0008800
+GO:0030655
+GO:0006979
+PIRSR017269-1
+GO:0046933
+GO:0004197
+Ribosomal protein L7Ae/L30e/S12e/Gadd45 family
+Ribosomal_L7Ae
+GO:0003755
+Abhydrolase_1
+GO:0043190
+GO:0043546
+Molybdopterin
+Molybdopterin oxidoreductase
+Molydop_binding
+Molydopterin dinucleotide binding domain
+GO:0006886
+Glyco_hydro_3
+Glycosyl hydrolase family 3 N terminal domain
+Glyoxalase
+Glyoxalase/Bleomycin resistance protein/Dioxygenase superfamily
+Class I Histocompatibility antigen, domains alpha 1 and 2
+MHC_I
+CBS
+CBS domain
+AMP-binding enzyme C-terminal domain
+AMP-binding_C
+GO:0005739
+GO:0016791
+haloacid dehalogenase-like hydrolase
+HD domain
+GO:0006633
+PIRSR602402-1
+IgC_TCR_alpha
+GAF
+GO:0005886
+SnoaL-like domain
+Cytochrom_B562
+Cytochrome b562
+Fer2
+TyrPK_CSF1-R
+PIRSR005091-3
+PIRSR635626-2
+Sulfatase
+Ribosomal S17
+Ribosomal_S17e
+RAMP superfamily
+RAMPs
+LPMO_10
+LPMO_AA10
+Lytic polysaccharide mono-oxygenase, cellulose-degrading
+Ribosomal proteins 50S-L15, 50S-L18e, 60S-L27A
+Ribosomal_L27A
+IgC1_CH3_IgAGD_CH4_IgAEM
+PIRSR000130-4
+PIRSR000235-1
+PIRSR000235-3
+rhv_like
+MCM
+MCM AAA-lid domain
+MCM P-loop domain
+MCM_lid
+RPS13p_RPS13a_RPS18e_RPS13o
+Ribosomal protein S13/S18
+Ribosomal_S13
+HSP70
+Hsp70 protein
+Fer4_7
+PIRSR000068-1
+ATPase family associated with various cellular activities (AAA)
+GO:0006811
+GO:0005125
+APC_alpha
+VWA
+von Willebrand factor type A domain
+Asparaginase
+BTB
+BTB/POZ domain
+Homeodomain
+homeodomain
+GO:2001070
+PIRSR001021-2
+PIRSR036917-2
+TauD
+Taurine catabolism dioxygenase TauD, TfdA family
+Glutaredoxin
+GO:0035091
+Lipocalin
+Lipocalin / cytosolic fatty-acid binding protein family
+GO:0005833
+GO:0015671
+GO:0000049
+PIRSR000350-4
+FERM_B-lobe
+PIRSR002486-1
+Sushi
+Sushi repeat (SCR repeat)
+GO:0030246
+Asp
+Eukaryotic aspartyl protease
+PIRSR609121-1
+PIRSR633144-1
+PIRSR000102-2
+GO:0016773
+PALP
+Pyridoxal-phosphate dependent enzyme
+Scorpion toxin-like domain
+Toxin_3
+neurotoxins_LC_scorpion
+GO:0005085
+RhoGEF
+RhoGEF domain
+ATP-synt_F1_beta_C
+ATP-synt_F1_beta_N
+ATPase_subunit_beta
+F1-ATPase_beta_CD
+GO:0004867
+GO:0009289
+M23_peptidase
+Peptidase family M23
+Peptidase_M23
+Peptidase_S8
+Subtilase family
+GO:0005507
+Kazal_1
+Cellulase (glycosyl hydrolase family 5)
+PIRSR000517-1
+EF-hand_8
+GO:0019825
+GO:0000105
+PIRSR017340-1
+PIRSR604385-2
+GO:0071949
+PH domain
+Polyprenyl synthetase
+Trans_IPPS_HT
+polyprenyl_synt
+2-Hacid_dh_C
+D-isomer specific 2-hydroxyacid dehydrogenase, NAD binding domain
+LRR_6
+Leucine Rich repeat
+Lon protease (S16) C-terminal proteolytic domain
+Lon_C
+PIRSR001174-1
+Lactamase_B
+Metallo-beta-lactamase superfamily
+Haloacid dehalogenase-like hydrolase
+PIRSR000915-1
+PIRSR000915-2
+PIRSR000915-3
+PIRSR004682-4
+CY
+GO:0004869
+PIRSR617512-2
+PIRSR617512-3
+Forkhead
+Forkhead domain
+Beta/Gamma crystallin
+Crystall
+Cadherin
+Cadherin domain
+Cadherin_repeat
+GO:0007156
+KH domain
+KH_1
+Peptidase_C1
+AA_kinase
+Amino acid kinase family
+PIRSR016496-1
+GO:0047429
+Iron/manganese superoxide dismutases, alpha-hairpin domain
+MnSOD_FeSOD
+PIRSR000349-1
+Sod_Fe_N
+ADH_N
+Alcohol dehydrogenase GroES-like domain
+GO:0006164
+Iso_dh
+Isocitrate/isopropylmalate dehydrogenase
+Toprim domain
+FGF
+Fibroblast growth factor
+TPR_16
+TPR_19
+TPR_8
+PIRSR618044-1
+GO:0008171
+Tetracyclin repressor-like, C-terminal domain
+GO:0004356
+Gln-synt_C
+Glutamine synthetase, catalytic domain
+PIRSR604809-2
+2OG-Fe(II) oxygenase superfamily
+GO:0045259
+Ig
+GO:0046789
+Haemagglutinin
+Hemagglutinin
+Photosystem I reaction centre subunit XI
+PsaL
+PIRSR603564-2
+MR_like
+Amidohydro_1
+Amidohydrolase family
+PIRSR039004-1
+GO:0006511
+PIRSR601508-1
+BKR_SDR_c
+4Fe-4S binding domain
+Fer4_11
+PIRSR006439-50
+Bacterial transferase hexapeptide (six repeats)
+Hexapep
+GO:0046677
+GO:0004568
+GO:0006032
+GO:0016998
+Cytochrome C oxidase, cbb3-type, subunit III
+Cytochrome_CBB3
+PIRSR000005-1
+PIRSR000005-2
+PIRSR000025-1
+PIRSR000025-2
+Glyco_hydro_3_C
+Glycosyl hydrolase family 3 C-terminal domain
+PA14
+PA14 domain
+Bac_rhodopsin
+Bacteriorhodopsin-like protein
+DJ-1/PfpI family
+DJ-1_PfpI
+Peripla_BP_4
+Periplasmic binding protein domain
+Exonuclease
+RNase_T
+Acetyltransf_1
+Acetyltransferase (GNAT) family
+NAT_SF
+Abhydrolase_3
+LAGLIDADG endonuclease
+LAGLIDADG_1
+PCNA
+EGF
+LRR_1
+Leucine Rich Repeat
+GO:0007018
+GO:0008017
+GO:0005681
+Ribosomal protein S4/S9 N-terminal domain
+Ribosomal_S4
+Ribosomal protein S8
+Ribosomal_S8
+Ribosomal protein S17
+Ribosomal_S17
+Ribosomal_uS17
+PIRSR000389-1
+TS_Pyrimidine_HMase
+Thymidylat_synt
+Thymidylate synthase
+ATP-dependent protease La (LON) substrate-binding domain
+LON_substr_bdg
+DHDPS
+Dihydrodipicolinate synthetase family
+PIRSR001365-1
+PIRSR001365-2
+GO:0008173
+PIRSR029256-1
+SpoU rRNA Methylase family
+SpoU_methylase
+PIRSR621190-2
+GFO_IDH_MocA
+Oxidoreductase family, NAD-binding Rossmann fold
+Beta-lactamase
+PIRSR000445-3
+Bacterial Ig domain
+zf-C3HC4
+SnoaL_2
+KOW
+KOW motif
+Ricin-type beta-trefoil lectin domain-like
+RicinB_lectin_2
+ANF_receptor
+Receptor family ligand binding region
+Fic
+Fic/DOC family
+PIRSR500950-51
+Carb_anhydrase
+Eukaryotic-type carbonic anhydrase
+PIRSR600917-52
+Ribosomal protein L13
+Ribosomal_L13
+Ribosomal protein 60S L18 and 50S L18e
+Ribosomal_L18
+Beta-lactamase superfamily domain
+Lactamase_B_2
+GO:0042803
+Hormone_recep
+Ligand-binding domain of nuclear hormone receptor
+NR_LBD_ER
+tRNA synthetase class II core domain (G, H, P, S and T)
+tRNA-synt_2b
+Biopterin-dependent aromatic amino acid hydroxylase
+Biopterin_H
+GO:0016714
+PIRSR000336-1
+PIRSR601273-2
+GO:0042301
+HATPase_c
+Histidine kinase-, DNA gyrase B-, and HSP90-like ATPase
+FMO-like
+Flavin-binding monooxygenase-like
+GO:0004499
+GO:0032549
+RNA polymerase Rpb2, domain 2
+RNA polymerase Rpb2, domain 3
+RNA polymerase Rpb2, domain 6
+RNA polymerase Rpb2, domain 7
+RNA polymerase beta subunit
+RNA_pol_B_RPB2
+RNA_pol_Rpb2_1
+RNA_pol_Rpb2_2
+RNA_pol_Rpb2_3
+RNA_pol_Rpb2_6
+RNA_pol_Rpb2_7
+PIRSR002490-1
+Ribosomal protein L33
+Ribosomal_L33
+GO:0003950
+PARP
+Poly(ADP-ribose) polymerase catalytic domain
+PAS fold
+GO:0016831
+PIRSR000290-1
+PIRSR603912-52
+GO:0008137
+TPR_12
+Ank
+Ankyrin repeat
+Ankyrin repeats (many copies)
+Ribosomal protein S14p/S29e
+Ribosomal_S14
+GO:0004675
+PSI_PsaE
+Photosystem I reaction centre subunit IV / PsaE
+IgC1_MHC_I_alpha3
+GO:0009767
+NADH:quinone oxidoreductase/Mrp antiporter, TM
+Proton_antipo_M
+GO:0042254
+Elongation factor Tu GTP binding domain
+GTP_EFTU
+SPRY
+SPRY domain
+MCM N-terminal domain
+MCM OB domain
+MCM_N
+MCM_OB
+HRM
+Hormone receptor domain
+GO:0015934
+Photosystem II reaction centre X protein (PsbX)
+PsbX
+GO:0005761
+Trypsin-like peptidase domain
+Trypsin_2
+GO:0005839
+GO:0051603
+Proteasome
+Proteasome subunit
+Rhv
+picornavirus capsid protein
+GO:0005179
+RNA polymerase Rpb5, C-terminal domain
+RNA_pol_Rpb5_C
+AAA+ lid domain
+Sigma-70 region 2
+Sigma70_r2
+RNA polymerase Rpb3/Rpb11 dimerisation domain
+GO:0016765
+G-alpha
+G-protein alpha subunit
+GO:0019001
+GO:0031683
+PIRSR601019-1
+PIRSR601019-2
+PIRSR602976-2
+FAD_binding_6
+NAD_binding_1
+Oxidoreductase FAD-binding domain
+Oxidoreductase NAD-binding domain
+PIRSR000207-1
+PIRSR000361-1
+PIRSR601834-1
+PIRSR600732-1
+YCF9
+Ycf9
+Ribosomal L29 protein
+Ribosomal_L29
+Ribosomal_L29_HIP
+GO:0005216
+Ion transport protein
+Ion_trans
+BPD_transp_1
+Binding-protein-dependent transport system inner membrane component
+TM_PBP2

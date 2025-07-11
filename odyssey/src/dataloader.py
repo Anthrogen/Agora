@@ -4,7 +4,8 @@ import random
 from torch.utils.data import DataLoader
 from typing import Tuple
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from odyssey.src.tokenizer import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer, SS8Tokenizer, SASATokenizer
+from odyssey.src.tokenizer import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer, SS8Tokenizer, SASATokenizer, PLDDTTokenizer
+from odyssey.src.tokenizer import GlobalAnnotationTokenizer, PerResidueAnnotationTokenizer
 import math
 from abc import abstractmethod
 
@@ -137,6 +138,8 @@ class MaskingDataLoader(DataLoader):
 
         self.device = device if device is not None else torch.device("cpu")
         self.L = model_cfg.max_len
+        self.K = model_cfg.max_annotations_per_residue
+        self.G = model_cfg.max_len_global
             
         # TODO: get batch size directly from train_cfg.batch_size and apply, if we keep the train_cfg in the constructor argument list.
         # Override collate_fn with our custom one
@@ -149,7 +152,10 @@ class MaskingDataLoader(DataLoader):
         self.structure_tokenizer = StructureTokenizer(self.L, fsq_encoder, reapply_bos_eos_pad=True)
         self.ss8_tokenizer = SS8Tokenizer(self.L)
         self.sasa_tokenizer = SASATokenizer(self.L)
-
+        self.global_annotation_tokenizer = GlobalAnnotationTokenizer(self.G)
+        self.per_residue_annotation_tokenizer = PerResidueAnnotationTokenizer(self.L, self.K)
+        self.plddt_tokenizer = PLDDTTokenizer(self.L)
+        
         if tracks['struct']:
             assert fsq_encoder is not None
 
@@ -161,12 +167,12 @@ class MaskingDataLoader(DataLoader):
         data = [item for item in data if item is not None]
         if len(data)==0: return None # Return None if all items were filtered out
 
-        batch = MaskedBatch(data, self.tracks, self.sequence_tokenizer, self.structure_tokenizer, self.coordinates_tokenizer, 
-                              self.ss8_tokenizer, self.sasa_tokenizer, device=self.device, min_unmasked=self.min_unmasked, generator=self.generator)
+        batch = MaskedBatch(data, self.tracks, self.sequence_tokenizer, self.structure_tokenizer, self.coordinates_tokenizer, self.ss8_tokenizer, self.sasa_tokenizer, 
+                              self.global_annotation_tokenizer, self.per_residue_annotation_tokenizer, self.plddt_tokenizer, device=self.device, min_unmasked=self.min_unmasked, generator=self.generator)
     
         self.sample_masks(batch)
 
-        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa')]:
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa' and t != 'global_annotation' and t != 'per_residue_annotation' and t != 'plddt')]:
             #print(f"Iterative over track {track}")
             batch.apply_mask(track, batch.masks[track])
 
@@ -188,7 +194,7 @@ class SimpleDataLoader(MaskingDataLoader):
         self.simple_mask_prob = {'seq': train_cfg.mask_config.mask_prob_seq, 'coords': train_cfg.mask_config.mask_prob_struct}
 
     def sample_masks(self, batch):
-        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa')]:
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa' and t != 'global_annotation' and t != 'per_residue_annotation' and t != 'plddt')]:
 
             # Create masks with fixed probabilities
             mask = torch.rand(batch.B, batch.L, device=self.device) < self.simple_mask_prob[track]
@@ -205,7 +211,7 @@ class ComplexDataLoader(MaskingDataLoader):
         Samples different mask rates for each protein in the batch for structure.
         Within each protein, masking is IID Bernoulli.
         """
-        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa')]:
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa' and t != 'global_annotation' and t != 'per_residue_annotation' and t != 'plddt')]:
 
             # Sample mask rates for each protein in batch
             probs = _sample_cosine(batch.B, device=self.device)
@@ -223,7 +229,7 @@ class NoMaskDataLoader(MaskingDataLoader):
         super(NoMaskDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, **kwargs)
     
     def sample_masks(self, batch):
-        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa')]:
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa' and t != 'global_annotation' and t != 'per_residue_annotation' and t != 'plddt')]:
             batch.masks[track] = torch.zeros(batch.B, batch.L, device=self.device).bool()
 
 
@@ -257,7 +263,7 @@ class DiffusionDataLoader(MaskingDataLoader):
 
         batch.metadata.update({'timestep_indices': timestep_indices, 'cumulative_noise': cumulative_noise_level, 'inst_noise': inst_noise_levels})
 
-        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa')]:
+        for track in [t for t in batch.tracks if (batch.tracks[t] and t != 'struct' and t != 'ss8' and t != 'sasa' and t != 'global_annotation' and t != 'per_residue_annotation' and t != 'plddt')]:
 
             mask_prob = 1 - torch.exp(-cumulative_noise_level)
             mask_prob_expanded = mask_prob.expand(batch.B, batch.L)
@@ -268,8 +274,8 @@ class DiffusionDataLoader(MaskingDataLoader):
 
 
 class MaskedBatch():
-    def __init__(self, data, tracks, sequence_tokenizer, structure_tokenizer, coordinates_tokenizer,
-                  ss8_tokenizer, sasa_tokenizer, device=None, min_unmasked={'seq': 0, 'struct': 0, 'coords': 0}, generator=None):
+    def __init__(self, data, tracks, sequence_tokenizer, structure_tokenizer, coordinates_tokenizer, ss8_tokenizer, sasa_tokenizer, global_annotation_tokenizer,
+                  per_residue_annotation_tokenizer, plddt_tokenizer, device=None, min_unmasked={'seq': 0, 'struct': 0, 'coords': 0}, generator=None):
         
         """Custom collate function that applies discrete diffusion noise."""
         self.device = device if device is not None else torch.device("cpu")
@@ -287,19 +293,20 @@ class MaskedBatch():
 
         # Unpack batch from ProteinDataset
         self.masked_data = {'seq': None, 'struct': None, 'coords': None}
-        self.unmasked_data = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None}
+        self.unmasked_data = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None, 'global_annotation': None, 'per_residue_annotation': None, 'plddt': None}
         self.masks = {'seq': None, 'struct': None, 'coords': None}
-        self.beospank = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None}
+        self.beospank = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None, 'global_annotation': None, 'per_residue_annotation': None, 'plddt': None}
         self.metadata = {}
 
-        seq_list, coords_list, ss8_list, sasa_list, _ = zip(*data)
+        seq_list, coords_list, ss8_list, sasa_list, global_annotation_list, per_residue_annotation_list, plddt_list, _ = zip(*data)
         
         # Stack lengths
         self.B = len(seq_list)
         self.L = sequence_tokenizer.full_length
+        self.G = global_annotation_tokenizer.full_length
 
         #########################################################################
-        # Tokenize sequences and structures
+        # Tokenize sequences, structures, and context-specific data
         #########################################################################
         if tracks['seq']:
             seq_data = []
@@ -341,6 +348,32 @@ class MaskedBatch():
             self.unmasked_data['sasa'] = torch.stack(self.unmasked_data['sasa'], dim=0).to(self.device)
             self.beospank['sasa'] = torch.stack(self.beospank['sasa'], dim=0).to(self.device).bool()
 
+        # Tokenize global annotation data if enabled
+        if tracks['global_annotation']:
+            global_annotation_data = []
+            for global_annotation in global_annotation_list:
+                global_annotation_data.append(global_annotation_tokenizer.tokenize(global_annotation))
+            self.unmasked_data['global_annotation'], self.beospank['global_annotation'] = zip(*global_annotation_data)
+            self.unmasked_data['global_annotation'] = torch.stack(self.unmasked_data['global_annotation'], dim=0).to(self.device)
+            self.beospank['global_annotation'] = torch.stack(self.beospank['global_annotation'], dim=0).to(self.device).bool()
+
+        # Tokenize per-residue annotation data if enabled
+        if tracks['per_residue_annotation']:
+            per_residue_annotation_data = []
+            for per_residue_annotation in per_residue_annotation_list:
+                per_residue_annotation_data.append(per_residue_annotation_tokenizer.tokenize(per_residue_annotation))
+            self.unmasked_data['per_residue_annotation'], self.beospank['per_residue_annotation'] = zip(*per_residue_annotation_data)
+            self.unmasked_data['per_residue_annotation'] = torch.stack(self.unmasked_data['per_residue_annotation'], dim=0).to(self.device)
+            self.beospank['per_residue_annotation'] = torch.stack(self.beospank['per_residue_annotation'], dim=0).to(self.device).bool()
+
+        # Tokenize pLDDT data if enabled
+        if tracks['plddt']:
+            plddt_data = []
+            for plddt in plddt_list:
+                plddt_data.append(plddt_tokenizer.tokenize(plddt))
+            self.unmasked_data['plddt'], self.beospank['plddt'] = zip(*plddt_data)
+            self.unmasked_data['plddt'] = torch.stack(self.unmasked_data['plddt'], dim=0).to(self.device)
+            self.beospank['plddt'] = torch.stack(self.beospank['plddt'], dim=0).to(self.device).bool()
 
     def apply_mask(self, track, desired_mask):
         # The following function will take as input self.masks and OVERWRITE these masks

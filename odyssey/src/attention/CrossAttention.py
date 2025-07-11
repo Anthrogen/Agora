@@ -44,25 +44,25 @@ class CrossAttention(nn.Module):
         context_mask: [B, K] boolean tensor where True = valid, False = invalid/padding
         """
         B, L, C = target.shape
-        _, K, _ = context.shape
+        _, G, _ = context.shape
                 
         # Project to queries, keys, values using separate linear layers
         q = self.q(target).reshape(B, L, self.heads, self.head_dim).permute(0, 2, 1, 3)  # [B, heads, L, head_dim]
-        k = self.k(context).reshape(B, K, self.heads, self.head_dim).permute(0, 2, 1, 3)  # [B, heads, K, head_dim]
-        v = self.v(context).reshape(B, K, self.heads, self.head_dim).permute(0, 2, 1, 3)  # [B, heads, K, head_dim]
+        k = self.k(context).reshape(B, G, self.heads, self.head_dim).permute(0, 2, 1, 3)  # [B, heads, G, head_dim]
+        v = self.v(context).reshape(B, G, self.heads, self.head_dim).permute(0, 2, 1, 3)  # [B, heads, G, head_dim]
         
         # Apply rotary position embeddings
         q, _ = self.rotary_emb(q=q, k=q, model_type="SA")  # Apply to q with length L
-        _, k = self.rotary_emb(q=k, k=k, model_type="SA")  # Apply to k with length K
+        _, k = self.rotary_emb(q=k, k=k, model_type="SA")  # Apply to k with length G
         
         # Attention
-        attn = (q @ k.transpose(-2, -1)) * (self.head_dim ** -0.5)  # [B, heads, L, K]
+        attn = (q @ k.transpose(-2, -1)) * (self.head_dim ** -0.5)  # [B, heads, L, G]
         
         # Apply context masking if provided (mask invalid context positions)
         if context_mask is not None:
             # Mask attention scores where context keys (columns) are invalid
             # Invalid context positions shouldn't be attended to
-            score_mask = context_mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, K]
+            score_mask = context_mask.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, G]
             attn = attn.masked_fill(~score_mask, float('-inf'))
         
         attn = attn.softmax(dim=-1)

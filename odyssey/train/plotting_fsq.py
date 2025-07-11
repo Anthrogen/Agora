@@ -1,28 +1,90 @@
 """
 Plot validation losses for different model types in FSQ training.
-Loads CSV files saved by train.py and creates comparison plots
-with 95% confidence intervals on a log scale.
+Automatically discovers models in checkpoint directories by examining model.pt files,
+extracts model types (GA/SA/RA/SC), and plots their loss histories.
 """
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+import torch
+from typing import Dict, List, Tuple
 import scipy.stats as stats
 
+# Import required for loading checkpoints
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from odyssey.src.model_librarian import load_model_from_checkpoint
 
-def load_validation_data(checkpoint_dir: str, model_type: str, style: str, mask_config: str):
-    """Load validation data for a given model type, style, and mask configuration."""
-    # New filename pattern: {model_type}_{style}_{mask_config}_epoch_metrics.csv
-    csv_path = Path(checkpoint_dir) / f"{model_type}_{style}_{mask_config}_epoch_metrics.csv"
+
+def discover_models_in_directory(base_dir: str) -> Dict[str, Tuple[str, str]]:
+    """
+    Discover models in checkpoint directories by examining model.pt files.
     
-    # Check if file exists
-    if not csv_path.exists():
-        raise FileNotFoundError(f"Could not find metrics file: {csv_path}")
+    Args:
+        base_dir: Base directory containing subdirectories with model.pt files
+        
+    Returns:
+        Dictionary mapping model_type -> (checkpoint_path, history_path)
+    """
+    base_path = Path(base_dir)
+    if not base_path.exists():
+        raise FileNotFoundError(f"Base directory does not exist: {base_dir}")
+    
+    models = {}
+    
+    # Scan all subdirectories for model.pt files
+    for subdir in base_path.iterdir():
+        if not subdir.is_dir():
+            continue
+            
+        model_path = subdir / "model.pt"
+        history_path = subdir / "history.csv"
+        
+        if not model_path.exists():
+            print(f"Warning: No model.pt found in {subdir}")
+            continue
+            
+        if not history_path.exists():
+            print(f"Warning: No history.csv found in {subdir}")
+            continue
+        
+        try:
+            # Load checkpoint to extract model type
+            device = torch.device("cpu")  # Load on CPU for inspection only
+            checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+            model_cfg = checkpoint['model_config']
+            
+            # Extract model type from configuration
+            model_type = model_cfg.first_block_cfg.initials()
+            
+            # Store the mapping
+            if model_type in models:
+                print(f"Warning: Multiple models found for type {model_type}. Using {subdir}")
+            
+            models[model_type] = (str(model_path), str(history_path))
+            print(f"Found {model_type} model in {subdir}")
+            
+        except Exception as e:
+            print(f"Error processing {model_path}: {e}")
+            continue
+    
+    if not models:
+        raise ValueError(f"No valid models found in {base_dir}")
+    
+    return models
+
+
+def load_validation_data_from_history(history_path: str) -> Dict[str, np.ndarray]:
+    """Load validation data from history.csv file."""
+    if not Path(history_path).exists():
+        raise FileNotFoundError(f"Could not find history file: {history_path}")
     
     # Load data with header
-    data = np.loadtxt(csv_path, delimiter=',', skiprows=1)  # Skip header row
+    data = np.loadtxt(history_path, delimiter=',', skiprows=1)  # Skip header row
     
     # Read header to understand column structure
-    with open(csv_path, 'r') as f:
+    with open(history_path, 'r') as f:
         header = f.readline().strip().split(',')
     
     # Create dictionary to access columns by name
@@ -55,17 +117,34 @@ def calculate_confidence_interval(data, confidence=0.95):
     return mean_val, ci_lower, ci_upper
 
 
-def plot_validation_losses(checkpoint_dir: str = "checkpoints", 
-                         model_types: list = ["SA", "GA", "RA", "SC"],
-                         style: str = "stage_1",
-                         mask_config: str = "simple",
-                         output_file: str = None):
-    """Create validation loss plots with confidence intervals."""
+def plot_validation_losses_auto(base_dir: str, 
+                               output_file: str = None,
+                               loss_key: str = "val_rmsd"):
+    """
+    Automatically discover and plot validation losses for models in checkpoint directories.
     
+    Args:
+        base_dir: Base directory containing model checkpoint subdirectories
+        output_file: Output filename for the plot (auto-generated if None)
+        loss_key: Key to use for extracting loss values from history (default: "val_loss")
+    """
+    
+    # Discover models in the directory
+    print(f"Scanning directory: {base_dir}")
+    models = discover_models_in_directory(base_dir)
+    
+    if not models:
+        print(f"Error: No models found in {base_dir}")
+        return
+    
+    print(f"Found models: {list(models.keys())}")
+    
+    # Generate output filename if not provided
     if output_file is None:
-        output_file = f"validation_losses_{style}_{mask_config}.png"
+        base_name = Path(base_dir).name
+        output_file = f"validation_losses_{base_name}.png"
     
-    # Set up the figure with a single subplot for RMSD (FSQ models)
+    # Set up the figure
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     
     # Colors for different model types
@@ -73,13 +152,13 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
         "SA": "#1f77b4",  # blue
         "GA": "#ff7f0e",  # orange
         "RA": "#2ca02c",  # green
-        "SC": "#d62728"   # red for SelfConsensus
+        "SC": "#d62728"   # red
     }
     
     # Full names for model types
     model_names = {
         "SA": "Self Attention",
-        "GA": "Geometric Attention",
+        "GA": "Geometric Attention", 
         "RA": "Reflexive Attention",
         "SC": "Self Consensus"
     }
@@ -87,19 +166,20 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
     data_found = False
     num_epochs = 0
     
-    # Process each model type
-    for model_type in model_types:
+    # Process each discovered model
+    for model_type in sorted(models.keys()):
+        model_path, history_path = models[model_type]
+        
         try:
-            # Load data
-            data_dict = load_validation_data(checkpoint_dir, model_type, style, mask_config)
+            # Load history data
+            data_dict = load_validation_data_from_history(history_path)
             
-            # Get validation loss (assuming RMSD loss for FSQ models)
-            val_loss_key = 'val_loss'
-            if val_loss_key not in data_dict:
-                print(f"Warning: No validation loss found for {model_type}")
+            # Get validation loss
+            if loss_key not in data_dict:
+                print(f"Warning: No {loss_key} found for {model_type}")
                 continue
                 
-            val_loss = data_dict[val_loss_key]
+            val_loss = data_dict[loss_key]
             if isinstance(val_loss, (int, float)):  # Single value
                 val_loss = np.array([val_loss])
             
@@ -109,33 +189,31 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
             
             # For single runs, no confidence interval calculation needed
             if val_loss.ndim == 1:
-                rmsd_mean = val_loss
-                rmsd_lower = val_loss
-                rmsd_upper = val_loss
+                loss_mean = val_loss
+                loss_lower = val_loss
+                loss_upper = val_loss
             else:
-                rmsd_mean, rmsd_lower, rmsd_upper = calculate_confidence_interval(val_loss)
+                loss_mean, loss_lower, loss_upper = calculate_confidence_interval(val_loss)
             
-            # Plot RMSD values
-            ax.plot(epochs, rmsd_mean, color=colors.get(model_type, "#333333"), 
-                    label=f'{model_names.get(model_type, model_type)}', linewidth=2)
+            # Plot loss values
+            color = colors.get(model_type, "#333333")
+            label = model_names.get(model_type, model_type)
             
-            if rmsd_lower is not rmsd_upper:  # Only show CI if there's variance
-                ax.fill_between(epochs, rmsd_lower, rmsd_upper, 
-                               color=colors.get(model_type, "#333333"), alpha=0.2)
+            ax.plot(epochs, loss_mean, color=color, label=label, linewidth=2)
             
-        except FileNotFoundError:
-            print(f"Warning: Could not find metrics file for {model_type} {style} {mask_config}")
-            continue
+            if not np.array_equal(loss_lower, loss_upper):  # Only show CI if there's variance
+                ax.fill_between(epochs, loss_lower, loss_upper, color=color, alpha=0.2)
+            
         except Exception as e:
             print(f"Error loading {model_type}: {e}")
             continue
     
     if not data_found:
-        print(f"Error: No data files found for {style} with {mask_config} masking. Please check the checkpoint directory.")
+        print(f"Error: No valid data loaded from {base_dir}")
         plt.close(fig)
         return
     
-    # Customize subplot
+    # Customize plot
     ax.set_xlabel('Epoch', fontsize=12)
     ax.set_ylabel('Validation Loss', fontsize=12)
     ax.set_title('Validation Loss Comparison', fontsize=14)
@@ -144,23 +222,19 @@ def plot_validation_losses(checkpoint_dir: str = "checkpoints",
     ax.set_xlim(1, num_epochs)
     ax.set_yscale('log')
     
-    # Add overall title
-    stage_title = "Stage 1 (Coordinate Reconstruction)" if style == "stage_1" else "Stage 2 (Full Structure Reconstruction)"
-    fig.suptitle(f'{stage_title} - {mask_config.title()} Masking', fontsize=16)
+    # Add overall title based on directory name
+    base_name = Path(base_dir).name
+    fig.suptitle(f'{base_name} - Model Comparison', fontsize=16)
     
     # Adjust layout and save
     plt.tight_layout()
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print(f"Saved validation loss plot to {output_file}")
-
+    plt.show()
 
 if __name__ == "__main__":
-    # Default parameters - can be modified as needed
-    checkpoint_dir = "../../checkpoints/fsq"  # Relative to train folder
-    model_types = ["SC", "SA"]  # Including SC for SelfConsensus
-    style = "stage_1"  # Can be "stage_1" or "stage_2"
-    mask_config = "discrete_diffusion"  # Can be "simple", "complex", "discrete_diffusion", or "no_mask"
-    output_file = f"validation_losses_{style}_{mask_config}.png"
+    # New auto-detection approach - just provide the base directory
+    base_dir = "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config"  # Update this path as needed
     
-    # Create the plots
-    plot_validation_losses(checkpoint_dir, model_types, style, mask_config, output_file)
+    print("Using auto-detection approach...")
+    plot_validation_losses_auto(base_dir)

@@ -35,7 +35,7 @@ from odyssey.train.yaml_expander import expand_yaml_to_directory
 from odyssey.train.generate_experiment_map import generate_experiment_map
 
 
-def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[TrainingConfig], verbose=False):
+def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[TrainingConfig], callback=None):
     # If a user just passes in a single set of configs, listify them.
     if isinstance(model_cfg_list, TransformerConfig) and isinstance(train_cfg_list, TrainingConfig):
         model_cfg_list = [model_cfg_list]
@@ -62,16 +62,16 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
     for i, (model_cfg, train_cfg) in enumerate(zip(model_cfg_list, train_cfg_list)):
         # Use different masking strategies for stage 1 vs stage 2
         if model_cfg.style == "stage_1":
-            tracks = {'seq': False, 'struct': False, 'coords': True, 'ss8': False, 'sasa': False}
+            tracks = {'seq': False, 'struct': False, 'coords': True, 'ss8': False, 'sasa': False, 'global_annotation': False, 'per_residue_annotation': False, 'plddt': False}
             min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
         elif model_cfg.style == "stage_2":
-            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': False, 'sasa': False}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': False, 'sasa': False, 'global_annotation': False, 'per_residue_annotation': False, 'plddt': False}
             min_unmasked = {'seq': 0, 'struct': 0, 'coords': 0}
         elif model_cfg.style == "mlm":
-            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'global_annotation': True, 'per_residue_annotation': True, 'plddt': True}
             min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
         elif model_cfg.style == "discrete_diffusion":
-            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'global_annotation': True, 'per_residue_annotation': True, 'plddt': True}
             min_unmasked = {'seq': 0, 'struct': 0, 'coords': 1}
 
         tracks_list.append(tracks)
@@ -129,7 +129,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         g_val = torch.Generator()
         g_val.manual_seed(data_seed + 5000)
 
-        dataset = ProteinDataset(train_cfg.data_dir, mode=dataset_modes[i], max_length=model_cfg.max_len - 2)
+        dataset = ProteinDataset(train_cfg.data_dir, mode=dataset_modes[i], max_length=model_cfg.max_len - 2, max_length_global=model_cfg.max_len_global - 2)
         val_size = max(1, int(0.2 * len(dataset)))
         train_size = len(dataset) - val_size
 
@@ -257,19 +257,11 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             row = [epoch_train_metrics[k] for k in metric_names] + [epoch_val_metrics[k] for k in metric_names]
             epoch_metrics_all[model_idx].append(row)
 
-        if verbose:
-            WINDOW = 3
-            if isinstance(model, Autoencoder):
-                # Print encoder and decoder parameters:
-                print("Enocder parameters:")
-                for p in model.encoder.parameters():
-                    print(p.data[:WINDOW,:WINDOW])
-                    break
-
-                print("Decoder parameters:")
-                for p in model.decoder.parameters():
-                    print(p.data[:WINDOW,:WINDOW])
-                    break
+        if callback is not None:
+            with torch.no_grad():
+                ret = {'train_metrics': train_metrics_sum_all, 'val_metrics': val_metrics_sum_all, 'model': model}
+                callback(ret)
+            
 
     # Save final checkpoints and metrics for all models
     for model_idx in range(num_models):

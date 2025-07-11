@@ -11,12 +11,16 @@ model_cfg:
     n_heads: 1
     n_layers: 40
     max_len: 2048
+    max_annotations_per_residue: 4
+    max_len_global: 512
     dropout: 0.1
     ff_mult: 4
     reference_model_seed: 42
     latent_dim: 32
     fsq_levels: "7x5x5x5x5"
-    fsq_encoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_simple_model.pt"  # Required for stage_2
+    fsq_encoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt"  # Required for stage_2
+    vocab_per_residue_path: "/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt"
+    vocab_global_path: "/workspace/demo/Odyssey/odyssey/train/vocab_global_annotations.txt"
     
     # First block configuration
     first_block_cfg:

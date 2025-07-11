@@ -2,9 +2,9 @@ from __future__ import annotations
 import torch
 from dataclasses import dataclass, field
 from typing import List, Optional, Any, Dict, Type
-from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS, PLDDT_TOKENS
+from odyssey.src.vocabulary import PER_RESIDUE_ANNOTATION_TOKENS, GLOBAL_ANNOTATION_TOKENS, load_annotation_tokens
 import os
-import json
 from copy import deepcopy
 
 # Global registry to map config types to classes
@@ -269,18 +269,25 @@ class TransformerConfig(Config):
     n_heads:                        int = None  # 12
     n_layers:                       int = None  # 12
     max_len:                        int = None
+    max_annotations_per_residue:    int = None
+    max_len_global:                 int = None
     dropout:                        float = None   # Other architecture params
     ff_mult:                        int = None
     first_block_cfg:                BlockConfig = None  # SelfConsensusConfig, GeometricAttentionConfig, ReflexiveAttentionConfig, or SelfAttentionConfig
     context_cfg:                    BlockConfig = None  # CrossConsensusConfig or CrossAttentionConfig for SS8/SASA injection
     reference_model_seed:           int = None
     fsq_encoder_path:               str = None
+    vocab_per_residue_path:         str = None
+    vocab_global_path:              str = None
 
     # TODO: These need to go.  seq_vocab should come from voacbulary.py and struuct_vocab should come from the FSQEncoder object.
     seq_vocab:                      int = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)  # Sequence tokens + special tokens
     struct_vocab:                   int = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
     ss8_vocab:                      int = len(SS8_TOKENS) + len(SPECIAL_TOKENS)  # SS8 tokens + special tokens
     sasa_vocab:                     int = len(SASA_TOKENS) + len(SPECIAL_TOKENS)  # SASA tokens + special tokens
+    plddt_vocab:                    int = len(PLDDT_TOKENS) + len(SPECIAL_TOKENS)  # pLDDT tokens + special tokens
+    per_residue_annotation_vocab:   int = None  # per-residue annotation tokens + special tokens (set in post init)
+    global_annotation_vocab:        int = None  # global annotation tokens + special tokens (set in post init)
 
     def __post_init__(self):
         assert self.style in ('stage_1', 'stage_2', 'mlm', 'discrete_diffusion')
@@ -289,13 +296,22 @@ class TransformerConfig(Config):
         assert isinstance(self.n_heads, int) and self.n_heads > 0
         assert isinstance(self.n_layers, int) and self.n_layers > 0
         assert isinstance(self.max_len, int) and self.max_len > 0
+        assert isinstance(self.max_annotations_per_residue, int) and self.max_annotations_per_residue > 0
+        assert isinstance(self.max_len_global, int) and self.max_len_global > 0
         assert isinstance(self.first_block_cfg, BlockConfig)
+
+        # Load annotation vocabularies and set sizes
+        self.per_residue_annotation_vocab = load_annotation_tokens(self.vocab_per_residue_path, PER_RESIDUE_ANNOTATION_TOKENS) + len(SPECIAL_TOKENS)
+        self.global_annotation_vocab = load_annotation_tokens(self.vocab_global_path, GLOBAL_ANNOTATION_TOKENS) + len(SPECIAL_TOKENS)
 
         # TODO: get rid of
         assert self.seq_vocab > 0
         assert self.struct_vocab > 0
         assert self.ss8_vocab > 0
         assert self.sasa_vocab > 0
+        assert self.plddt_vocab > 0
+        assert self.per_residue_annotation_vocab > 0
+        assert self.global_annotation_vocab > 0
         
         # Store configuration as dictionary for safety
         self._config_dict = self.to_dict()
