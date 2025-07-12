@@ -17,7 +17,8 @@ class FSQEncoder(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg  # Store config for access in forward
-        in_dim = 3 * 3  # N, CA, C, CB each have (x,y,z)
+        self.input_num_atoms = 3
+        in_dim = self.input_num_atoms * 3  # N, CA, C, CB each have (x,y,z)
         
         # Encoder
         self.input_proj = nn.Linear(in_dim, cfg.d_model)
@@ -63,6 +64,7 @@ class FSQEncoder(nn.Module):
         # Using custom level structure: [7, 5, 5, 5, 5]
         # Codebook size = 7 × 5 × 5 × 5 × 5 = 4,375 discrete codes
         self.quantizer = Quantizer(levels=cfg.fsq_levels, dim=cfg.fsq_dim, scale=1)
+        self.codebook_size = math.prod(cfg.fsq_levels)
         
     def forward(
         self,

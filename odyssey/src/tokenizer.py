@@ -6,13 +6,42 @@ from bisect import bisect_right
 #TODO: get all tokenizers to operate over a whole batch at a time.
 # right now batch sizes are small (e.g. 4) so it doesn't matter, but for scale-up it might.
 
+
+def unmask(actual_mask, beospank, min_unmasked, generator):
+    # Count positions that are NOT masked AND NOT beospank
+    real_residues = (~actual_mask & ~beospank).sum()
+    if real_residues < min_unmasked:
+        num_to_unmask = min_unmasked - real_residues
+        
+        # Find positions that are currently masked but NOT beospank (candidates for unmasking)
+        candidate_positions = (actual_mask & ~beospank).nonzero(as_tuple=False)
+        
+        if candidate_positions.numel() < num_to_unmask:
+            raise ValueError(f"Need {min_unmasked} unmasked residues, but only have {real_residues} residues in entire protein.")
+        
+        # Randomly select positions to unmask
+        #TODO: use random number generator of the dataloader object.
+        if generator is None:
+            print("Warning: No generator provided to MaskedBatch. Using default generator.")
+            perm = torch.randperm(candidate_positions.numel(), device=actual_mask.device)
+        else:
+            # Use generator without device parameter to avoid device mismatch
+            perm = torch.randperm(candidate_positions.numel(), generator=generator).to(actual_mask.device)
+            
+        positions_to_unmask = candidate_positions[perm[:num_to_unmask]]
+        
+        # Unmask these positions
+        actual_mask[positions_to_unmask] = False
+
+    return actual_mask
+
 class SequenceTokenizer():
     """
     A Tokenizer and Padder for amino acid sequences.
 
     This class does NOT handle MASK tokens.
     """
-    def __init__(self, full_length):
+    def __init__(self, full_length, min_unmasked=0, generator=None):
 
         # Get sequence tokens (amino acids)
         sequence = {name: member.value for name, member in SEQUENCE_TOKENS.__members__.items()}
@@ -29,42 +58,54 @@ class SequenceTokenizer():
         self.mapping['X'] = self.mapping["UNK"]
         self.full_length = full_length
 
-    def tokenize(self, observation):
+        self.generator = generator
+        self.min_unmasked = min_unmasked
+
+    def tokenize(self, observation, mask):
+        device = mask.device
 
         # Convert characters in the observation to token indices
         seq_tokens = [self.mapping[char] for char in observation]
         seq_tokens = seq_tokens[:self.full_length-2] # -2 for BOS and EOS
 
         # Add BOS and EOS tokens
-        content = torch.tensor([self.mapping["BOS"], *seq_tokens, self.mapping["EOS"]], dtype=torch.long,)
+        content = torch.tensor([self.mapping["BOS"], *seq_tokens, self.mapping["EOS"]], dtype=torch.long, device=device)
         content_len = content.numel()
 
         # Add Padding
-        ret = torch.full((self.full_length,), self.mapping["PAD"], dtype=torch.long)
-        ret[:content_len] = content[:content_len]
+        padding_seq_tokens = torch.full((self.full_length,), self.mapping["PAD"], dtype=torch.long, device=device)
+        padding_seq_tokens[:content_len] = content[:content_len]
 
-        # Create beospank mask: 1s for BOS/EOS/PAD/UNK, 0s for real content
-        beospank = torch.ones(self.full_length, dtype=torch.bool)
+        # Create sequence beospank mask: 1s for BOS/EOS/PAD/UNK, 0s for real content
+        seq_beospank = torch.ones(self.full_length, dtype=torch.bool, device=device)
         if len(seq_tokens) > 0:  # Only if there's actual sequence content
-            beospank[1:1+len(seq_tokens)] = 0  # Mark real content as 0, keep BOS/EOS/PAD as 1
+            seq_beospank[1:1+len(seq_tokens)] = 0  # Mark real content as 0, keep BOS/EOS/PAD as 1
             
         # Also mark UNK tokens as 1s
-        beospank[ret == self.mapping["UNK"]] = 1
+        seq_beospank[padding_seq_tokens == self.mapping["UNK"]] = 1
 
+        seq_masks = mask & ~seq_beospank
+        seq_masks = unmask(seq_masks, seq_beospank, self.min_unmasked, self.generator)
+        tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=device)
+        masked_seq_tokens = torch.where(seq_masks, tensor_of_masks, padding_seq_tokens)
+        
         # Sanity checks – ensure indices are within vocabulary bounds.
-        assert torch.max(ret) < len(self.mapping), "Sequence Tokenization failed!"
-        assert torch.min(ret) >= 0, "Sequence Tokenization failed!"
-        assert ret.numel() == self.full_length, "Sequence Tokenization failed!"
+        assert torch.max(padding_seq_tokens) < len(self.mapping), "Sequence Tokenization failed!"
+        assert torch.min(padding_seq_tokens) >= 0, "Sequence Tokenization failed!"
+        assert padding_seq_tokens.numel() == self.full_length, "Sequence Tokenization failed!"
 
-        return ret, beospank.bool()
+        return padding_seq_tokens, masked_seq_tokens, seq_beospank.bool(), seq_masks.bool()
     
 
 class CoordinatesTokenizer():
-    def __init__(self, full_length):
+    def __init__(self, full_length, min_unmasked=0, generator=None):
         self.full_length = full_length
 
-    def tokenize(self, coords):
-        device = coords.device
+        self.generator = generator
+        self.min_unmasked = min_unmasked
+
+    def tokenize(self, coords, mask):
+        device = mask.device
         dtype = coords.dtype
         M, H = coords.shape[0], coords.shape[1]
 
@@ -80,48 +121,56 @@ class CoordinatesTokenizer():
         pad_coords = torch.zeros((self.full_length - content_len, H, 3), dtype=dtype, device=device)
         padded_coords = torch.cat([content_coords, pad_coords], dim=0)  # [self.full_length, H, 3]
 
-        # Create beospank mask: 1s for BOS/EOS/PAD, 0s for real content
-        beospank = torch.ones(self.full_length, dtype=torch.bool)
+        # Create coordinates beospank mask: 1s for BOS/EOS/PAD, 0s for real content
+        coords_beospank = torch.ones(self.full_length, dtype=torch.bool, device=device)
         actual_content_len = coords.shape[0]  # Length before BOS/EOS were added
         if actual_content_len > 0:  # Only if there's actual coordinate content
-            beospank[1:1+actual_content_len] = 0  # Mark real content as 0, keep BOS/EOS/PAD as 1
-            
+            coords_beospank[1:1+actual_content_len] = 0  # Mark real content as 0, keep BOS/EOS/PAD as 1
+
+        # No UNK for coords.
+        coords_masks = mask & ~coords_beospank
+        coords_masks = unmask(coords_masks, coords_beospank, self.min_unmasked, self.generator)
+        masked_coords = padded_coords.clone() * (~coords_masks).long().unsqueeze(1).unsqueeze(2).expand_as(padded_coords) 
 
         # Sanity Checks
         assert padded_coords.shape == (self.full_length, H, 3), "Structure padding length mismatch!"
 
-        return padded_coords, beospank.bool()
+        return padded_coords, masked_coords, coords_beospank.bool(), coords_masks.bool()
 
 
 class StructureTokenizer():
     """
     A Tokenizer and Padder for structure sequences.
 
-    This class does NOT handle BOS, EOS, or MASK tokens.
+    This class does NOT handle MASK tokens.
     """
-    def __init__(self, full_length, fsq_encoder, fsq_output_max=(7*5*5*5*5)-1, fsq_num_atoms=3, reapply_bos_eos_pad=True):
+    def __init__(self, full_length, fsq_encoder, min_unmasked=0, generator=None):
 
         # TODO: Calculate fsq_output_max automatically from the fsq_encoder object
         self.fsq_encoder = fsq_encoder
-        # TODO: get this automatically from FsqEncoder object model configuration, which could be a feature of the model object.
-        self.fsq_output_max = fsq_output_max
-        self.fsq_num_atoms = fsq_num_atoms
 
-        self.full_length = full_length
-        self.mapping = {name: member.value + self.fsq_output_max + 1 for name, member in SPECIAL_TOKENS.__members__.items()}
-        #self.mapping = {name: member.value + self.fsq_output_max for name, member in SPECIAL_TOKENS.__members__.items()} #off by one?
+        if self.fsq_encoder is not None:
+            # TODO: get this automatically from FsqEncoder object model configuration, which could be a feature of the model object.
+            self.fsq_output_max = fsq_encoder.codebook_size - 1
+            assert self.fsq_output_max == 4375-1
 
-        self.coordinates_tokenizer = CoordinatesTokenizer(full_length)
-        self.reapply_bos_eos_pad = reapply_bos_eos_pad
+            self.fsq_num_atoms = fsq_encoder.input_num_atoms
+            assert self.fsq_num_atoms == 3
 
-    def tokenize(self, coords): # coords should be UNTOKENIZED.
+            self.full_length = full_length
+            self.mapping = {name: member.value + self.fsq_output_max + 1 for name, member in SPECIAL_TOKENS.__members__.items()}
+
+            self.coordinates_tokenizer = CoordinatesTokenizer(full_length, min_unmasked=min_unmasked, generator=generator)
+
+    def tokenize(self, coords, mask): # coords should be UNTOKENIZED.
+        device = mask.device
         assert self.fsq_encoder is not None, "FSQ encoder is not set!"
         
         # Coordinates tensor: [M, H, 3]
         # M is at most full_length.  H is number of atoms per residue.
 
         # Pass through coordinates tokenizer to get padded coords and beospank.
-        padded_coords, coords_beospank = self.coordinates_tokenizer.tokenize(coords)
+        padded_coords, masked_coords, coords_beospank, coords_masks = self.coordinates_tokenizer.tokenize(coords, mask)
         bos_position = 0
         eos_position = coords_beospank.numel() - coords_beospank.sum() + 1 
 
@@ -130,7 +179,7 @@ class StructureTokenizer():
             coords_for_fsq = padded_coords[:, :self.fsq_num_atoms, :]
             coords_for_fsq = coords_for_fsq.unsqueeze(0).to(next(self.fsq_encoder.parameters()).device)
             struct_tokens_full = self.fsq_encoder.encode_to_tokens(coords_for_fsq)  # [1, L]
-            struct_tokens_full = struct_tokens_full.squeeze(0).cpu().long().squeeze(-1)         # [L]
+            struct_tokens_full = struct_tokens_full.squeeze(0).long().squeeze(-1)         # [L] - must be long for embedding
 
         # ------------------------------------------------------------------ #
         # Postprocess FSQ output -- replace BOS, EOS, PAD positions with special tokens
@@ -138,14 +187,15 @@ class StructureTokenizer():
         padded_struct_tokens = struct_tokens_full.clone()
         assert padded_struct_tokens.shape[0] == self.full_length, "Structure padding length mismatch!"
 
-        if self.reapply_bos_eos_pad:        
-            # Apply BOS, EOS, and PAD tokens to structure tokens, copying from corresponding special tokens of the coords.
-            padded_struct_tokens[coords_beospank] = self.mapping['PAD']
-            padded_struct_tokens[bos_position] = self.mapping['BOS']
-            padded_struct_tokens[eos_position] = self.mapping['EOS']
-            struct_beospank = coords_beospank.clone()
-        else:
-            struct_beospank = torch.zeros(self.full_length, dtype=torch.bool)
+        # Apply BOS, EOS, and PAD tokens to structure tokens, copying from corresponding special tokens of the coords.
+        padded_struct_tokens[coords_beospank] = self.mapping['PAD']
+        padded_struct_tokens[bos_position] = self.mapping['BOS']
+        padded_struct_tokens[eos_position] = self.mapping['EOS']
+        struct_beospank = coords_beospank.clone()
+        struct_masks = coords_masks.clone()
+
+        tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=device)
+        masked_struct_tokens = torch.where(coords_masks, tensor_of_masks, padded_struct_tokens)
 
         # ------------------------------------------------------------------ #
         # Sanity checks                                                    #
@@ -154,7 +204,7 @@ class StructureTokenizer():
         assert torch.min(padded_struct_tokens) >= 0, f"Structure Tokenization failed! Min token = {torch.min(padded_struct_tokens)}"
         assert padded_coords.shape[0] == self.full_length, "Structure padding length mismatch!"
 
-        return padded_coords, coords_beospank.bool(), padded_struct_tokens, struct_beospank.bool()
+        return padded_coords, masked_coords, coords_beospank.bool(), coords_masks.bool(), padded_struct_tokens, masked_struct_tokens, struct_beospank.bool(), struct_masks.bool()
 
 
 class SS8Tokenizer():

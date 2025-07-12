@@ -24,11 +24,11 @@ model_cfg:
     
     # First block configuration
     first_block_cfg:
-      - self_consensus_cfg:  # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
+      - self_consensus_cfg:   # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
           consensus_num_iterations: 1
           consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
           consensus_w: 2
-          consensus_r: 12
+          consensus_r: 24
           consensus_edge_hidden_dim: 12
       - self_attention_cfg: {}
       - geometric_attention_cfg: {}
@@ -47,7 +47,7 @@ train_cfg:
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/fsq"
     
-    # Loss configuration
+    # Loss configuration.
     loss_config:
       kabsch_rmsd_loss_cfg: {}  # Options: "cross_entropy_loss_cfg", "kabsch_rmsd_loss_cfg", "score_entropy_loss_cfg"
     
