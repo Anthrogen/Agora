@@ -382,7 +382,7 @@ class ProteinDataset(Dataset):
 
         try:
             return Protein(json_path, mode=self.mode)
-        except (AssertionError, ValueError) as e:
+        except (AssertionError, ValueError, json.decoder.JSONDecodeError) as e:
             if self.verbose:
                 print(f"Warning: encountered malformed file {json_path}: {e}")
             return None

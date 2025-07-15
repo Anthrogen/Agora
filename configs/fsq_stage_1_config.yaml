@@ -28,8 +28,8 @@ model_cfg:
           consensus_num_iterations: 1
           consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
           consensus_w: 2
-          consensus_r: 24
-          consensus_edge_hidden_dim: 12
+          consensus_r: 12
+          consensus_edge_hidden_dim: 24
       - self_attention_cfg: {}
       - geometric_attention_cfg: {}
       - reflexive_attention_cfg: {}
@@ -62,3 +62,4 @@ train_cfg:
         sigma_min: 0.31
         sigma_max: 5.68
         num_timesteps: 100
+        corruption_mode: "absorb"

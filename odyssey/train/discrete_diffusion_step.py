@@ -34,7 +34,7 @@ from odyssey.src.models.autoencoder import FSQEncoder
 from odyssey.src.dataset import ProteinDataset
 from odyssey.src.dataloader import DiffusionDataLoader, MaskedBatch
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from odyssey.src.losses import score_entropy_loss
+from odyssey.src.losses import score_entropy_loss_absorb, score_entropy_loss_uniform
 from odyssey.src.configurations import TrunkConfig, TrainingConfig, ScoreEntropyLossConfig
 
 def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: TrunkConfig, train_cfg: TrainingConfig, train_mode: bool = True) -> Dict[str, float]:
@@ -49,14 +49,13 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
     plddt_x_0 = batch.unmasked_data['plddt']
     B, L = seq_x_t.shape
 
-    nonspecial_elements_coords = (~batch.masks['coords']) & (~batch.beospank['coords'])
-    nonbeospank_elements = ~batch.beospank['coords']
+    content_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
     nonbeospank_ss8 = ~batch.beospank['ss8']
     nonbeospank_sasa = ~batch.beospank['sasa']
     nonbeospank_global_annotation = ~batch.beospank['global_annotation']
     nonbeospank_per_residue_annotation = ~batch.beospank['per_residue_annotation']
     nonbeospank_plddt = ~batch.beospank['plddt']
-    assert nonspecial_elements_coords.any(dim=1).all() # Need at least one real residue in each sequence
+    assert content_elements.any(dim=1).all() # Need at least one real residue in each sequence
     
     # Pass raw timestep indices following DiT convention
     timesteps = batch.metadata['timestep_indices'] if 'timestep_indices' in batch.metadata else batch.metadata['pseudo_timestep_indices']
@@ -71,14 +70,16 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
     with torch.set_grad_enabled(train_mode):
         # Forward pass with time conditioning
         model_type = model.cfg.first_block_cfg.initials()
-        if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, nonspecial_elements_coords, nonbeospank_ss8, nonbeospank_sasa, nonbeospank_global_annotation, nonbeospank_per_residue_annotation, nonbeospank_plddt, timesteps)
-        else: outputs = model(inputs, mask=nonbeospank_elements, mask_ss8=nonbeospank_ss8, mask_sasa=nonbeospank_sasa, mask_global_annotation=nonbeospank_global_annotation, mask_per_residue_annotation=nonbeospank_per_residue_annotation, mask_plddt=nonbeospank_plddt, timesteps=timesteps)
+        if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, content_elements, nonbeospank_ss8, nonbeospank_sasa, nonbeospank_global_annotation, nonbeospank_per_residue_annotation, nonbeospank_plddt, timesteps)
+        else: outputs = model(inputs, mask=content_elements, mask_ss8=nonbeospank_ss8, mask_sasa=nonbeospank_sasa, mask_global_annotation=nonbeospank_global_annotation, mask_per_residue_annotation=nonbeospank_per_residue_annotation, mask_plddt=nonbeospank_plddt, timesteps=timesteps)
         seq_logits, struct_logits = outputs
+
+        score_entropy_loss_fn = score_entropy_loss_absorb if train_cfg.mask_config.corruption_mode == "absorb" else score_entropy_loss_uniform
         
         # Compute losses using score entropy loss
-        loss_seq = score_entropy_loss(seq_logits, seq_x_0, seq_x_t, cumulative_noise, inst_noise, model_cfg.seq_absorb_token, valid_mask=seq_valid)
-        loss_struct = score_entropy_loss(struct_logits, struct_x_0, struct_x_t, cumulative_noise, inst_noise, model_cfg.struct_absorb_token, valid_mask=struct_valid)
-        
+        loss_seq = score_entropy_loss_fn(seq_logits, seq_x_0, seq_x_t, cumulative_noise, inst_noise, model_cfg.seq_absorb_token, valid_mask=seq_valid)
+        loss_struct = score_entropy_loss_fn(struct_logits, struct_x_0, struct_x_t, cumulative_noise, inst_noise, model_cfg.struct_absorb_token, valid_mask=struct_valid)
+                
         # Total loss
         loss = train_cfg.loss_config.seq_loss_weight * loss_seq + train_cfg.loss_config.struct_loss_weight * loss_struct
         

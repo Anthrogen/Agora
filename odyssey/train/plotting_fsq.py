@@ -117,9 +117,9 @@ def calculate_confidence_interval(data, confidence=0.95):
     return mean_val, ci_lower, ci_upper
 
 
-def plot_validation_losses_auto(base_dir: str, 
+def plot_validation_losses_auto(base_dir: str,
                                output_file: str = None,
-                               loss_key: str = "val_rmsd"):
+                               loss_key: str = "train_loss"):
     """
     Automatically discover and plot validation losses for models in checkpoint directories.
     

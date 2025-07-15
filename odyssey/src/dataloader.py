@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from typing import Tuple
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.tokenizer import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer, SS8Tokenizer, SASATokenizer, PLDDTTokenizer
-from odyssey.src.tokenizer import GlobalAnnotationTokenizer, PerResidueAnnotationTokenizer
+from odyssey.src.tokenizer import GlobalAnnotationTokenizer, PerResidueAnnotationTokenizer, CorruptionMode
 import math
 from abc import abstractmethod
 
@@ -133,7 +133,7 @@ def _get_training_dataloader(dataset, model_cfg, train_cfg, tracks, device, min_
 class MaskingDataLoader(DataLoader):
     """DataLoader that applies masking during collation."""
     
-    def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None,  
+    def __init__(self, dataset, corruption_mode, model_cfg, train_cfg, tracks, device, fsq_encoder=None,  
                   propagate_coords_mask=True, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
 
         self.device = device if device is not None else torch.device("cpu")
@@ -151,9 +151,9 @@ class MaskingDataLoader(DataLoader):
         super().__init__(dataset, **kwargs)
     
         # Initialize tokenizers
-        self.sequence_tokenizer = SequenceTokenizer(self.L, min_unmasked=min_unmasked['seq'], generator=generator)
+        self.sequence_tokenizer = SequenceTokenizer(self.L, min_unmasked=min_unmasked['seq'], generator=generator, corruption_mode=corruption_mode)
         self.coordinates_tokenizer = CoordinatesTokenizer(self.L, min_unmasked=min_unmasked['coords'], generator=generator)
-        self.structure_tokenizer = StructureTokenizer(self.L, fsq_encoder, min_unmasked=min_unmasked['coords'], generator=generator)
+        self.structure_tokenizer = StructureTokenizer(self.L, fsq_encoder, min_unmasked=min_unmasked['coords'], generator=generator, corruption_mode=corruption_mode)
         self.ss8_tokenizer = SS8Tokenizer(self.L)
         self.sasa_tokenizer = SASATokenizer(self.L)
         self.global_annotation_tokenizer = GlobalAnnotationTokenizer(self.G)
@@ -189,7 +189,7 @@ class MaskingDataLoader(DataLoader):
     
 class SimpleDataLoader(MaskingDataLoader):
     def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-        super(SimpleDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device,fsq_encoder=fsq_encoder, min_unmasked=min_unmasked,  **kwargs)
+        super(SimpleDataLoader, self).__init__(dataset, CorruptionMode.MASK, model_cfg, train_cfg, tracks, device,fsq_encoder=fsq_encoder, min_unmasked=min_unmasked,  **kwargs)
 
         assert isinstance(train_cfg.mask_config, SimpleMaskConfig)
         self.simple_mask_prob = {'seq': train_cfg.mask_config.mask_prob_seq, 'coords': train_cfg.mask_config.mask_prob_struct}
@@ -207,7 +207,7 @@ class SimpleDataLoader(MaskingDataLoader):
     
 class ComplexDataLoader(MaskingDataLoader):
     def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-        super(ComplexDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, min_unmasked=min_unmasked, **kwargs)
+        super(ComplexDataLoader, self).__init__(dataset, CorruptionMode.MASK, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, min_unmasked=min_unmasked, **kwargs)
 
     def sample_masks(self, tracks, batch_len):
         """
@@ -234,7 +234,7 @@ class ComplexDataLoader(MaskingDataLoader):
 
 class NoMaskDataLoader(MaskingDataLoader):
     def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, **kwargs):
-        super(NoMaskDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, **kwargs)
+        super(NoMaskDataLoader, self).__init__(dataset, CorruptionMode.MASK, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, **kwargs)
     
     def sample_masks(self, tracks, batch_len):
         masks = {}
@@ -248,7 +248,10 @@ class DiffusionDataLoader(MaskingDataLoader):
     """DataLoader that applies discrete diffusion noise process during batch collation."""
 
     def __init__(self, dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=None, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-        super(DiffusionDataLoader, self).__init__(dataset, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, min_unmasked=min_unmasked, **kwargs)
+
+        corruption_mode = CorruptionMode.MASK if train_cfg.mask_config.corruption_mode == "absorb" else CorruptionMode.UNIFORM
+
+        super(DiffusionDataLoader, self).__init__(dataset, corruption_mode, model_cfg, train_cfg, tracks, device, fsq_encoder=fsq_encoder, min_unmasked=min_unmasked, **kwargs)
 
         # Store diffusion config
         self.diffusion_cfg = train_cfg.mask_config

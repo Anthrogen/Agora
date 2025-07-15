@@ -72,9 +72,9 @@ def cross_entropy_loss(logits, labels, loss_elements, reduction='sum'):
 # --------------------------------------------------------------------------- #
 #  Discrete Diffusion Utilities                                               #
 # --------------------------------------------------------------------------- #
-def score_entropy_loss(output, x_0, x_t, cumulative_noise_levels, inst_noise_levels, mask_token, valid_mask):
+def score_entropy_loss_absorb(output, x_0, x_t, cumulative_noise_levels, inst_noise_levels, mask_token, valid_mask):
     """
-    Score entropy loss from SEDD paper.
+    Score entropy loss from SEDD paper for absorb discrete diffusion.
     
     Args:
         output: Model predictions of shape (B, L, V)
@@ -157,6 +157,107 @@ def score_entropy_loss(output, x_0, x_t, cumulative_noise_levels, inst_noise_lev
 
     return per_protein.mean(0) # scalar
     
+def score_entropy_loss_uniform(output, x_0, x_t, cumulative_noise_levels, inst_noise_levels, mask_token, valid_mask):
+    """
+    Score entropy loss from SEDD paper for uniform discrete diffusion.
+    
+    Args:
+        output: Model predictions of shape (B, L, V)
+        x_0: Original tokens of shape (B, L)
+        x_t: Noisy tokens of shape (B, L)
+        cumulative_noise_levels: Cumulative noise at time t, shape (B, 1)
+        inst_noise_levels: Instantaneous noise at time t, shape (B, 1)
+        mask_token: Index of the absorbing/mask token
+        valid_mask: Mask for valid positions (excluding BOS/EOS/Padding), shape (B, L).
+    
+    Returns:
+        Loss value
+    """
+    
+    B, L, V = output.shape
+    
+    # Output represents log score ratios, apply exp to get ratios p_t(y)/p_t(x^i)
+    # This ensures the ratios are positive
+    output = torch.exp(output)
+    
+    # Compute F_t and S_t for uniform discrete diffusion
+    # F_t = (exp(sigma_total(t)) - 1) / (n * exp(sigma_total(t)))  
+    # S_t = exp(-sigma_total(t))
+    F_t = (torch.exp(cumulative_noise_levels) - 1.0) / (V * torch.exp(cumulative_noise_levels))  # shape (B, 1)
+    S_t = torch.exp(-cumulative_noise_levels)  # shape (B, 1)
+    
+    # Determine which positions have x_t^i = x_0^i vs x_t^i ≠ x_0^i
+    unchanged_positions = (x_t == x_0).bool()  # shape (B, L)
+    
+    # Create one-hot encodings for x_0 and x_t
+    x_0_onehot = F.one_hot(x_0, num_classes=V).float()  # [B, L, V]
+    x_t_onehot = F.one_hot(x_t, num_classes=V).float()  # [B, L, V]
+    
+    # Clamp output to prevent log of very small numbers
+    output_clamped = torch.clamp(output, min=1e-10)
+    log_output = torch.log(output_clamped)
+    
+    # Initialize gamma
+    gamma = torch.zeros(B, L, device=output.device)
+    
+    # Case 1: x_t^i = x_0^i
+    # Sum over y ≠ x_0^i with coefficient F_t/(F_t + S_t)
+    if unchanged_positions.any():
+        coeff_unchanged = F_t / (F_t + S_t)  # shape (B, 1)
+        
+        # Create mask for positions y ≠ x_0^i: (1 - x_0_onehot)
+        not_x0_mask = 1.0 - x_0_onehot  # [B, L, V]
+        
+        # For unchanged positions, compute the sum over vocabulary except x_0^i
+        # s_θ(x_t,t)_{i,y} - (F_t/(F_t + S_t)) * log s_θ(x_t,t)_{i,y}
+        terms_unchanged = output - coeff_unchanged.unsqueeze(-1) * log_output  # [B, L, V]
+        
+        # Apply mask and sum over vocabulary dimension
+        masked_terms = terms_unchanged * not_x0_mask  # [B, L, V]
+        gamma_unchanged = masked_terms.sum(dim=-1)  # [B, L]
+        
+        # Apply only to unchanged positions
+        gamma = torch.where(unchanged_positions, gamma_unchanged, gamma)
+    
+    # Case 2: x_t^i ≠ x_0^i  
+    # y = x_0^i: coefficient (1 + S_t/F_t)
+    # y ≠ x_0^i, y ≠ x_t^i: coefficient 1
+    changed_positions = ~unchanged_positions  # shape (B, L)
+    
+    if changed_positions.any():
+        coeff_x0 = 1.0 + S_t / F_t  # coefficient for y = x_0^i, shape (B, 1)
+        coeff_other = 1.0  # coefficient for other positions
+        
+        # Term for y = x_0^i: s_θ - (1 + S_t/F_t) * log s_θ
+        x0_terms = output - coeff_x0.unsqueeze(-1) * log_output  # [B, L, V]
+        gamma_x0 = (x0_terms * x_0_onehot).sum(dim=-1)  # [B, L]
+        
+        # Terms for y ≠ x_0^i and y ≠ x_t^i: s_θ - log s_θ
+        other_terms = output - coeff_other * log_output  # [B, L, V]
+        
+        # Create mask for positions y ≠ x_0^i and y ≠ x_t^i
+        not_x0_or_xt_mask = (1.0 - x_0_onehot) * (1.0 - x_t_onehot)  # [B, L, V]
+        
+        # Apply mask and sum
+        gamma_other = (other_terms * not_x0_or_xt_mask).sum(dim=-1)  # [B, L]
+        
+        # Combine the two terms for changed positions
+        gamma_changed = gamma_x0 + gamma_other
+        
+        # Apply only to changed positions
+        gamma = torch.where(changed_positions, gamma_changed, gamma)
+    
+    # Apply instantaneous noise levels and valid mask
+    # inst_noise_levels has shape [B, 1], we want to broadcast with gamma [B, L]
+    per_residue = gamma * inst_noise_levels  # [B, L] * [B, 1] -> [B, L]
+    
+    # Apply mask to per_residue losses and compute average over valid positions only
+    per_residue_masked = per_residue * valid_mask.float()  # [B, L]
+    valid_counts = valid_mask.sum(dim=1).float()  # [B]
+    per_protein = per_residue_masked.sum(dim=1) / valid_counts  # (B,)
+
+    return per_protein.mean(0)  # scalar
+
 # --------------------------------------------------------------------------- #
 #  FSQ Utilities                                                              #
 # --------------------------------------------------------------------------- #

@@ -1,6 +1,8 @@
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS, PLDDT_TOKENS, GLOBAL_ANNOTATION_TOKENS, PER_RESIDUE_ANNOTATION_TOKENS
 import torch
 from bisect import bisect_right
+from tabulate import tabulate
+from enum import IntEnum
 
 
 #TODO: get all tokenizers to operate over a whole batch at a time.
@@ -8,6 +10,8 @@ from bisect import bisect_right
 
 
 def unmask(actual_mask, beospank, min_unmasked, generator):
+    """TODO: make this a method of the base class Tokenizer."""
+    
     # Count positions that are NOT masked AND NOT beospank
     real_residues = (~actual_mask & ~beospank).sum()
     if real_residues < min_unmasked:
@@ -35,31 +39,42 @@ def unmask(actual_mask, beospank, min_unmasked, generator):
 
     return actual_mask
 
-class SequenceTokenizer():
+class CorruptionMode(IntEnum):
+    MASK = 0
+    UNIFORM = 1
+
+class Tokenizer():
+    pass
+
+class SequenceTokenizer(Tokenizer):
     """
     A Tokenizer and Padder for amino acid sequences.
 
     This class does NOT handle MASK tokens.
     """
-    def __init__(self, full_length, min_unmasked=0, generator=None):
+    def __init__(self, full_length, min_unmasked=0, generator=None, corruption_mode=CorruptionMode.MASK):
 
         # Get sequence tokens (amino acids)
         sequence = {name: member.value for name, member in SEQUENCE_TOKENS.__members__.items()}
 
         # Get the highest sequence token value to avoid conflicts
-        max_seq_value = max(sequence.values()) if sequence else -1
+        self.max_seq_value = max(sequence.values()) if sequence else -1
 
         # Add special tokens with non-conflicting values
-        special = {name: member.value + max_seq_value + 1 
+        special = {name: member.value + self.max_seq_value + 1 
                   for name, member in SPECIAL_TOKENS.__members__.items()}
 
         self.mapping = {**sequence, **special}
+        # DO NOT include "X" (or any redundant symbols)in the reverse mapping.
+        self.reverse_mapping = {v: k for k, v in self.mapping.items()}
 
+        # Keep this line AFTER creation of self.mapping so that self.mapping can remain bijective.
         self.mapping['X'] = self.mapping["UNK"]
         self.full_length = full_length
-
         self.generator = generator
         self.min_unmasked = min_unmasked
+        self.corruption_mode = corruption_mode
+
 
     def tokenize(self, observation, mask):
         device = mask.device
@@ -86,8 +101,10 @@ class SequenceTokenizer():
 
         seq_masks = mask & ~seq_beospank
         seq_masks = unmask(seq_masks, seq_beospank, self.min_unmasked, self.generator)
-        tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=device)
-        masked_seq_tokens = torch.where(seq_masks, tensor_of_masks, padding_seq_tokens)
+        #tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=device)
+        # masked_seq_tokens = torch.where(seq_masks, tensor_of_masks, padding_seq_tokens)
+
+        masked_seq_tokens = self.corrupt(padding_seq_tokens, seq_masks)
         
         # Sanity checks – ensure indices are within vocabulary bounds.
         assert torch.max(padding_seq_tokens) < len(self.mapping), "Sequence Tokenization failed!"
@@ -95,12 +112,28 @@ class SequenceTokenizer():
         assert padding_seq_tokens.numel() == self.full_length, "Sequence Tokenization failed!"
 
         return padding_seq_tokens, masked_seq_tokens, seq_beospank.bool(), seq_masks.bool()
-    
 
-class CoordinatesTokenizer():
+    def print_token(self, tok):
+        if isinstance(tok, torch.Tensor):
+            tok = tok.item()
+
+        return self.reverse_mapping[tok]
+
+    def corrupt(self, unmasked_data, masks):
+        if self.corruption_mode == CorruptionMode.MASK:
+            tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+            return torch.where(masks, tensor_of_masks, unmasked_data)
+
+        elif self.corruption_mode == CorruptionMode.UNIFORM:
+            uniform_content = torch.randint(0, self.max_seq_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            return torch.where(masks, uniform_content, unmasked_data)
+        
+        raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
+
+
+class CoordinatesTokenizer(Tokenizer):
     def __init__(self, full_length, min_unmasked=0, generator=None):
         self.full_length = full_length
-
         self.generator = generator
         self.min_unmasked = min_unmasked
 
@@ -137,28 +170,31 @@ class CoordinatesTokenizer():
 
         return padded_coords, masked_coords, coords_beospank.bool(), coords_masks.bool()
 
+    def print_token(self, tok):
+        return torch.mean(tok).item()
 
-class StructureTokenizer():
+class StructureTokenizer(Tokenizer):
     """
     A Tokenizer and Padder for structure sequences.
 
     This class does NOT handle MASK tokens.
     """
-    def __init__(self, full_length, fsq_encoder, min_unmasked=0, generator=None):
+    def __init__(self, full_length, fsq_encoder, min_unmasked=0, generator=None, corruption_mode=CorruptionMode.MASK):
 
         # TODO: Calculate fsq_output_max automatically from the fsq_encoder object
         self.fsq_encoder = fsq_encoder
+        self.generator = generator
+        self.corruption_mode = corruption_mode
 
         if self.fsq_encoder is not None:
             # TODO: get this automatically from FsqEncoder object model configuration, which could be a feature of the model object.
             self.fsq_output_max = fsq_encoder.codebook_size - 1
             assert self.fsq_output_max == 4375-1
 
-            self.fsq_num_atoms = fsq_encoder.input_num_atoms
-            assert self.fsq_num_atoms == 3
-
             self.full_length = full_length
             self.mapping = {name: member.value + self.fsq_output_max + 1 for name, member in SPECIAL_TOKENS.__members__.items()}
+            self.reverse_mapping = {v: f"{k}" for k, v in self.mapping.items()}
+            self.reverse_mapping.update({i: i for i in range(self.fsq_output_max)})
 
             self.coordinates_tokenizer = CoordinatesTokenizer(full_length, min_unmasked=min_unmasked, generator=generator)
 
@@ -176,9 +212,17 @@ class StructureTokenizer():
 
         with torch.no_grad():
             # FSQ encoder expects [B, L, 3, 3]; if coords contain 4 atoms use first 3
-            coords_for_fsq = padded_coords[:, :self.fsq_num_atoms, :]
-            coords_for_fsq = coords_for_fsq.unsqueeze(0).to(next(self.fsq_encoder.parameters()).device)
-            struct_tokens_full = self.fsq_encoder.encode_to_tokens(coords_for_fsq)  # [1, L]
+            three_atom = masked_coords[:, :3, :]
+            four_atom = masked_coords[:, :4, :]
+            three_atom = three_atom.unsqueeze(0).to(next(self.fsq_encoder.parameters()).device)
+            four_atom = four_atom.unsqueeze(0).to(next(self.fsq_encoder.parameters()).device)
+            content_elements = (~coords_masks & ~coords_beospank).unsqueeze(0).to(next(self.fsq_encoder.parameters()).device)
+            
+            # For GA/RA cases, we need to pass the coordinates and mask
+            if self.fsq_encoder.cfg.first_block_cfg.initials() in ("GA", "RA"):
+                struct_tokens_full = self.fsq_encoder.encode_to_tokens(three_atom, coords=four_atom, mask=content_elements)
+            else:
+                struct_tokens_full = self.fsq_encoder.encode_to_tokens(three_atom, mask=content_elements)
             struct_tokens_full = struct_tokens_full.squeeze(0).long().squeeze(-1)         # [L] - must be long for embedding
 
         # ------------------------------------------------------------------ #
@@ -194,8 +238,10 @@ class StructureTokenizer():
         struct_beospank = coords_beospank.clone()
         struct_masks = coords_masks.clone()
 
-        tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=device)
-        masked_struct_tokens = torch.where(coords_masks, tensor_of_masks, padded_struct_tokens)
+        # tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=device)
+        # masked_struct_tokens = torch.where(coords_masks, tensor_of_masks, padded_struct_tokens)
+
+        masked_struct_tokens = self.corrupt(padded_struct_tokens, coords_masks)
 
         # ------------------------------------------------------------------ #
         # Sanity checks                                                    #
@@ -206,8 +252,22 @@ class StructureTokenizer():
 
         return padded_coords, masked_coords, coords_beospank.bool(), coords_masks.bool(), padded_struct_tokens, masked_struct_tokens, struct_beospank.bool(), struct_masks.bool()
 
+    def print_token(self, tok):
+        return self.reverse_mapping[tok]
 
-class SS8Tokenizer():
+    def corrupt(self, unmasked_data, masks):
+        if self.corruption_mode == CorruptionMode.MASK:
+            tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+            return torch.where(masks, tensor_of_masks, unmasked_data)
+
+        elif self.corruption_mode == CorruptionMode.UNIFORM:
+            uniform_content = torch.randint(0, self.fsq_output_max + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            return torch.where(masks, uniform_content, unmasked_data)
+        
+        raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
+
+
+class SS8Tokenizer(Tokenizer):
     """
     A Tokenizer and Padder for secondary structure 8-class tokens.
 
@@ -225,6 +285,7 @@ class SS8Tokenizer():
                   for name, member in SPECIAL_TOKENS.__members__.items()}
 
         self.mapping = {**ss8, **special}
+        self.reverse_mapping = {v: k for k, v in self.mapping.items()}
         self.full_length = full_length
 
     def tokenize(self, observation):
@@ -267,7 +328,11 @@ class SS8Tokenizer():
         return padded_ss8, ss8_beospank.bool()
 
 
-class SASATokenizer():
+    def print_token(self, tok):
+        return self.reverse_mapping[tok]
+
+
+class SASATokenizer(Tokenizer):
     """
     A Tokenizer and Padder for SASA tokens.
 
@@ -287,6 +352,7 @@ class SASATokenizer():
         
         self.thresholds = (0.14, 2.09, 6.49, 12.69, 20.23, 29.03, 38.17, 47.43, 56.62, 65.50, 76.08, 86.71, 99.48, 115.35, 137.27)
         self.mapping = {**sasa, **special}
+        self.reverse_mapping = {v: k for k, v in self.mapping.items()}
         self.full_length = full_length
 
     def _bin_sasa_value(self, value):
@@ -334,8 +400,11 @@ class SASATokenizer():
 
         return padded_sasa, sasa_beospank.bool()
 
+    def print_token(self, tok):
+        return self.reverse_mapping[tok]
 
-class PLDDTTokenizer():
+
+class PLDDTTokenizer(Tokenizer):
     """
     A Tokenizer and Padder for pLDDT tokens.
 
@@ -353,6 +422,7 @@ class PLDDTTokenizer():
                   for name, member in SPECIAL_TOKENS.__members__.items()}
 
         self.mapping = {**plddt, **special}
+        self.reverse_mapping = {v: k for k, v in self.mapping.items()}
         self.full_length = full_length
         self.thresholds = tuple((i+1)/50 for i in range(49))
 
@@ -399,8 +469,10 @@ class PLDDTTokenizer():
 
         return padded_plddt, plddt_beospank.bool()
 
+    def print_token(self, tok):
+        return self.reverse_mapping[tok]
 
-class GlobalAnnotationTokenizer():
+class GlobalAnnotationTokenizer(Tokenizer):
     """
     A Tokenizer and Padder for global annotation tokens.
 
@@ -418,6 +490,7 @@ class GlobalAnnotationTokenizer():
                   for name, member in SPECIAL_TOKENS.__members__.items()}
 
         self.mapping = {**global_annotation, **special}
+        self.reverse_mapping = {v: k for k, v in self.mapping.items()}
         self.full_length = full_length
 
     def tokenize(self, observation):
@@ -459,8 +532,11 @@ class GlobalAnnotationTokenizer():
 
         return padded_global_annotation, global_annotation_beospank.bool()
 
+    def print_token(self, tok):
+        return self.reverse_mapping[tok]
 
-class PerResidueAnnotationTokenizer():
+
+class PerResidueAnnotationTokenizer(Tokenizer):
     """
     A Tokenizer and Padder for per-residue annotation tokens.
     
@@ -481,6 +557,7 @@ class PerResidueAnnotationTokenizer():
                   for name, member in SPECIAL_TOKENS.__members__.items()}
 
         self.mapping = {**per_residue_annotation, **special}
+        self.reverse_mapping = {v: k for k, v in self.mapping.items()}
         self.full_length = full_length
         self.max_annotations_per_residue = max_annotations_per_residue
 
@@ -543,3 +620,39 @@ class PerResidueAnnotationTokenizer():
         assert padded_annotations.shape == (self.full_length, self.max_annotations_per_residue), "Per-residue annotation padding shape mismatch!"
 
         return padded_annotations, annotation_beospank.bool()
+
+    def print_token(self, tok):
+        return self.reverse_mapping[tok]
+
+
+"""
+To use the following test function, run the following code:
+
+from odyssey.src.tokenizer import *
+from odyssey.src.dataset import *
+
+pd = ProteinDataset("/workspace/demo/Odyssey/sample_data/3k.csv")
+mask = torch.bernoulli(torch.full((2048,), 0.1)).bool()
+idx = 0
+
+seq = SequenceTokenizer(2048)
+print_tokenized_sequence(seq.print_token, *seq.tokenize(pd.__getitem__(idx)[0], mask))
+
+coord = CoordinatesTokenizer(2048)
+print_tokenized_sequence(coord.print_token, *coord.tokenize(pd.__getitem__(idx)[1], mask))
+"""
+def print_tokenized_sequence(print_token, unmasked, masked, beospank, mask, limit=500):
+
+    def hot(b):
+        return "1" if b else ""
+
+
+    data = {'Unmasked': [print_token(tok) for tok in unmasked[:limit]], 
+            'Masked': [print_token(tok) for tok in masked[:limit]],
+            'Beospank?': [hot(b) for b in beospank[:limit]],
+            'Mask?': [hot(m) for m in mask[:limit]],
+            }
+
+    table = tabulate(data, headers='keys', tablefmt='rst')
+
+    print(table)

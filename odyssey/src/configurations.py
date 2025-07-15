@@ -252,12 +252,14 @@ class DiffusionMaskConfig(MaskConfig):
     sigma_min:             float  # Minimum noise level
     sigma_max:             float  # Maximum noise level
     num_timesteps:         int  # Number of discrete timesteps for training
+    corruption_mode:       str  # Type of corruption ("absorb", "uniform")
 
     def __post_init__(self):
         assert self.noise_schedule in ('linear', 'inverted_u', 'uniform')
         assert self.sigma_min > 0
         assert self.sigma_max > 0
         assert self.num_timesteps > 0
+        assert self.corruption_mode in ('absorb', 'uniform')
 
     def __str__(self): return "discrete_diffusion"
 

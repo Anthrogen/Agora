@@ -114,16 +114,18 @@ class FSQEncoder(nn.Module):
         
         return z_q, indices
     
-    def encode_to_tokens(self, x: torch.Tensor) -> torch.Tensor:
+    def encode_to_tokens(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Convenience method for tokenization that returns only the indices.
         
         Args:
             x: [B, L, 3, 3] backbone coordinates
+            coords: Optional additional coordinates for GA/RA models
+            mask: Optional mask for GA/RA models
         Returns:
             indices: [B, L] discrete token indices
         """
-        _, indices = self.forward(x)
+        _, indices = self.forward(x, coords, mask)
         return indices
 
 class FSQDecoder(nn.Module):
