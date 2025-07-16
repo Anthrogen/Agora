@@ -45,4 +45,4 @@ def run_test(ckpt):
 
 
 if __name__ == "__main__":
-    run_test("../../checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt")
+    run_test("../../checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt")

@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 from odyssey.src.quantizer import Quantizer
 
 from odyssey.src.models.blocks import ConvBlock, StandardTransformerBlock, GeometricTransformerBlock, ReflexiveTransformerBlock, ConsensusTransformerBlock
+from odyssey.src.attention.CrossAttention import CrossAttention
+from odyssey.src.attention.CrossConsensus import CrossConsensus
 
 class FSQEncoder(nn.Module):
     """
@@ -70,7 +72,8 @@ class FSQEncoder(nn.Module):
         self,
         x: torch.Tensor,
         coords: Optional[torch.Tensor] = None,  # [B, L, 3, 3] or [B, L, 4, 3] for RA
-        mask: Optional[torch.Tensor] = None  # [B, L] boolean mask
+        content_elements: Optional[torch.Tensor] = None,  # [B, L] boolean mask
+        nonbeospank: Optional[torch.Tensor] = None,  # [B, L] boolean mask
         ):
         """
         Args:
@@ -78,7 +81,8 @@ class FSQEncoder(nn.Module):
         Returns:
           z_q: [B, L, fsq_dim], indices: [B, L] discrete codes
         """
-        assert mask is None or mask.dtype == torch.bool
+        assert content_elements is None or content_elements.dtype == torch.bool
+        assert nonbeospank is None or nonbeospank.dtype == torch.bool
         B, L, _, _ = x.shape
         
         # Flatten per residue to 9-dim and project to d_model
@@ -95,16 +99,14 @@ class FSQEncoder(nn.Module):
         model_type = self.cfg.first_block_cfg.initials()
         for block in self.layers:
             if model_type in ("GA") and block is self.layers[0]:
-                # First block may require coordinates
                 assert coords is not None, "Coordinates required for geometric first layer"
-                h = block(h, coords[:,:,:3,:], mask)
+                h = block(h, coords[:,:,:3,:], content_elements, nonbeospank)
             elif model_type in ("RA") and block is self.layers[0]:
-                # First block may require coordinates
                 assert coords is not None, "Coordinates required for reflexive first layer"
-                h = block(h, coords, mask)
+                h = block(h, coords, content_elements, nonbeospank)
             else:
                 # Standard blocks don't need coordinates
-                h = block(h, mask=mask)
+                h = block(h, nonbeospank=nonbeospank)
         
         # Project to FSQ dimension
         z = self.encoder_proj(h)            # [B, L, fsq_dim]
@@ -114,18 +116,19 @@ class FSQEncoder(nn.Module):
         
         return z_q, indices
     
-    def encode_to_tokens(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def encode_to_tokens(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None, content_elements: Optional[torch.Tensor] = None, nonbeospank: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Convenience method for tokenization that returns only the indices.
         
         Args:
             x: [B, L, 3, 3] backbone coordinates
             coords: Optional additional coordinates for GA/RA models
-            mask: Optional mask for GA/RA models
+            content_elements: Optional mask for GA/RA models
+            nonbeospank: Optional mask for GA/RA models
         Returns:
             indices: [B, L] discrete token indices
         """
-        _, indices = self.forward(x, coords, mask)
+        _, indices = self.forward(x, coords, content_elements, nonbeospank)
         return indices
 
 class FSQDecoder(nn.Module):
@@ -139,15 +142,28 @@ class FSQDecoder(nn.Module):
         self.cfg = cfg
         
         # Determine input dimension for decoder_input layer
-        # Stage 2: fsq_dim + 1 (concatenated z_q and seq_tokens)
+        # Stage 2: fsq_dim (just z_q, seq info injected via cross-attention/consensus)
         # Stage 1: fsq_dim (just z_q)
-        if cfg.style == "stage_2":
-            decoder_input_dim = cfg.fsq_dim + 1
-        else:
-            decoder_input_dim = cfg.fsq_dim
+        decoder_input_dim = cfg.fsq_dim
         
         # Decoder
         self.decoder_input = nn.Linear(decoder_input_dim, cfg.d_model)
+        
+        # Context sequence for stage 2
+        if cfg.style == "stage_2" and cfg.context_cfg is not None:
+            # Sequence embedding layer for context sequence
+            self.seq_embed = nn.Embedding(cfg.seq_vocab, cfg.d_model)
+            
+            # Initialize context sequence based on configuration
+            context_type = cfg.context_cfg.initials()
+            if context_type == "CA":  # CrossAttention
+                self.context_sequence = CrossAttention(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, max_position_embeddings=cfg.max_len)
+            elif context_type == "CC":  # CrossConsensus
+                self.context_sequence = CrossConsensus(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, num_iterations=cfg.context_cfg.consensus_num_iterations,
+                                                        connectivity_type=cfg.context_cfg.consensus_connectivity_type, w=cfg.context_cfg.consensus_w, 
+                                                        r=cfg.context_cfg.consensus_r, edge_hidden_dim=cfg.context_cfg.consensus_edge_hidden_dim, max_len=cfg.max_len)
+            else: raise ValueError(f"Unknown context type: {context_type}")
+        else: self.context_sequence = None
 
         # Transformer stack
         self.layers = nn.ModuleList()
@@ -190,13 +206,17 @@ class FSQDecoder(nn.Module):
         self,
         z_q: torch.Tensor,  # [B, L, fsq_dim] quantized vectors
         coords: Optional[torch.Tensor] = None,  # [B, L, 3, 3] or [B, L, 4, 3] for RA
-        mask: Optional[torch.Tensor] = None,  # [B, L] boolean mask
+        content_elements: Optional[torch.Tensor] = None,  # [B, L] boolean mask
+        nonbeospank: Optional[torch.Tensor] = None,  # [B, L] boolean mask
+        seq_tokens: Optional[torch.Tensor] = None,  # [B, L] sequence tokens for stage 2 context sequence
     ) -> torch.Tensor:
         """
         Args:
           z_q: [B, L, fsq_dim] quantized vectors
           coords: Optional coordinates for GA/RA models
-          mask: Optional mask for GA/RA models
+          content_elements: Optional mask for GA/RA models
+          nonbeospank: Optional mask for GA/RA models
+          seq_tokens: Optional sequence tokens for stage 2 context sequence
         Returns:
           x_rec: [B, L, num_atoms, 3] reconstructed coordinates
                  where num_atoms = in_dim // 3
@@ -205,21 +225,26 @@ class FSQDecoder(nn.Module):
         
         # Decoder: from quantized z to d_model
         h = self.decoder_input(z_q)         # [B, L, d_model]
+        
+        # Context sequence for stage 2
+        if self.context_sequence is not None and seq_tokens is not None:
+            # Embed sequence tokens
+            seq_emb = self.seq_embed(seq_tokens)  # [B, L, d_model]
+            # Apply context sequence: z_q features as target, sequence as context
+            h = h + self.context_sequence(target=h, context=seq_emb, target_mask=nonbeospank, context_mask=nonbeospank)
 
         # Pass through all transformer blocks
         model_type = self.cfg.first_block_cfg.initials()
         for block in self.layers:
             if model_type in ("GA") and block is self.layers[0]:
-                # First block may require coordinates
                 assert coords is not None, "Coordinates required for geometric first layer"
-                h = block(h, coords[:,:,:3,:], mask)
+                h = block(h, coords[:,:,:3,:], content_elements, nonbeospank)
             elif model_type in ("RA") and block is self.layers[0]:
-                # First block may require coordinates
                 assert coords is not None, "Coordinates required for reflexive first layer"
-                h = block(h, coords, mask)
+                h = block(h, coords, content_elements, nonbeospank)
             else:
                 # Standard blocks don't need coordinates
-                h = block(h, mask=mask)
+                h = block(h, nonbeospank=nonbeospank)
         
         # Convolutional blocks
         h_conv = h.transpose(1, 2)          # [B, d_model, L]
@@ -274,21 +299,25 @@ class Autoencoder(nn.Module):
 
     def forward(self, x: torch.Tensor,
         coords: Optional[torch.Tensor] = None,  # [B, L, 3, 3] or [B, L, 4, 3] for GA/RA
-        mask: Optional[torch.Tensor] = None,  # [B, L] boolean mask
+        content_elements: Optional[torch.Tensor] = None,  # [B, L] boolean mask
+        nonbeospank: Optional[torch.Tensor] = None,  # [B, L] boolean mask
+        seq_tokens: Optional[torch.Tensor] = None,  # [B, L] sequence tokens for stage 2 context sequence
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
           x: [B, L, 3, 3] - main coordinate input
           coords: Optional additional coordinates for GA/RA models
-          mask: Optional mask for GA/RA models
+          content_elements: Optional mask for GA/RA models
+          nonbeospank: Optional mask for GA/RA/SA/SC models
+          seq_tokens: Optional sequence tokens for stage 2 context sequence
         Returns:
           x_rec: [B, L, num_atoms, 3] - reconstructed coordinates (num_atoms depends on stage)
           indices: [B, L] discrete codes
         """
         # Encode
-        z_q, indices = self.encoder(x, coords, mask)
+        z_q, indices = self.encoder(x, coords, content_elements, nonbeospank)
         
         # Decode
-        x_rec = self.decoder(z_q, coords, mask)
+        x_rec = self.decoder(z_q, coords, content_elements, nonbeospank, seq_tokens)
         
         return x_rec, indices 

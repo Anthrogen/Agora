@@ -148,16 +148,15 @@ class StandardTransformerBlock(nn.Module):
             self.norm1 = nn.LayerNorm(cfg.d_model)
             self.norm2 = nn.LayerNorm(cfg.d_model)
 
-    def forward(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None, 
-                mask: Optional[torch.Tensor] = None, time_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, nonbeospank: Optional[torch.Tensor] = None, time_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
         # Layer norm + self-attention + residual
         if self.use_adaln:
             assert time_emb is not None, "time_emb required when use_adaln=True"
-            x = x + self.self_attn(self.norm1(x, time_emb), mask=mask)
+            x = x + self.self_attn(self.norm1(x, time_emb), nonbeospank)
             # Layer norm + feed-forward + residual  
             x = x + self.ff(self.norm2(x, time_emb))
         else:
-            x = x + self.self_attn(self.norm1(x), mask=mask)
+            x = x + self.self_attn(self.norm1(x), nonbeospank)
             # Layer norm + feed-forward + residual  
             x = x + self.ff(self.norm2(x))
         return x
@@ -182,8 +181,8 @@ class GeometricTransformerBlock(nn.Module):
             self.norm2 = nn.LayerNorm(cfg.d_model)
             self.norm3 = nn.LayerNorm(cfg.d_model)
 
-    def forward(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None, 
-                mask: Optional[torch.Tensor] = None, time_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None,
+                content_elements: Optional[torch.Tensor] = None, nonbeospank: Optional[torch.Tensor] = None, time_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
         assert coords is not None, "Coordinates are required for GeometricTransformerBlock"
         
         if self.use_adaln:
@@ -191,14 +190,14 @@ class GeometricTransformerBlock(nn.Module):
             # Layer norm + self-attention + residual
             x = x + self.self_attn(self.norm1(x, time_emb))
             # Layer norm + geometric attention + residual
-            x = x + self.geom_attn(self.norm2(x, time_emb), coords, mask)
+            x = x + self.geom_attn(self.norm2(x, time_emb), coords, content_elements, nonbeospank)
             # Layer norm + feed-forward + residual
             x = x + self.ff(self.norm3(x, time_emb))
         else:
             # Layer norm + self-attention + residual
             x = x + self.self_attn(self.norm1(x))
             # Layer norm + geometric attention + residual
-            x = x + self.geom_attn(self.norm2(x), coords, mask)
+            x = x + self.geom_attn(self.norm2(x), coords, content_elements, nonbeospank)
             # Layer norm + feed-forward + residual
             x = x + self.ff(self.norm3(x))
         return x
@@ -223,8 +222,8 @@ class ReflexiveTransformerBlock(nn.Module):
             self.norm2 = nn.LayerNorm(cfg.d_model)
             self.norm3 = nn.LayerNorm(cfg.d_model)
 
-    def forward(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None, 
-                mask: Optional[torch.Tensor] = None, time_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None,
+                content_elements: Optional[torch.Tensor] = None, nonbeospank: Optional[torch.Tensor] = None, time_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
         assert coords is not None, "Coordinates are required for ReflexiveTransformerBlock"
         
         if self.use_adaln:
@@ -232,14 +231,14 @@ class ReflexiveTransformerBlock(nn.Module):
             # Layer norm + self-attention + residual
             x = x + self.self_attn(self.norm1(x, time_emb))
             # Layer norm + reflexive attention + residual
-            x = x + self.refl_attn(self.norm2(x, time_emb), coords, mask)
+            x = x + self.refl_attn(self.norm2(x, time_emb), coords, content_elements, nonbeospank)
             # Layer norm + feed-forward + residual
             x = x + self.ff(self.norm3(x, time_emb))
         else:
             # Layer norm + self-attention + residual
             x = x + self.self_attn(self.norm1(x))
             # Layer norm + reflexive attention + residual
-            x = x + self.refl_attn(self.norm2(x), coords, mask)
+            x = x + self.refl_attn(self.norm2(x), coords, content_elements, nonbeospank)
             # Layer norm + feed-forward + residual
             x = x + self.ff(self.norm3(x))
         return x
@@ -265,16 +264,16 @@ class ConsensusTransformerBlock(nn.Module):
             self.norm1 = nn.LayerNorm(cfg.d_model)
             self.norm2 = nn.LayerNorm(cfg.d_model)
 
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None, time_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, nonbeospank: Optional[torch.Tensor] = None, time_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
         if self.use_adaln:
             assert time_emb is not None, "time_emb required when use_adaln=True"
             # Layer norm + consensus + residual
-            x = x + self.consensus(self.norm1(x, time_emb), mask=mask)
+            x = x + self.consensus(self.norm1(x, time_emb), nonbeospank)
             # Layer norm + feed-forward + residual
             x = x + self.ff(self.norm2(x, time_emb))
         else:
             # Layer norm + consensus + residual
-            x = x + self.consensus(self.norm1(x), mask=mask)
+            x = x + self.consensus(self.norm1(x), nonbeospank)
             # Layer norm + feed-forward + residual
             x = x + self.ff(self.norm2(x))
         return x

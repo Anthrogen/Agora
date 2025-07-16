@@ -98,6 +98,7 @@ class SequenceTokenizer(Tokenizer):
             
         # Also mark UNK tokens as 1s
         seq_beospank[padding_seq_tokens == self.mapping["UNK"]] = 1
+        seq_pad_pos = (padding_seq_tokens == self.mapping["PAD"])
 
         seq_masks = mask & ~seq_beospank
         seq_masks = unmask(seq_masks, seq_beospank, self.min_unmasked, self.generator)
@@ -112,6 +113,7 @@ class SequenceTokenizer(Tokenizer):
         assert padding_seq_tokens.numel() == self.full_length, "Sequence Tokenization failed!"
 
         return padding_seq_tokens, masked_seq_tokens, seq_beospank.bool(), seq_masks.bool()
+        seq_pad_pos.bool()
 
     def print_token(self, tok):
         if isinstance(tok, torch.Tensor):
@@ -160,6 +162,9 @@ class CoordinatesTokenizer(Tokenizer):
         if actual_content_len > 0:  # Only if there's actual coordinate content
             coords_beospank[1:1+actual_content_len] = 0  # Mark real content as 0, keep BOS/EOS/PAD as 1
 
+        coords_pad_pos = torch.zeros_like(coords_beospank, dtype=torch.bool)
+        coords_pad_pos[actual_content_len+2:] = True
+
         # No UNK for coords.
         coords_masks = mask & ~coords_beospank
         coords_masks = unmask(coords_masks, coords_beospank, self.min_unmasked, self.generator)
@@ -169,6 +174,7 @@ class CoordinatesTokenizer(Tokenizer):
         assert padded_coords.shape == (self.full_length, H, 3), "Structure padding length mismatch!"
 
         return padded_coords, masked_coords, coords_beospank.bool(), coords_masks.bool()
+        coords_pad_pos.bool()
 
     def print_token(self, tok):
         return torch.mean(tok).item()
@@ -217,12 +223,13 @@ class StructureTokenizer(Tokenizer):
             three_atom = three_atom.unsqueeze(0).to(next(self.fsq_encoder.parameters()).device)
             four_atom = four_atom.unsqueeze(0).to(next(self.fsq_encoder.parameters()).device)
             content_elements = (~coords_masks & ~coords_beospank).unsqueeze(0).to(next(self.fsq_encoder.parameters()).device)
+            nonbeospank = ~coords_beospank.unsqueeze(0).to(next(self.fsq_encoder.parameters()).device)
             
             # For GA/RA cases, we need to pass the coordinates and mask
             if self.fsq_encoder.cfg.first_block_cfg.initials() in ("GA", "RA"):
-                struct_tokens_full = self.fsq_encoder.encode_to_tokens(three_atom, coords=four_atom, mask=content_elements)
+                struct_tokens_full = self.fsq_encoder.encode_to_tokens(three_atom, coords=four_atom, content_elements=content_elements, nonbeospank=nonbeospank)
             else:
-                struct_tokens_full = self.fsq_encoder.encode_to_tokens(three_atom, mask=content_elements)
+                struct_tokens_full = self.fsq_encoder.encode_to_tokens(three_atom, nonbeospank=nonbeospank)
             struct_tokens_full = struct_tokens_full.squeeze(0).long().squeeze(-1)         # [L] - must be long for embedding
 
         # ------------------------------------------------------------------ #
@@ -237,6 +244,7 @@ class StructureTokenizer(Tokenizer):
         padded_struct_tokens[eos_position] = self.mapping['EOS']
         struct_beospank = coords_beospank.clone()
         struct_masks = coords_masks.clone()
+        # struct_pad_pos = coords_pad_pos.clone()
 
         # tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=device)
         # masked_struct_tokens = torch.where(coords_masks, tensor_of_masks, padded_struct_tokens)
@@ -251,6 +259,7 @@ class StructureTokenizer(Tokenizer):
         assert padded_coords.shape[0] == self.full_length, "Structure padding length mismatch!"
 
         return padded_coords, masked_coords, coords_beospank.bool(), coords_masks.bool(), padded_struct_tokens, masked_struct_tokens, struct_beospank.bool(), struct_masks.bool()
+        # coords_pad_pos.bool(), struct_pad_pos.bool()
 
     def print_token(self, tok):
         return self.reverse_mapping[tok]
@@ -320,12 +329,15 @@ class SS8Tokenizer(Tokenizer):
         ss8_beospank[padded_ss8 == self.mapping["PAD"]] = 1
         ss8_beospank[padded_ss8 == self.mapping["UNK"]] = 1
 
+        ss8_pad_pos = (padded_ss8 == self.mapping["PAD"])
+
         # Sanity checks
         assert torch.max(padded_ss8) < len(self.mapping), "SS8 Tokenization failed!"
         assert torch.min(padded_ss8) >= 0, "SS8 Tokenization failed!"
         assert padded_ss8.numel() == self.full_length, "SS8 Tokenization failed!"
 
         return padded_ss8, ss8_beospank.bool()
+        ss8_pad_pos.bool()
 
 
     def print_token(self, tok):
@@ -393,12 +405,15 @@ class SASATokenizer(Tokenizer):
         sasa_beospank[padded_sasa == self.mapping["PAD"]] = 1
         sasa_beospank[padded_sasa == self.mapping["UNK"]] = 1
 
+        sasa_pad_pos = (padded_sasa == self.mapping["PAD"])
+
         # Sanity checks
         assert torch.max(padded_sasa) < len(self.mapping), "SASA Tokenization failed!"
         assert torch.min(padded_sasa) >= 0, "SASA Tokenization failed!"
         assert padded_sasa.numel() == self.full_length, "SASA Tokenization failed!"
 
         return padded_sasa, sasa_beospank.bool()
+        sasa_pad_pos.bool()
 
     def print_token(self, tok):
         return self.reverse_mapping[tok]
@@ -461,6 +476,8 @@ class PLDDTTokenizer(Tokenizer):
         plddt_beospank[padded_plddt == self.mapping["EOS"]] = 1
         plddt_beospank[padded_plddt == self.mapping["PAD"]] = 1
         plddt_beospank[padded_plddt == self.mapping["UNK"]] = 1
+
+        plddt_pad_pos = (padded_plddt == self.mapping["PAD"])
         
         # Sanity checks
         assert torch.max(padded_plddt) < len(self.mapping), "pLDDT Tokenization failed!"
@@ -468,6 +485,7 @@ class PLDDTTokenizer(Tokenizer):
         assert padded_plddt.numel() == self.full_length, "pLDDT Tokenization failed!"
 
         return padded_plddt, plddt_beospank.bool()
+        plddt_pad_pos.bool()
 
     def print_token(self, tok):
         return self.reverse_mapping[tok]

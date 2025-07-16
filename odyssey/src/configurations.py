@@ -276,7 +276,7 @@ class TransformerConfig(Config):
     dropout:                        float = None   # Other architecture params
     ff_mult:                        int = None
     first_block_cfg:                BlockConfig = None  # SelfConsensusConfig, GeometricAttentionConfig, ReflexiveAttentionConfig, or SelfAttentionConfig
-    context_cfg:                    BlockConfig = None  # CrossConsensusConfig or CrossAttentionConfig for SS8/SASA injection
+    context_cfg:                    BlockConfig = None  # CrossConsensusConfig or CrossAttentionConfig for context injection
     reference_model_seed:           int = None
     fsq_encoder_path:               str = None
     vocab_per_residue_path:         str = None

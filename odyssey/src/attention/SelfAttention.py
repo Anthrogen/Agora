@@ -23,12 +23,12 @@ class SelfAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_dropout = nn.Dropout(dropout)
         
-    def forward(self, x, position_ids=None, mask=None):
+    def forward(self, x, mask=None):
         """
         x: [B, L, dim]
-        position_ids: Optional [B, L] tensor of position indices
         mask: Optional [B, L] boolean tensor where True = valid, False = invalid/padding
         """
+        assert mask is None or mask.dtype == torch.bool, "Mask must be a boolean tensor"
         B, L, C = x.shape        
                 
         # Project to queries, keys, values using separate linear layers

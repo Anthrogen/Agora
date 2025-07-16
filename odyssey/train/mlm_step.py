@@ -49,17 +49,14 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, batch: M
     assert train_cfg.loss_config.loss_elements == "masked"
     """Perform a single MLM step with train/validation mode."""
     masked_seq, masked_struct, masked_coords = batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords']
-    mask_seq, mask_struct, mask_coords= batch.masks['seq'], batch.masks['struct'], batch.masks['coords']
-    seq_tokens, struct_tokens = batch.unmasked_data['seq'], batch.unmasked_data['struct']
     ss8_tokens, sasa_tokens = batch.unmasked_data['ss8'], batch.unmasked_data['sasa']
     global_annotation_tokens, per_residue_annotation_tokens = batch.unmasked_data['global_annotation'], batch.unmasked_data['per_residue_annotation']
     plddt_tokens = batch.unmasked_data['plddt']
     B, L = masked_seq.shape
 
-    assert torch.all(mask_coords == mask_struct), f"mask_coords and mask_struct differ in some positions:\nmask_coords:\n{mask_coords}\nmask_struct:\n{mask_struct}"
-
     # Create mask for GA/RA/SA/SC models and for SS8/SASA
     content_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
+    nonbeospank = ~batch.beospank['coords']
     nonbeospank_ss8 = ~batch.beospank['ss8']
     nonbeospank_sasa = ~batch.beospank['sasa']
     nonbeospank_global_annotation = ~batch.beospank['global_annotation']
@@ -73,8 +70,8 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, batch: M
     with torch.set_grad_enabled(train_mode):
         # Forward pass
         model_type = model.cfg.first_block_cfg.initials()
-        if model_type in ("GA", "RA"): outputs = model(inputs, masked_coords, content_elements, nonbeospank_ss8, nonbeospank_sasa, nonbeospank_global_annotation, nonbeospank_per_residue_annotation, nonbeospank_plddt)
-        else: outputs = model(inputs, mask=content_elements, mask_ss8=nonbeospank_ss8, mask_sasa=nonbeospank_sasa, mask_global_annotation=nonbeospank_global_annotation, mask_per_residue_annotation=nonbeospank_per_residue_annotation, mask_plddt=nonbeospank_plddt)
+        if model_type in ("GA", "RA"): outputs = model(inputs, masked_coords, content_elements, nonbeospank, nonbeospank_ss8, nonbeospank_sasa, nonbeospank_global_annotation, nonbeospank_per_residue_annotation, nonbeospank_plddt)
+        else: outputs = model(inputs, nonbeospank=nonbeospank, nonbeospank_ss8=nonbeospank_ss8, nonbeospank_sasa=nonbeospank_sasa, nonbeospank_global_annotation=nonbeospank_global_annotation, nonbeospank_per_residue_annotation=nonbeospank_per_residue_annotation, nonbeospank_plddt=nonbeospank_plddt)
         seq_logits, struct_logits = outputs
 
         if train_cfg.loss_config.loss_elements == "masked":

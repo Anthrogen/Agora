@@ -6,7 +6,12 @@ import torch
 def validate_gradients(ckpt):
     # Run Stage 1 training.  Watch both encoder and decoder parameters update:
     dvc = torch.device("cuda")
-    model, model_cfg, train_cfg = load_model_from_checkpoint(ckpt, dvc)
+    if ".pt" in ckpt or ".pkl" in ckpt:
+        model, model_cfg, train_cfg = load_model_from_checkpoint(ckpt, dvc)
+    elif ".yaml" in ckpt:
+        model, model_cfg, train_cfg = load_model_from_empty(dvc)
+    else:
+        raise ValueError(f"Invalid checkpoint path: {ckpt}")
 
     B = 4
     L = model_cfg.max_len
@@ -38,4 +43,4 @@ def run_test(ckpt):
 
 
 if __name__ == "__main__":
-    run_test("../../checkpoints/fsq/SC_stage_1_discrete_diffusion_model.pt")
+    run_test("../../checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt")

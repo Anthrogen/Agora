@@ -252,6 +252,7 @@ class SelfConsensus(nn.Module):
         Returns:
             y: [B, L, dim] output features
         """
+        assert mask is None or mask.dtype == torch.bool, "Mask must be a boolean tensor"
         B, L, D = x.shape
         device = x.device
         

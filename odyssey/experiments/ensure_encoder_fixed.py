@@ -8,7 +8,7 @@ The purpose of this file is to test that during stage 2 training, the FSQ encode
 If the FSQ encoder parameters update during stage 2 training, then this test will fail.
 """
 
-_block_cfg = SelfConsensusConfig(
+block_cfg = SelfConsensusConfig(
     consensus_num_iterations=1,
     consensus_connectivity_type="local_window",
     consensus_w=2,
@@ -16,7 +16,7 @@ _block_cfg = SelfConsensusConfig(
     consensus_edge_hidden_dim=12
 )
 
-_stage_1_model_cfg = FSQConfig(
+stage_1_model_cfg = FSQConfig(
     style= "stage_1",  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
     d_model= 128,
     n_heads=1,
@@ -28,11 +28,11 @@ _stage_1_model_cfg = FSQConfig(
     latent_dim= 32,
     fsq_levels= "7x5x5x5x5",
     fsq_encoder_path= None,  # Required for stage_2
-    first_block_cfg= _block_cfg,
+    first_block_cfg=block_cfg,
     context_cfg= None,
 )
 
-_stage_2_model_cfg = FSQConfig(
+stage_2_model_cfg = FSQConfig(
     style= "stage_2",  # Options= "stage_1", "stage_2", "mlm", "discrete_diffusion"
     d_model= 128,
     n_heads= 1,
@@ -44,24 +44,24 @@ _stage_2_model_cfg = FSQConfig(
     latent_dim= 32,
     fsq_levels= "7x5x5x5x5",
     fsq_encoder_path= "/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_simple_model.pt",  # Required for stage_2
-    first_block_cfg= _block_cfg,
-    context_cfg= None,
+    first_block_cfg=block_cfg,
+    context_cfg=None,
 )
 
-_loss_cfg = KabschRMSDLossConfig()
+loss_cfg = KabschRMSDLossConfig()
 
-_mask_cfg = DiffusionMaskConfig(
+mask_cfg = DiffusionMaskConfig(
     noise_schedule="uniform",
     sigma_min=0.31,
     sigma_max=5.68,
     num_timesteps=100
 )
 
-_no_mask_cfg = NoMaskConfig()
+no_mask_cfg = NoMaskConfig()
 
-_stage_1_train_cfg = TrainingConfig(
-    loss_config=_loss_cfg,
-    mask_config=_mask_cfg,
+stage_1_train_cfg = TrainingConfig(
+    loss_config=loss_cfg,
+    mask_config=mask_cfg,
     batch_size=4,
     max_epochs=3,
     learning_rate=0.00001,
@@ -69,9 +69,9 @@ _stage_1_train_cfg = TrainingConfig(
     checkpoint_dir="/workspace/demo/Odyssey/checkpoints/tmp",
 )
 
-_stage_2_train_cfg = TrainingConfig(
-    loss_config=_loss_cfg,
-    mask_config=_no_mask_cfg,
+stage_2_train_cfg = TrainingConfig(
+    loss_config=loss_cfg,
+    mask_config=no_mask_cfg,
     batch_size=4,
     max_epochs=4,
     learning_rate=0.1,
@@ -120,7 +120,7 @@ def callback(ret):
 
 def run_test():
     try:
-        train(_stage_2_model_cfg, _stage_2_train_cfg, callback=callback)
+        train(stage_2_model_cfg, stage_2_train_cfg, callback=callback)
     except AssertionError as e:
         print("Test Failure.")
         return False

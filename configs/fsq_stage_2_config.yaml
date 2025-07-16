@@ -9,7 +9,7 @@ model_cfg:
     style: "stage_2"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
     d_model: 128
     n_heads: 1
-    n_layers: 40
+    n_layers: 10
     max_len: 2048
     max_annotations_per_residue: 4
     max_len_global: 512
@@ -28,13 +28,20 @@ model_cfg:
         consensus_num_iterations: 1
         consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
         consensus_w: 2
-        consensus_r: 24
+        consensus_r: 12
         consensus_edge_hidden_dim: 24
       # self_attention_cfg: {}
       # geometric_attention_cfg: {}
       # reflexive_attention_cfg: {}
     
-    context_cfg: null  # Not needed for stage_2
+    context_cfg:
+      cross_consensus_cfg:  # Options: "cross_attention_cfg", "cross_consensus_cfg"
+        consensus_num_iterations: 1
+        consensus_connectivity_type: "local_window"
+        consensus_w: 2
+        consensus_r: 12
+        consensus_edge_hidden_dim: 24
+      # cross_attention_cfg: {}
 
 # =============================================================================
 # Training Configuration
@@ -43,7 +50,7 @@ train_cfg:
   training_cfg:
     batch_size: 4
     max_epochs: 200
-    learning_rate: 0.0001
+    learning_rate: 0.0005
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/fsq"
     

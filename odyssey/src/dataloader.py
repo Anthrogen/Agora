@@ -389,3 +389,16 @@ class MaskedBatch():
             self.unmasked_data['plddt'], self.beospank['plddt'] = zip(*plddt_data)
             self.unmasked_data['plddt'] = torch.stack(self.unmasked_data['plddt'], dim=0).to(self.device)
             self.beospank['plddt'] = torch.stack(self.beospank['plddt'], dim=0).to(self.device).bool()
+
+    def get_batch_as_list(self):
+        seq_tokens, struct_tokens, ss8_tokens, sasa_tokens, global_annotation_tokens, per_residue_annotation_tokens, plddt_tokens
+
+        x = (self.masked_data['seq'],
+             self.masked_data['struct'],
+             self.masked_data['ss8'],
+             self.masked_data['sasa'],
+             self.masked_data['global_annotation'],
+             self.masked_data['per_residue_annotation'],
+             self.masked_data['plddt'])
+        
+        return x

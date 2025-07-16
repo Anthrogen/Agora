@@ -404,7 +404,13 @@ class ProteinDataset(Dataset):
         # Optionally center the structure at origin
         # This is useful for translation-invariant applications
         if self.center:
-            centroid = coords.reshape(-1, 3).mean(dim=0)  # Average position of all atoms
-            coords = coords - centroid  # Subtract mean from all coordinates
+            # Compute centroid using only backbone atoms (N, CA, C) which are always present
+            backbone_coords = coords[:, :3, :]  # [L, 3, 3] - only N, CA, C
+            centroid = backbone_coords.reshape(-1, 3).mean(dim=0)  # Average position of backbone atoms
+            
+            # Only center non-zero atoms (real atoms), leave missing atoms as zeros
+            non_zero_mask = (coords != 0.0).any(dim=-1)  # [L, H] - True for real atoms
+            coords = torch.where(non_zero_mask.unsqueeze(-1), coords - centroid, coords)
 
         return seq, coords, ss8, sasa, global_annotation, per_residue_annotation, plddt, l
+

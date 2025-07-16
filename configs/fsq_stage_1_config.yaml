@@ -24,15 +24,15 @@ model_cfg:
     
     # First block configuration
     first_block_cfg:
-      - self_consensus_cfg:   # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
-          consensus_num_iterations: 1
-          consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
-          consensus_w: 2
-          consensus_r: 12
-          consensus_edge_hidden_dim: 24
-      - self_attention_cfg: {}
-      - geometric_attention_cfg: {}
-      - reflexive_attention_cfg: {}
+      self_consensus_cfg:   # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
+        consensus_num_iterations: 1
+        consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
+        consensus_w: 2
+        consensus_r: 12
+        consensus_edge_hidden_dim: 24
+      # - self_attention_cfg: {}
+      # - geometric_attention_cfg: {}
+      # - reflexive_attention_cfg: {}
     
     context_cfg: null  # Not needed for stage_1
 
@@ -43,7 +43,7 @@ train_cfg:
   training_cfg:
     batch_size: 4
     max_epochs: 50
-    learning_rate: 0.00001
+    learning_rate: 0.0001
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/fsq"
     

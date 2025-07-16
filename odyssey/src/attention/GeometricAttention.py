@@ -121,12 +121,13 @@ class GeometricAttention(nn.Module):
         B, L, _ = t.shape
         return (t.view(B, L, self.heads, 3).permute(0, 2, 1, 3).contiguous()) # B H L 3
 
-    def forward(self, x: torch.Tensor, coords: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, coords: torch.Tensor, content_elements: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Parameters
         ----------
         x      : Tensor[B, L, dim]      token embeddings
         coords : Tensor[B, L, 3, 3]     backbone coords (N, CA, C)
+        content_elements : Optional[Tensor[B, L]]  boolean mask for valid coordinates
         mask : Optional[Tensor[B, L]]  Boolean mask for valid coordinates
 
         Returns
@@ -141,7 +142,7 @@ class GeometricAttention(nn.Module):
         v  = self._split_heads(self.to_v(x))
 
         # (2) construct per-residue frames
-        R, t = _construct_se3_frames(coords, mask)  # [B,L,3,3], [B,L,3]
+        R, t = _construct_se3_frames(coords, content_elements)  # [B,L,3,3], [B,L,3]
         R_T = R.transpose(-1, -2)
         t = t.unsqueeze(1)                             # [B,1,L,3]
 
