@@ -5,10 +5,10 @@
 
 
 The original implementation of Odyssey 1.0, Anthrogen's protein language model.  Odyssey 1.0 features:
-- Consensus-based transformer blocks,
-- Finite state quantization,
-- 14-atom structure prediction, and
-- discrete diffusion transformer trunk training.
+- Consensus transformer blocks
+- Finite scalar quantization
+- 14-atom structure prediction
+- Discrete diffusion transformer trunk training
 
 # Setup 
 To install all dependencies, and to initialize `odyssey` as a pip package, run:
