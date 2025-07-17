@@ -22,7 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+
 import numpy as np
 from tqdm import tqdm
 from dataclasses import dataclass, field, asdict
@@ -46,7 +46,7 @@ def _token_to_amino_acid(token: int) -> str:
     token_to_aa = {v.value: k for k, v in SEQUENCE_TOKENS.__members__.items()}
     return token_to_aa.get(token, 'X')  # Default to 'X' for unknown tokens
 
-def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: FSQConfig, train_cfg: TrainingConfig, train_mode=True) -> Dict[str, float]:
+def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, scheduler, batch: MaskedBatch, model_cfg: FSQConfig, train_cfg: TrainingConfig, train_mode=True) -> Dict[str, float]:
     assert isinstance(train_cfg.loss_config, KabschRMSDLossConfig)
     # Stage 1: Masked coordinate reconstruction
     B, L, H, _ = batch.masked_data['coords'].shape
@@ -98,12 +98,13 @@ def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            scheduler.step()
         
         # Return metrics
         return {'loss': (loss.item(), B), 'rmsd': (rmsd.item(), B)}
 
 
-def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: FSQConfig, train_cfg: TrainingConfig, train_mode=True) -> Dict[str, float]:
+def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, scheduler, batch: MaskedBatch, model_cfg: FSQConfig, train_cfg: TrainingConfig, train_mode=True) -> Dict[str, float]:
     assert isinstance(train_cfg.loss_config, KabschRMSDLossConfig)
     # Stage 2: Full structure reconstruction from frozen encoder
     B, L, H, _ = batch.masked_data['coords'].shape
@@ -189,6 +190,7 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, batch: Ma
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            scheduler.step()
         
         # Return metrics
         return {'loss': (loss.item(), B), 'rmsd': (rmsd.item(), B)}

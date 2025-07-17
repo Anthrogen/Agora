@@ -19,6 +19,7 @@ model_cfg:
     fsq_encoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt"
     vocab_per_residue_path: "/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt"
     vocab_global_path: "/workspace/demo/Odyssey/odyssey/train/vocab_global_annotations.txt"
+    jump_start: null
     
     # First block configuration
     first_block_cfg:
@@ -48,9 +49,18 @@ train_cfg:
   training_cfg:
     batch_size: 4
     max_epochs: 50
-    learning_rate: 0.00001
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/transformer_trunk"
+
+    # Optimizer schedule configuration.
+    optim_schedule_config:
+      # linear_decay_scheduler_cfg:
+      #   base_learning_rate: 0.00025
+      #   min_learning_rate: 0.00005
+      #   num_epochs_decay: 100000
+      #   num_epochs_warmup: 5000
+      flat_scheduler_cfg:
+        learning_rate: 0.00001
     
     # Loss configuration
     loss_config:

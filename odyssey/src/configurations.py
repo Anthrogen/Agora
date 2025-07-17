@@ -42,6 +42,10 @@ class Config:
     def make_copy(self):
         return deepcopy(self)
 
+    def is_equal(self, other: Config):
+        raise NotImplementedError("Not today.")
+        
+
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> 'Config':
         """Recursively build configuration from dictionary with type/params structure."""
@@ -376,6 +380,37 @@ class FSQConfig(TransformerConfig):
         new_d['fsq_levels'] = "".join(str(c) + "x" for c in codebook)[:-1]
         return FSQConfig(**new_d)
 
+@dataclass
+class SchedulerConfig(Config):
+    """Scheduler configuration."""
+    pass
+
+@register_config("flat_scheduler_cfg")
+@dataclass
+class FlatSchedulerConfig(SchedulerConfig):
+    """Flat scheduler configuration."""
+    learning_rate:              float = None
+
+    def __post_init__(self):
+        assert self.learning_rate is not None and self.learning_rate > 0
+
+@register_config("linear_decay_scheduler_cfg")
+@dataclass
+class LinearDecaySchedulerConfig(SchedulerConfig):
+    """Linear decay scheduler configuration."""
+
+    base_learning_rate:              float = None
+    min_learning_rate:               float = None
+    num_epochs_decay:                int = None
+    num_epochs_warmup:               int = None
+
+    def __post_init__(self):
+        assert self.base_learning_rate is not None and isinstance(self.base_learning_rate, (int, float)) and self.base_learning_rate > 0
+        assert self.min_learning_rate is not None and isinstance(self.min_learning_rate, (int, float)) and self.min_learning_rate > 0
+        assert self.num_epochs_decay is not None and isinstance(self.num_epochs_decay, int) and self.num_epochs_decay > 0
+        assert self.num_epochs_warmup is not None and isinstance(self.num_epochs_warmup, int) and self.num_epochs_warmup > 0
+        assert self.base_learning_rate >= self.min_learning_rate
+
 @register_config("training_cfg")
 @dataclass
 class TrainingConfig(Config):
@@ -383,45 +418,28 @@ class TrainingConfig(Config):
     # Model types should be in models configuration...
     batch_size:                   int = None # Training hyperparameters
     max_epochs:                   int = None
-    learning_rate:                float = None
+    optim_schedule_config:        SchedulerConfig = None
     mask_config:                  MaskConfig = None
     loss_config:                  LossConfig = None
     data_dir:                     str = None  # Data paths
+
+    # Optional, the path to the .pt checkpoint to jump start the training from.
+    #  If none, the training will cold-start.
+    jump_start:                   str = None 
     checkpoint_dir:               str = None   # Checkpointing
-
-    #########################################################
-
-    # num_iter
-    # get rid fo num_iter and absorb into the training wrapper (possibly shell script.)
-    # # TODO: remove entirely and incorporate into model_librarian.py
-    # # TODO: use os.path.join instead of /.
-    # # Model paths (models in /scripts/checkpoints)
-    # simple_checkpoint_pattern:    str = None
-    # complex_checkpoint_pattern:   str = None
-    # discrete_diffusion_checkpoint_pattern: str = None
-    
-    # # FSQ encoder paths (in /checkpoints, not /scripts/checkpoints)
-    # # this hsould just be in the ModelConfig object.
-    # # fsq_encoder_pattern:          str = None
-
-    # # we'll worry about validation later.
-    # # maybe we can have a "pseudo-diffusion-masker" config object that is derived from MaskConfig
-    # # Here only because of validation_trunk.py.  We NEED to get these out of here ASAP.
-    # time_indices:                 list[int] = None # TODO: move into DiffusionConfig or elsewhere.  Perhaps into MaskConfig?
-    # # Time indices to evaluate (directly specified)
-    # training_methods:             list[Any] = None
-
 
     def __post_init__(self):
         assert isinstance(self.batch_size, int) and self.batch_size > 0
         assert isinstance(self.max_epochs, int) and self.max_epochs > 0
-        assert isinstance(self.learning_rate, (int, float)) and self.learning_rate > 0
+        assert isinstance(self.optim_schedule_config, SchedulerConfig)
         assert isinstance(self.mask_config, MaskConfig)
         assert isinstance(self.loss_config, LossConfig)
 
         assert self.data_dir is not None and os.path.exists(self.data_dir), f"Data directory {self.data_dir} does not exist."
         assert not isinstance(self.checkpoint_dir, list) and ',' not in str(self.checkpoint_dir) and ';' not in str(self.checkpoint_dir), f"Multiple checkpoint directories not allowed: {self.checkpoint_dir}"
         assert self.checkpoint_dir is not None and os.path.exists(self.checkpoint_dir), f"Checkpoint directory {self.checkpoint_dir} does not exist."
+
+        assert self.jump_start is None or os.path.exists(self.jump_start)
         
         # Store configuration as dictionary for safety
         self._config_dict = self.to_dict()

@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import LambdaLR
 import numpy as np
 from tqdm import tqdm
 from dataclasses import dataclass, field, asdict, replace
@@ -34,6 +34,25 @@ from odyssey.src.model_librarian import ensure_identical_parameters_transformers
 from odyssey.train.yaml_expander import expand_yaml_to_directory
 from odyssey.train.generate_experiment_map import generate_experiment_map
 
+class FakeScheduler():
+    def __init__(self): pass
+    def step(self): pass
+
+def create_linear_decay(base_learning_rate: float, min_learning_rate: float, num_epochs_decay: int, num_epochs_warmup: int):
+    def lr_lambda(current_step): # One step = one forward pass through the model
+        if current_step < num_epochs_warmup: # Linear warmup from min_lr to base_lr
+            warmup_progress = current_step / num_epochs_warmup
+            warmup_lr = min_learning_rate + warmup_progress * (base_learning_rate - min_learning_rate)
+            return warmup_lr / base_learning_rate
+        elif current_step < (num_epochs_warmup + num_epochs_decay): # Linear decay from base_lr to min_lr
+            decay_step = current_step - num_epochs_warmup
+            decay_progress = decay_step / num_epochs_decay
+            decay_lr = base_learning_rate - decay_progress * (base_learning_rate - min_learning_rate)
+            return decay_lr / base_learning_rate
+        else: # Stay at min_lr after decay period
+            return min_learning_rate / base_learning_rate
+
+    return lr_lambda
 
 def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[TrainingConfig], callback=None):
     # If a user just passes in a single set of configs, listify them.
@@ -53,6 +72,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
     # Lists to store model-specific objects
     models = []
     optimizers = []
+    schedulers = []
     step_fns = []
     tracks_list = []
     min_unmasked_list = []
@@ -92,23 +112,41 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         print(f"  Training model: {model_cfg.first_block_cfg}")
         print(f"  Masking: {train_cfg.mask_config}")
         
-        # Create model with fixed seed
-        print(f"  Creating {model_cfg.first_block_cfg.initials()} target model...")
-        model = load_model_from_empty(model_cfg, device)
+        if train_cfg.jump_start is None: # No jump start provided.  We will cold-start the model. Create model with fixed seed
+            print(f"  Creating {model_cfg.first_block_cfg.initials()} target model...")
+            model = load_model_from_empty(model_cfg, device)
+        else: # Jump start provided.  Load model from checkpoint.
+            print(f"  Loading {model_cfg.first_block_cfg.initials()} target model from {train_cfg.jump_start}...")
+            model, model_cfg_loaded, train_cfg_loaded= load_model_from_checkpoint(train_cfg.jump_start, device)
+            # TODO: Assert model_cfg from load and model_cfg "similar enough", but the train_cfg can be different.
+
         fsq_encoder = None
         if load_fsq_encoder: 
-            fsq_encoder, _, _ = load_model_from_checkpoint(model_cfg.fsq_encoder_path, device)
-            if isinstance(model, Autoencoder):
-                model.encoder = fsq_encoder
+            autoencoder, _, _ = load_model_from_checkpoint(model_cfg.fsq_encoder_path, device)
+            fsq_encoder = autoencoder.encoder
+            fsq_encoder.eval(); fsq_encoder.requires_grad_(False)
+            if isinstance(model, Autoencoder): model.encoder = fsq_encoder
                 
         models.append((model, fsq_encoder))
-        
-        optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.learning_rate)
-        optimizers.append(optimizer)
-        
+
         # Print parameter count
         total_params = sum(p.numel() for p in model.parameters())
         print(f"  {model_cfg.first_block_cfg.initials()} total parameters: {total_params:,}")
+
+        ###########################################################################
+        # Initializing optimizer and scheduler
+        ###########################################################################
+        if isinstance(train_cfg.optim_schedule_config, FlatSchedulerConfig):
+            optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.optim_schedule_config.learning_rate)
+            scheduler = FakeScheduler()
+        elif isinstance(train_cfg.optim_schedule_config, LinearDecaySchedulerConfig):
+            optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.optim_schedule_config.base_learning_rate)
+            lr_lambda = create_linear_decay(train_cfg.optim_schedule_config.base_learning_rate, train_cfg.optim_schedule_config.min_learning_rate, train_cfg.optim_schedule_config.num_epochs_decay, train_cfg.optim_schedule_config.num_epochs_warmup)
+            scheduler = LambdaLR(optimizer, lr_lambda)
+        else: raise ValueError(f"Invalid optimizer schedule: {train_cfg.optim_schedule_config}")
+
+        optimizers.append(optimizer)
+        schedulers.append(scheduler)
     
     ###########################################################################
     #  Data Loading
@@ -174,6 +212,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             model_cfg = model_cfg_list[model_idx]
             train_cfg = train_cfg_list[model_idx]
             optimizer = optimizers[model_idx]
+            scheduler = schedulers[model_idx]
             train_loader = train_loaders[model_idx]
             step_fn = step_fns[model_idx]
             
@@ -185,7 +224,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                     if batch_data is None: continue
                     
                     # Train single model on batch
-                    train_metrics = step_fn(model, optimizer, batch_data, model_cfg, train_cfg, train_mode=True)
+                    train_metrics = step_fn(model, optimizer, scheduler, batch_data, model_cfg, train_cfg, train_mode=True)
                     
                     # Accumulate metrics (step functions now return (value, count) tuples)
                     for k, (value, count) in train_metrics.items():
@@ -207,6 +246,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             model_cfg = model_cfg_list[model_idx]
             train_cfg = train_cfg_list[model_idx]
             optimizer = optimizers[model_idx]
+            scheduler = schedulers[model_idx]
             val_loader = val_loaders[model_idx]
             step_fn = step_fns[model_idx]
             
@@ -217,7 +257,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                     if batch_data is None: continue
                         
                     # Validate single model on batch
-                    val_metrics = step_fn(model, optimizer, batch_data, model_cfg, train_cfg, train_mode=False)
+                    val_metrics = step_fn(model, optimizer, scheduler, batch_data, model_cfg, train_cfg, train_mode=False)
                     
                     # Accumulate validation metrics (step functions now return (value, count) tuples)
                     for k, (value, count) in val_metrics.items():

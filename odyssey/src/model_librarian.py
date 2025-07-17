@@ -159,29 +159,9 @@ def save_model_checkpoint(path, model, model_cfg, train_cfg, optimizer):
         'training_config_dict': train_cfg.to_dict()  # Backup dictionary
     }, path)
 
-
-def load_autoencoder_from_checkpoint(model_path, device, freeze=True):
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    model_cfg = checkpoint['model_config']
-    train_cfg = checkpoint['train_config']
-    
-    assert isinstance(model_cfg, FSQConfig)
-
-    model = Autoencoder(model_cfg)
-    model.load_state_dict(checkpoint['model_state_dict'])
-
-    if freeze:
-        model.eval()
-        model.requires_grad_(False)
-
-    model = model.to(device)
-    
-    return model, model_cfg, train_cfg
-
-
-def load_model_from_checkpoint(model_path, device, freeze=True):
+def load_model_from_checkpoint(model_path, device, freeze=False):
     """
-    Load model from checkpoint. Handles both FSQ encoders and full models.
+    Load model from checkpoint. Handles both FSQ autoencoders and transformer models.
     
     Args:
         model_path: Path to the model checkpoint
@@ -189,36 +169,19 @@ def load_model_from_checkpoint(model_path, device, freeze=True):
         freeze: Whether to freeze the model parameters
         
     Returns:
-        model: Loaded model (FSQ encoder for Autoencoder configs, full model for others)
+        model: Loaded model (full Autoencoder for FSQConfig, TransformerTrunk for TrunkConfig)
     """
+    assert freeze == False
+
     # Load checkpoint with dynamic path based on model type
     # TODO also, we should be using os.path.join rather than / wherever possible.
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     model_cfg = checkpoint['model_config']
     train_cfg = checkpoint['train_config']
 
-    constructor = FSQEncoder if isinstance(model_cfg, FSQConfig) else TransformerTrunk
-    
-    # Determine model type based on config instance
-    if isinstance(model_cfg, FSQConfig):
-        # FSQConfig - Load FSQ encoder from Autoencoder checkpoint
-        encoder_state = {k.removeprefix('encoder.'): v for k, v in checkpoint['model_state_dict'].items() if k.startswith('encoder.')}
-    elif isinstance(model_cfg, TrunkConfig):
-        encoder_state = checkpoint['model_state_dict']
-    else:
-        raise ValueError(f"Unknown model config type: {type(model_cfg).__name__}. Expected FSQConfig or TrunkConfig.")
-
+    constructor = Autoencoder if isinstance(model_cfg, FSQConfig) else TransformerTrunk
     model = constructor(model_cfg)
-    if isinstance(model_cfg, FSQConfig):
-        model.load_state_dict(encoder_state)
-    else:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    print(f"Loaded {type(model_cfg).__name__} model weights from: {model_path}")
-
-    if freeze:
-        model.eval()
-        model.requires_grad_(False)
-
+    model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
     
     return model, model_cfg, train_cfg

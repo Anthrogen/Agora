@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.optim import AdamW
+
 import numpy as np
 from tqdm import tqdm
 from dataclasses import dataclass, field
@@ -37,7 +38,7 @@ from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import score_entropy_loss_absorb, score_entropy_loss_uniform
 from odyssey.src.configurations import TrunkConfig, TrainingConfig, ScoreEntropyLossConfig
 
-def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, batch: MaskedBatch, model_cfg: TrunkConfig, train_cfg: TrainingConfig, train_mode: bool = True) -> Dict[str, float]:
+def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, scheduler, batch: MaskedBatch, model_cfg: TrunkConfig, train_cfg: TrainingConfig, train_mode: bool = True) -> Dict[str, float]:
     assert isinstance(train_cfg.loss_config, ScoreEntropyLossConfig)
     """Perform a single step with discrete diffusion."""
     seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
@@ -50,7 +51,7 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
     B, L = seq_x_t.shape
 
     content_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
-    nonbeospank = ~batch.beospank['coords']
+    nonbeospank = ~batch.beospank['coords'] & ~batch.beospank['seq']
     nonbeospank_ss8 = ~batch.beospank['ss8']
     nonbeospank_sasa = ~batch.beospank['sasa']
     nonbeospank_global_annotation = ~batch.beospank['global_annotation']
@@ -89,6 +90,7 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            scheduler.step()
         
         # Return metrics
         return {'loss': (loss.item(), B), 'loss_seq': (loss_seq.item(), B), 'loss_struct': (loss_struct.item(), B)}

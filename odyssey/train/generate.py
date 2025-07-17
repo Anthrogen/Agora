@@ -38,14 +38,20 @@ from odyssey.train.generate_experiment_map import generate_experiment_map
 def generate(model_checkpoint, callback=None):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, model_cfg, train_cfg = load_model_from_checkpoint(model_checkpoint, device)
 
-    transformer, fsq_encoder, fsq_decoder = None, None, None
+    ###########################################################################
+    # Load model
+    ###########################################################################
+    transformer, transformer_model_cfg, transformer_train_cfg = load_model_from_checkpoint(model_checkpoint, device)
+    autoencoder, autoencoder_model_cfg, autoencoder_train_cfg = load_model_from_checkpoint(transformer_model_cfg.fsq_encoder_path, device)
 
-    assert isinstance(model, TransformerTrunk), "Model must be a TransformerTrunk"
-
-
-
+    transformer.eval()
+    transformer.requires_grad_(False)
+    autoencoder.eval()
+    autoencoder.requires_grad_(False)
+    
+    assert isinstance(transformer, TransformerTrunk), "Model must be a TransformerTrunk"
+    assert isinstance(autoencoder, Autoencoder), "Model must be an Autoencoder"
 
     # Use different masking strategies for stage 1 vs stage 2
     elif model_cfg.style == "mlm":
@@ -54,9 +60,11 @@ def generate(model_checkpoint, callback=None):
     elif model_cfg.style == "discrete_diffusion":
         tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'global_annotation': True, 'per_residue_annotation': True, 'plddt': True}
         min_unmasked = {'seq': 0, 'coords': 1}
-    
+
+    dataset_mode = "side_chain" if model_cfg.style == "stage_2" else "backbone"
+
     ###########################################################################
-    #  Data Loading
+    #  Data Loading 
     ###########################################################################
     # Set seed for dataset split
     data_seed = model_cfg.reference_model_seed
@@ -70,26 +78,20 @@ def generate(model_checkpoint, callback=None):
     g_val = torch.Generator()
     g_val.manual_seed(data_seed + 5000)
 
-    dataset = ProteinDataset(train_cfg.data_dir, mode=dataset_modes[i], max_length=model_cfg.max_len - 2, max_length_global=model_cfg.max_len_global - 2)
+    dataset = ProteinDataset(train_cfg.data_dir, mode=dataset_modes, max_length=model_cfg.max_len - 2, max_length_global=model_cfg.max_len_global - 2)
     val_size = max(1, int(0.2 * len(dataset)))
     train_size = len(dataset) - val_size
 
     # We use g_val as the generator of the split
     _, data = random_split(dataset, [train_size, val_size], generator=g_val)
 
-
     # Do not mask anything.
     val_loader = NoMaskDataLoader(data, model_cfg, train_cfg, tracks, device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, 
-                                        worker_init_fn=worker_init_fn, min_unmasked=min_unmasked_list[i], 
-                                        fsq_encoder=fsq_encoder)
+                                        worker_init_fn=worker_init_fn, min_unmasked=min_unmasked_list, 
+                                        fsq_encoder=autoencoder.encoder)
 
-    
     for batch in val_loader:
         generate_mlm(model, model_cfg, train_cfg, batch)
-
-
-
-
 
 def generate_mlm(model, model_cfg, train_cfg, batch):
     """
@@ -102,12 +104,8 @@ def generate_mlm(model, model_cfg, train_cfg, batch):
     remask_per_pass # Not yet implemented.
     """
 
-    # How to directly modify the batch? 
-    logits = model(batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords'], batch.masked_data['ss8'], batch.masked_data['sasa'], batch.masked_data['global_annotation'], batch.masked_data['per_residue_annotation'], batch.masked_data['plddt'])
-
-
-
-    
+    x = batch.get_masked_data()
+    beospank = batch.get_beospanks()
 
 
 if __name__ == "__main__":
@@ -121,4 +119,3 @@ if __name__ == "__main__":
     # Go up to the project root and into configs/expanded (base directory)
     expanded_base_dir = Path(__file__).parent.parent.parent / "checkpoints"
     expanded_yaml_dir = expanded_base_dir / yaml_name
-    
