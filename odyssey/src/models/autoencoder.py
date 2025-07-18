@@ -62,12 +62,6 @@ class FSQEncoder(nn.Module):
             nn.Linear(cfg.latent_dim, cfg.fsq_dim)
         )
         
-        # FSQ Quantizer
-        # Using custom level structure: [7, 5, 5, 5, 5]
-        # Codebook size = 7 × 5 × 5 × 5 × 5 = 4,375 discrete codes
-        self.quantizer = Quantizer(levels=cfg.fsq_levels, dim=cfg.fsq_dim, scale=1)
-        self.codebook_size = math.prod(cfg.fsq_levels)
-        
     def forward(
         self,
         x: torch.Tensor,
@@ -111,48 +105,33 @@ class FSQEncoder(nn.Module):
         # Project to FSQ dimension
         z = self.encoder_proj(h)            # [B, L, fsq_dim]
         
-        # Quantize
-        z_q, indices = self.quantizer(z)    # [B, L, fsq_dim], [B, L]
-        
-        return z_q, indices
-    
-    def encode_to_tokens(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None, content_elements: Optional[torch.Tensor] = None, nonbeospank: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Convenience method for tokenization that returns only the indices.
-        
-        Args:
-            x: [B, L, 3, 3] backbone coordinates
-            coords: Optional additional coordinates for GA/RA models
-            content_elements: Optional mask for GA/RA models
-            nonbeospank: Optional mask for GA/RA models
-        Returns:
-            indices: [B, L] discrete token indices
-        """
-        _, indices = self.forward(x, coords, content_elements, nonbeospank)
-        return indices
+        return z
+
 
 class FSQDecoder(nn.Module):
     """
     The decoder part of the FSQ autoencoder.
     Maps from quantized vectors back to backbone coordinates.
     """
-    def __init__(self, cfg, out_dim):
+    def __init__(self, cfg, out_dim, use_seq_context=False, seq_vocab=None):
         super().__init__()
         self.out_dim = out_dim
         self.cfg = cfg
         
-        # Determine input dimension for decoder_input layer
-        # Stage 2: fsq_dim (just z_q, seq info injected via cross-attention/consensus)
-        # Stage 1: fsq_dim (just z_q)
-        decoder_input_dim = cfg.fsq_dim
-        
-        # Decoder
-        self.decoder_input = nn.Linear(decoder_input_dim, cfg.d_model)
+        # Decoder projection - symmetric to encoder_proj
+        # fsq_dim -> latent_dim -> d_model (reverse of encoder_proj)
+        self.decoder_proj = nn.Sequential(
+            nn.Linear(cfg.fsq_dim, cfg.latent_dim),
+            nn.GELU(),
+            nn.Linear(cfg.latent_dim, cfg.d_model)
+        )
         
         # Context sequence for stage 2
-        if cfg.style == "stage_2" and cfg.context_cfg is not None:
+        if use_seq_context:
+            assert cfg.context_cfg is not None, "Context configuration is required when use_seq_context=True"
+            assert seq_vocab is not None, "seq_vocab must be provided when use_seq_context=True"
             # Sequence embedding layer for context sequence
-            self.seq_embed = nn.Embedding(cfg.seq_vocab, cfg.d_model)
+            self.seq_embed = nn.Embedding(seq_vocab, cfg.d_model)
             
             # Initialize context sequence based on configuration
             context_type = cfg.context_cfg.initials()
@@ -195,12 +174,9 @@ class FSQDecoder(nn.Module):
         self.decoder_conv1 = ConvBlock(cfg.d_model)
         self.decoder_conv2 = ConvBlock(cfg.d_model)
         
-        # Output projection - uses custom out_dim
-        self.output_proj = nn.Sequential(
-            nn.Linear(cfg.d_model, cfg.latent_dim),
-            nn.GELU(),
-            nn.Linear(cfg.latent_dim, out_dim)
-        )
+        # Output projection - symmetric to input_proj
+        # d_model -> coordinates (no latent_dim intermediate)
+        self.output_proj = nn.Linear(cfg.d_model, out_dim)
         
     def forward(
         self,
@@ -223,8 +199,8 @@ class FSQDecoder(nn.Module):
         """
         B, L, _ = z_q.shape
         
-        # Decoder: from quantized z to d_model
-        h = self.decoder_input(z_q)         # [B, L, d_model]
+        # Decoder projection: from quantized z to d_model (symmetric to encoder_proj)
+        h = self.decoder_proj(z_q)         # [B, L, d_model]
         
         # Context sequence for stage 2
         if self.context_sequence is not None and seq_tokens is not None:
@@ -252,10 +228,10 @@ class FSQDecoder(nn.Module):
         h_conv = self.decoder_conv2(h_conv) # [B, d_model, L]
         h = h_conv.transpose(1, 2)          # [B, L, d_model]
         
-        # Project to output dimensions
-        out = self.output_proj(h)           # [B, L, in_dim]
+        # Output projection: d_model -> coordinates (symmetric to input_proj)
+        out = self.output_proj(h)           # [B, L, out_dim]
         
-        # Reshape based on in_dim
+        # Reshape based to coordinate format
         num_atoms = self.out_dim // 3
         x_rec = out.view(B, L, num_atoms, 3)  # [B, L, num_atoms, 3]
         
@@ -277,25 +253,34 @@ class Autoencoder(nn.Module):
         # Store config
         self.cfg = cfg
         
-        # Create encoder and decoder
-        self.encoder = FSQEncoder(cfg)
+        # Create encoder and decoder using their sub-configs directly
+        self.encoder = FSQEncoder(cfg.encoder_cfg)
         
         # Create decoder with appropriate in_dim based on stage
-        if cfg.style == "stage_2":
-            # Stage 2: decoder outputs 14 atoms
-            decoder_out_dim = 14 * 3
-        else:
-            # Stage 1: decoder outputs 3 atoms
-            decoder_out_dim = 3 * 3
+        if cfg.style == "stage_2": decoder_out_dim = 14 * 3 # Stage 2: decoder outputs 14 atoms
+        else: decoder_out_dim = 3 * 3 # Stage 1: decoder outputs 3 atoms
             
-        self.decoder = FSQDecoder(cfg, out_dim=decoder_out_dim)
-        
-        # Expose quantizer for easier access
-        self.quantizer = self.encoder.quantizer
+        self.decoder = FSQDecoder(cfg.decoder_cfg, out_dim=decoder_out_dim, use_seq_context=(cfg.style == "stage_2"), seq_vocab=cfg.seq_vocab)
 
-    @property
-    def quantizer(self):
-        return self.encoder.quantizer
+        # FSQ Quantizer: Using custom level structure from encoder config
+        self.quantizer = Quantizer(levels=cfg.encoder_cfg.fsq_levels, dim=cfg.encoder_cfg.fsq_dim, scale=1)
+        self.codebook_size = math.prod(cfg.encoder_cfg.fsq_levels)
+
+    def encode_to_tokens(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None, content_elements: Optional[torch.Tensor] = None, nonbeospank: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Convenience method for tokenization that returns only the indices.
+        
+        Args:
+            x: [B, L, 3, 3] backbone coordinates
+            coords: Optional additional coordinates for GA/RA models
+            content_elements: Optional mask for GA/RA models
+            nonbeospank: Optional mask for GA/RA models
+        Returns:
+            indices: [B, L] discrete token indices
+        """
+        z = self.encoder(x, coords, content_elements, nonbeospank)
+        _, indices = self.quantizer(z)
+        return indices
 
     def forward(self, x: torch.Tensor,
         coords: Optional[torch.Tensor] = None,  # [B, L, 3, 3] or [B, L, 4, 3] for GA/RA
@@ -315,7 +300,10 @@ class Autoencoder(nn.Module):
           indices: [B, L] discrete codes
         """
         # Encode
-        z_q, indices = self.encoder(x, coords, content_elements, nonbeospank)
+        z = self.encoder(x, coords, content_elements, nonbeospank)
+
+        # Quantize
+        z_q, indices = self.quantizer(z)    # [B, L, fsq_dim], [B, L]
         
         # Decode
         x_rec = self.decoder(z_q, coords, content_elements, nonbeospank, seq_tokens)

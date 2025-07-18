@@ -43,7 +43,7 @@ def generate(model_checkpoint, callback=None):
     # Load model
     ###########################################################################
     transformer, transformer_model_cfg, transformer_train_cfg = load_model_from_checkpoint(model_checkpoint, device)
-    autoencoder, autoencoder_model_cfg, autoencoder_train_cfg = load_model_from_checkpoint(transformer_model_cfg.fsq_encoder_path, device)
+    autoencoder, autoencoder_model_cfg, autoencoder_train_cfg = load_model_from_checkpoint(transformer_model_cfg.autoencoder_path, device)
 
     transformer.eval()
     transformer.requires_grad_(False)
@@ -54,20 +54,20 @@ def generate(model_checkpoint, callback=None):
     assert isinstance(autoencoder, Autoencoder), "Model must be an Autoencoder"
 
     # Use different masking strategies for stage 1 vs stage 2
-    elif model_cfg.style == "mlm":
+    if transformer_model_cfg.style == "mlm":
         tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'global_annotation': True, 'per_residue_annotation': True, 'plddt': True}
         min_unmasked = {'seq': 0, 'coords': 1}
-    elif model_cfg.style == "discrete_diffusion":
+    elif transformer_model_cfg.style == "discrete_diffusion":
         tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'global_annotation': True, 'per_residue_annotation': True, 'plddt': True}
         min_unmasked = {'seq': 0, 'coords': 1}
 
-    dataset_mode = "side_chain" if model_cfg.style == "stage_2" else "backbone"
+    dataset_mode = "side_chain" if transformer_model_cfg.style == "stage_2" else "backbone"
 
     ###########################################################################
     #  Data Loading 
     ###########################################################################
     # Set seed for dataset split
-    data_seed = model_cfg.reference_model_seed
+    data_seed = transformer_model_cfg.reference_model_seed
     torch.manual_seed(data_seed)
     np.random.seed(data_seed)
     random.seed(data_seed)
@@ -78,7 +78,7 @@ def generate(model_checkpoint, callback=None):
     g_val = torch.Generator()
     g_val.manual_seed(data_seed + 5000)
 
-    dataset = ProteinDataset(train_cfg.data_dir, mode=dataset_modes, max_length=model_cfg.max_len - 2, max_length_global=model_cfg.max_len_global - 2)
+    dataset = ProteinDataset(transformer_train_cfg.data_dir, mode=dataset_mode, max_length=transformer_model_cfg.max_len - 2, max_length_global=transformer_model_cfg.max_len_global - 2)
     val_size = max(1, int(0.2 * len(dataset)))
     train_size = len(dataset) - val_size
 
@@ -86,36 +86,29 @@ def generate(model_checkpoint, callback=None):
     _, data = random_split(dataset, [train_size, val_size], generator=g_val)
 
     # Do not mask anything.
-    val_loader = NoMaskDataLoader(data, model_cfg, train_cfg, tracks, device, batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, 
-                                        worker_init_fn=worker_init_fn, min_unmasked=min_unmasked_list, 
+    GENERATION_BATCH_SIZE = 1
+    val_loader = NoMaskDataLoader(data, transformer_model_cfg, transformer_train_cfg, tracks, device, batch_size=GENERATION_BATCH_SIZE, shuffle=False, generator=g_val, 
+                                        worker_init_fn=worker_init_fn, min_unmasked=min_unmasked, 
                                         fsq_encoder=autoencoder.encoder)
 
     for batch in val_loader:
-        generate_mlm(model, model_cfg, train_cfg, batch)
+        if transformer_model_cfg.style == "mlm":
+            batch = generate_mlm(transformer, transformer_model_cfg, transformer_train_cfg, batch)
+        else:
+            raise NotImplementedError(f"Style {transformer_model_cfg.style} not implemented for generation at this time.")
 
-def generate_mlm(model, model_cfg, train_cfg, batch):
-    """
-    Hard-coded parameters:
-    unmask_per_pass = 3
-    unmask_strategy = "max_confidence" # or "uniform" or "prob_confidence"
-    # max_confidence = unmask the three tokens of which you are most confident.
-    # prob_confidence = unmask the three tokens probabilistically, with probability proportional to confidence.
-    # uniform = unmask three tokens uniformly at random.
-    remask_per_pass # Not yet implemented.
-    """
-
-    x = batch.get_masked_data()
-    beospank = batch.get_beospanks()
-
+    return batch
 
 if __name__ == "__main__":
+    """
+    Easy way to test:
+    python generate.py --checkpoint ../../checkpoints/connor_test/connor_test_000/model.pt
+    """
     parser = argparse.ArgumentParser(description='Train Odyssey models')
-    parser.add_argument('--config', type=str, required=True, help='Path to configuration YAML file')
+    parser.add_argument('--checkpoint', type=str, required=True, help='Path to fully trained model checkpoint')
     args = parser.parse_args()
     
-    # Create expanded directory name based on config file - save to configs folder
-    config_path = Path(args.config)
-    yaml_name = config_path.stem
-    # Go up to the project root and into configs/expanded (base directory)
-    expanded_base_dir = Path(__file__).parent.parent.parent / "checkpoints"
-    expanded_yaml_dir = expanded_base_dir / yaml_name
+    assert os.path.exists(args.checkpoint), f"Checkpoint {args.checkpoint} does not exist."
+
+    batch = generate(args.checkpoint)
+    

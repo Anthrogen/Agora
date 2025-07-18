@@ -7,40 +7,43 @@
 model_cfg:
   trunk_cfg:
     style: "mlm"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
-    d_model: 128
-    n_heads: 1
-    n_layers: 3
-    max_len: 2048
-    max_annotations_per_residue: 4
-    max_len_global: 512
-    dropout: 0.1
-    ff_mult: 4
+    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt"
     reference_model_seed: 42
-    fsq_encoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt"
+
     vocab_per_residue_path: "/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt"
     vocab_global_path: "/workspace/demo/Odyssey/odyssey/train/vocab_global_annotations.txt"
-    jump_start: null
-    
-    # First block configuration
-    first_block_cfg:
-      self_consensus_cfg:  # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
-        consensus_num_iterations: 1
-        consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
-        consensus_w: 2
-        consensus_r: 24
-        consensus_edge_hidden_dim: 12
-      # self_attention_cfg: {}
-      # geometric_attention_cfg: {}
-      # reflexive_attention_cfg: {}
-    
-    context_cfg:
-      cross_consensus_cfg:  # Options: "cross_attention_cfg", "cross_consensus_cfg"
-        consensus_num_iterations: 1
-        consensus_connectivity_type: "local_window"
-        consensus_w: 2
-        consensus_r: 24
-        consensus_edge_hidden_dim: 12
-      # cross_attention_cfg: {}
+    max_annotations_per_residue: 4
+    max_len_global: 512
+
+    transformer_cfg:
+      transformer_cfg:
+        d_model: 128
+        n_heads: 1
+        n_layers: 3
+        max_len: 2048
+        dropout: 0.1
+        ff_mult: 4
+
+        context_cfg:
+          cross_consensus_cfg:  # Options: "cross_attention_cfg", "cross_consensus_cfg"
+            consensus_num_iterations: 1
+            consensus_connectivity_type: "local_window"
+            consensus_w: 2
+            consensus_r: 24
+            consensus_edge_hidden_dim: 12
+          # cross_attention_cfg: {}
+
+        # First block configuration
+        first_block_cfg:
+          self_consensus_cfg:  # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
+            consensus_num_iterations: 1
+            consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
+            consensus_w: 2
+            consensus_r: 24
+            consensus_edge_hidden_dim: 12
+          # self_attention_cfg: {}
+          # geometric_attention_cfg: {}
+          # reflexive_attention_cfg: {}
 
 # =============================================================================
 # Training Configuration
@@ -51,6 +54,7 @@ train_cfg:
     max_epochs: 50
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/transformer_trunk"
+    jump_start: null
 
     # Optimizer schedule configuration.
     optim_schedule_config:

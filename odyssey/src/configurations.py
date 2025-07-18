@@ -65,12 +65,12 @@ class Config:
                     processed_dict[key] = value
             return constructor(**processed_dict)
 
-    def get_config_dict(self) -> dict:
-        """Get the stored configuration dictionary."""
-        if hasattr(self, '_config_dict'):
-            return dict(self._config_dict)  # Return a copy
-        else:
-            return self.to_dict()
+    # def get_config_dict(self) -> dict:
+    #     """Get the stored configuration dictionary."""
+    #     if hasattr(self, '_config_dict'):
+    #         return dict(self._config_dict)  # Return a copy
+    #     else:
+    #         return self.to_dict()
 
 ################################################################################
 # Transformer Block Configurations
@@ -268,47 +268,69 @@ class DiffusionMaskConfig(MaskConfig):
     def __str__(self): return "discrete_diffusion"
 
 @dataclass
+@register_config("transformer_cfg")
 class TransformerConfig(Config):
     """Model architecture configuration."""
-    style:                          str = None
     d_model:                        int = None # 768  # Model dimensions
     n_heads:                        int = None  # 12
     n_layers:                       int = None  # 12
     max_len:                        int = None
-    max_annotations_per_residue:    int = None
-    max_len_global:                 int = None
     dropout:                        float = None   # Other architecture params
     ff_mult:                        int = None
-    first_block_cfg:                BlockConfig = None  # SelfConsensusConfig, GeometricAttentionConfig, ReflexiveAttentionConfig, or SelfAttentionConfig
     context_cfg:                    BlockConfig = None  # CrossConsensusConfig or CrossAttentionConfig for context injection
-    reference_model_seed:           int = None
-    fsq_encoder_path:               str = None
-    vocab_per_residue_path:         str = None
-    vocab_global_path:              str = None
-
-    # TODO: These need to go.  seq_vocab should come from voacbulary.py and struuct_vocab should come from the FSQEncoder object.
-    seq_vocab:                      int = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)  # Sequence tokens + special tokens
-    struct_vocab:                   int = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
-    ss8_vocab:                      int = len(SS8_TOKENS) + len(SPECIAL_TOKENS)  # SS8 tokens + special tokens
-    sasa_vocab:                     int = len(SASA_TOKENS) + len(SPECIAL_TOKENS)  # SASA tokens + special tokens
-    plddt_vocab:                    int = len(PLDDT_TOKENS) + len(SPECIAL_TOKENS)  # pLDDT tokens + special tokens
-    per_residue_annotation_vocab:   int = None  # per-residue annotation tokens + special tokens (set in post init)
-    global_annotation_vocab:        int = None  # global annotation tokens + special tokens (set in post init)
+    first_block_cfg:                BlockConfig = None  # SelfConsensusConfig, GeometricAttentionConfig, ReflexiveAttentionConfig, or SelfAttentionConfig
 
     def __post_init__(self):
-        assert self.style in ('stage_1', 'stage_2', 'mlm', 'discrete_diffusion')
         self.ff_hidden_dim: int = self.d_model * self.ff_mult
         assert isinstance(self.d_model, int) and self.d_model > 0
         assert isinstance(self.n_heads, int) and self.n_heads > 0
         assert isinstance(self.n_layers, int) and self.n_layers > 0
         assert isinstance(self.max_len, int) and self.max_len > 0
-        assert isinstance(self.max_annotations_per_residue, int) and self.max_annotations_per_residue > 0
-        assert isinstance(self.max_len_global, int) and self.max_len_global > 0
+
         assert isinstance(self.first_block_cfg, BlockConfig)
 
+@dataclass
+class ModelConfig(Config):
+    style:                             str = None
+    autoencoder_path:                  str = None
+    reference_model_seed:              int = None
+
+    vocab_per_residue_path:            str = None
+    vocab_global_path:                 str = None
+    max_annotations_per_residue:       int = None
+    max_len_global:                    int = None
+
+    seq_absorb_token:                  int = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS) # Absorbing sequence state tokens (using MASK token index)
+    struct_absorb_token:               int = SPECIAL_TOKENS.MASK.value + 4375 # Absorbing structure state tokens (using MASK token index)
+
+    seq_vocab:                         int = len(SEQUENCE_TOKENS) + len(SPECIAL_TOKENS)  # Sequence tokens + special tokens
+    struct_vocab:                      int = 4375 + len(SPECIAL_TOKENS)  # FSQ tokens + special tokens
+    ss8_vocab:                         int = len(SS8_TOKENS) + len(SPECIAL_TOKENS)  # SS8 tokens + special tokens
+    sasa_vocab:                        int = len(SASA_TOKENS) + len(SPECIAL_TOKENS)  # SASA tokens + special tokens
+    plddt_vocab:                       int = len(PLDDT_TOKENS) + len(SPECIAL_TOKENS)  # pLDDT tokens + special tokens
+    per_residue_annotation_vocab:      int = None  # per-residue annotation tokens + special tokens (set in post init)
+    global_annotation_vocab:           int = None  # global annotation tokens + special tokens (set in post init)
+
+    def initials(self):
+        raise NotImplementedError("Subclasses must implement initials")
+
+    # Getter methods for commonly accessed properties
+    @property
+    def max_len(self):
+        """Get max_len from the appropriate transformer configuration."""
+        raise NotImplementedError("Subclasses must implement max_len property")
+    
+    @property
+    def first_block_cfg(self):
+        """Get first_block_cfg from the appropriate transformer configuration."""
+        raise NotImplementedError("Subclasses must implement first_block_cfg property")
+
+    def __post_init__(self):
         # Load annotation vocabularies and set sizes
         self.per_residue_annotation_vocab = load_annotation_tokens(self.vocab_per_residue_path, PER_RESIDUE_ANNOTATION_TOKENS) + len(SPECIAL_TOKENS)
         self.global_annotation_vocab = load_annotation_tokens(self.vocab_global_path, GLOBAL_ANNOTATION_TOKENS) + len(SPECIAL_TOKENS)
+        assert isinstance(self.max_annotations_per_residue, int) and self.max_annotations_per_residue > 0
+        assert isinstance(self.max_len_global, int) and self.max_len_global > 0
 
         # TODO: get rid of
         assert self.seq_vocab > 0
@@ -318,67 +340,118 @@ class TransformerConfig(Config):
         assert self.plddt_vocab > 0
         assert self.per_residue_annotation_vocab > 0
         assert self.global_annotation_vocab > 0
-        
-        # Store configuration as dictionary for safety
-        self._config_dict = self.to_dict()
 
+        assert self.seq_absorb_token is not None
+        assert self.struct_absorb_token is not None
+        assert isinstance(self.reference_model_seed, int) 
 
 @register_config("trunk_cfg")
 @dataclass
-class TrunkConfig(TransformerConfig):
+class TrunkConfig(ModelConfig):
     """Trunk model configuration."""
-    seq_absorb_token:                  int = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS) # Absorbing sequence state tokens (using MASK token index)
-    struct_absorb_token:               int = SPECIAL_TOKENS.MASK.value + 4375 # Absorbing structure state tokens (using MASK token index)
+    transformer_cfg:                   TransformerConfig = None
+
+    def initials(self):
+        return self.transformer_cfg.first_block_cfg.initials()
+
+    @property
+    def max_len(self):
+        """Get max_len from transformer configuration."""
+        return self.transformer_cfg.max_len
+    
+    @property
+    def first_block_cfg(self):
+        """Get first_block_cfg from transformer configuration."""
+        return self.transformer_cfg.first_block_cfg
 
     def __post_init__(self):
         # Call parent's __post_init__ to set ff_hidden_dim and other attributes
         super().__post_init__()
+
+        assert isinstance(self.transformer_cfg, TransformerConfig)
         
         assert self.style in ('mlm', 'discrete_diffusion')
-        assert self.fsq_encoder_path is not None and os.path.exists(self.fsq_encoder_path)
-        
-        # Update stored dictionary with trunk-specific fields
-        self._config_dict = self.to_dict()
+        assert self.autoencoder_path is not None and os.path.exists(self.autoencoder_path)
 
-@register_config("fsq_cfg")
+@register_config("autoencoder_cfg")
 @dataclass
-class FSQConfig(TransformerConfig):
-    """Model architecture configuration."""
-    # Transformer parameters
-    latent_dim:                     int = None # pre-quantized CONTINUOUS latent dimension.
-    fsq_levels:                     str = None # codebook
+class AutoencoderConfig(ModelConfig):
+    """Autoencoder configuration."""
+    encoder_cfg:                       FSQEncoderConfig = None
+    decoder_cfg:                       FSQDecoderConfig = None
+
+    def initials(self):
+        # NOTE: this will print ONLY THE INITIALS of the encoder.  It's up to YOU to make sure you keep track of your decoders.
+        return self.encoder_cfg.first_block_cfg.initials()
+
+    @property
+    def max_len(self):
+        """Get max_len from encoder configuration."""
+        return self.encoder_cfg.max_len
+    
+    @property
+    def first_block_cfg(self):
+        """Get first_block_cfg from encoder configuration."""
+        return self.encoder_cfg.first_block_cfg
+
+    @property
+    def fsq_levels(self):
+        """Get fsq_levels from encoder configuration."""
+        return self.encoder_cfg.fsq_levels
 
     def __post_init__(self):
-        # Call parent's __post_init__ to set ff_hidden_dim and other attributes
         super().__post_init__()
+     
+        assert isinstance(self.encoder_cfg, FSQEncoderConfig), f"Actual is {self.encoder_cfg}"
+        assert isinstance(self.decoder_cfg, FSQDecoderConfig), f"Actual is {self.decoder_cfg}"
 
-        self.fsq_levels = self.fsq_levels.split('x')
-        # print(f"DEBUG: fsq_levels: {self.fsq_levels}")
-        self.fsq_levels = [int(str(l)) for l in self.fsq_levels]
-
-        self.fsq_dim = len(self.fsq_levels)
-        assert self.fsq_dim > 0
-        assert self.latent_dim > 0
-        assert len(self.fsq_levels) > 0
-        for l in self.fsq_levels:
-            assert l > 0
-
-        # Should this just be in training config?
         assert self.style in ('stage_1', 'stage_2')
-        
         if self.style == 'stage_2':
-            assert self.fsq_encoder_path is not None and os.path.exists(self.fsq_encoder_path)
-            # TODO: check that the codebook of this FSQencoder object matches the codebook provided above.
-        
-        # Update stored dictionary with FSQ-specific fields
-        self._config_dict = self.to_dict()
+            assert self.autoencoder_path is not None and os.path.exists(self.autoencoder_path)
+
+        must_match = ('max_len', 'latent_dim', 'fsq_levels')
+        for mm in must_match:
+            assert getattr(self.encoder_cfg, mm) == getattr(self.decoder_cfg, mm)
+
+@register_config("encoder_cfg")
+@dataclass 
+class FSQEncoderConfig(TransformerConfig):
+    """FSQ Encoder configuration."""
+    latent_dim:                     int = None
+    fsq_levels:                     str = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.fsq_levels = self.fsq_levels.split('x')
+        self.fsq_levels = [int(str(l)) for l in self.fsq_levels]
+        self.fsq_dim = len(self.fsq_levels)
 
     def make_copy(self):
         d = self.to_dict()
         codebook = d['fsq_levels']
         new_d = {key: deepcopy(getattr(self, key)) for key in d.keys()}
         new_d['fsq_levels'] = "".join(str(c) + "x" for c in codebook)[:-1]
-        return FSQConfig(**new_d)
+        return FSQEncoderConfig(**new_d)
+
+@register_config("decoder_cfg")
+@dataclass
+class FSQDecoderConfig(TransformerConfig):
+    """FSQ Decoder configuration."""
+    latent_dim:                     int = None
+    fsq_levels:                     str = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.fsq_levels = self.fsq_levels.split('x')
+        self.fsq_levels = [int(str(l)) for l in self.fsq_levels]
+        self.fsq_dim = len(self.fsq_levels)
+
+    def make_copy(self):
+        d = self.to_dict()
+        codebook = d['fsq_levels']
+        new_d = {key: deepcopy(getattr(self, key)) for key in d.keys()}
+        new_d['fsq_levels'] = "".join(str(c) + "x" for c in codebook)[:-1]
+        return FSQDecoderConfig(**new_d)
 
 @dataclass
 class SchedulerConfig(Config):
@@ -398,7 +471,6 @@ class FlatSchedulerConfig(SchedulerConfig):
 @dataclass
 class LinearDecaySchedulerConfig(SchedulerConfig):
     """Linear decay scheduler configuration."""
-
     base_learning_rate:              float = None
     min_learning_rate:               float = None
     num_epochs_decay:                int = None
@@ -440,9 +512,6 @@ class TrainingConfig(Config):
         assert self.checkpoint_dir is not None and os.path.exists(self.checkpoint_dir), f"Checkpoint directory {self.checkpoint_dir} does not exist."
 
         assert self.jump_start is None or os.path.exists(self.jump_start)
-        
-        # Store configuration as dictionary for safety
-        self._config_dict = self.to_dict()
         
 class ConfigurationError(Exception):
     def __init__(self, message):

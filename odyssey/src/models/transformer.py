@@ -20,29 +20,32 @@ class TransformerTrunk(nn.Module):
         # Store config
         self.cfg = cfg
         self.use_adaln = use_adaln
+        
+        # Extract transformer config for convenience
+        transformer_cfg = cfg.transformer_cfg
 
         # Sequence Embedding
-        self.seq_embed = nn.Embedding(cfg.seq_vocab, cfg.d_model)
+        self.seq_embed = nn.Embedding(cfg.seq_vocab, transformer_cfg.d_model)
         # Structure Embedding, tokenized
-        self.struct_embed = nn.Embedding(cfg.struct_vocab, cfg.d_model)
+        self.struct_embed = nn.Embedding(cfg.struct_vocab, transformer_cfg.d_model)
         # SS8 Embedding
-        self.ss8_embed = nn.Embedding(cfg.ss8_vocab, cfg.d_model)
+        self.ss8_embed = nn.Embedding(cfg.ss8_vocab, transformer_cfg.d_model)
         # SASA Embedding
-        self.sasa_embed = nn.Embedding(cfg.sasa_vocab, cfg.d_model)
+        self.sasa_embed = nn.Embedding(cfg.sasa_vocab, transformer_cfg.d_model)
         # pLDDT Embedding
-        self.plddt_embed = nn.Embedding(cfg.plddt_vocab, cfg.d_model)
+        self.plddt_embed = nn.Embedding(cfg.plddt_vocab, transformer_cfg.d_model)
         # Per-residue annotation embedding
-        self.per_residue_annotation_embed = nn.Embedding(cfg.per_residue_annotation_vocab, cfg.d_model)
+        self.per_residue_annotation_embed = nn.Embedding(cfg.per_residue_annotation_vocab, transformer_cfg.d_model)
         # Global annotation embedding
-        self.global_annotation_embed = nn.Embedding(cfg.global_annotation_vocab, cfg.d_model)
+        self.global_annotation_embed = nn.Embedding(cfg.global_annotation_vocab, transformer_cfg.d_model)
         
         # Time embedding for diffusion models following DiT
         if use_adaln:
-            time_embed_dim = cfg.d_model * 4  # Following DiT paper
+            time_embed_dim = transformer_cfg.d_model * 4  # Following DiT paper
             # DiT-style time embeddings: sinusoidal embeddings + MLP
             self.time_embed = nn.Sequential(
-                SinusoidalPositionEmbeddings(cfg.d_model),
-                nn.Linear(cfg.d_model, time_embed_dim),
+                SinusoidalPositionEmbeddings(transformer_cfg.d_model),
+                nn.Linear(transformer_cfg.d_model, time_embed_dim),
                 nn.SiLU(),  # DiT uses SiLU activation
                 nn.Linear(time_embed_dim, time_embed_dim),
             )
@@ -53,62 +56,62 @@ class TransformerTrunk(nn.Module):
         self.layers = nn.ModuleList()
         
         # First block: either geometric transformer block or standard block
-        model_type = cfg.first_block_cfg.initials()
+        model_type = transformer_cfg.first_block_cfg.initials()
         if model_type == "GA":
-            self.layers.append(GeometricTransformerBlock(cfg, use_adaln, time_embed_dim))
+            self.layers.append(GeometricTransformerBlock(transformer_cfg, use_adaln, time_embed_dim))
         elif model_type == "SA":
-            self.layers.append(StandardTransformerBlock(cfg, use_adaln, time_embed_dim))
+            self.layers.append(StandardTransformerBlock(transformer_cfg, use_adaln, time_embed_dim))
         elif model_type == "RA":
-            self.layers.append(ReflexiveTransformerBlock(cfg, use_adaln, time_embed_dim))
+            self.layers.append(ReflexiveTransformerBlock(transformer_cfg, use_adaln, time_embed_dim))
         elif model_type == "SC":
-            self.layers.append(ConsensusTransformerBlock(cfg, use_adaln, time_embed_dim))
+            self.layers.append(ConsensusTransformerBlock(transformer_cfg, use_adaln, time_embed_dim))
         else:
             raise ValueError(f"Invalid model_type type: {model_type}")
         
         # Remaining blocks
         if model_type == "SC":
             # For SelfConsensus, all blocks are ConsensusTransformerBlocks
-            for _ in range(cfg.n_layers - 1):
-                self.layers.append(ConsensusTransformerBlock(cfg, use_adaln, time_embed_dim))
+            for _ in range(transformer_cfg.n_layers - 1):
+                self.layers.append(ConsensusTransformerBlock(transformer_cfg, use_adaln, time_embed_dim))
         else:
             # For GA/SA/RA, remaining blocks are all standard transformer blocks
-            for _ in range(cfg.n_layers - 1):
-                self.layers.append(StandardTransformerBlock(cfg, use_adaln, time_embed_dim))
+            for _ in range(transformer_cfg.n_layers - 1):
+                self.layers.append(StandardTransformerBlock(transformer_cfg, use_adaln, time_embed_dim))
 
         if use_adaln:
-            self.final_norm = AdaptiveLayerNorm(cfg.d_model, time_embed_dim)
+            self.final_norm = AdaptiveLayerNorm(transformer_cfg.d_model, time_embed_dim)
         else:
-            self.final_norm = nn.LayerNorm(cfg.d_model)
+            self.final_norm = nn.LayerNorm(transformer_cfg.d_model)
             
         # Context injection module for SS8/SASA/pLDDT/Per-residue annotations (if configured)
-        context_type = cfg.context_cfg.initials()
+        context_type = transformer_cfg.context_cfg.initials()
         if context_type == "CA":  # CrossAttention
-            self.context_ss8 = CrossAttention(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, max_position_embeddings=cfg.max_len)
-            self.context_sasa = CrossAttention(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, max_position_embeddings=cfg.max_len)
-            self.context_plddt = CrossAttention(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, max_position_embeddings=cfg.max_len)
-            self.context_per_residue_annotation = CrossAttention(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, max_position_embeddings=cfg.max_len)
+            self.context_ss8 = CrossAttention(dim=transformer_cfg.d_model, heads=transformer_cfg.n_heads, dropout=transformer_cfg.dropout, max_position_embeddings=transformer_cfg.max_len)
+            self.context_sasa = CrossAttention(dim=transformer_cfg.d_model, heads=transformer_cfg.n_heads, dropout=transformer_cfg.dropout, max_position_embeddings=transformer_cfg.max_len)
+            self.context_plddt = CrossAttention(dim=transformer_cfg.d_model, heads=transformer_cfg.n_heads, dropout=transformer_cfg.dropout, max_position_embeddings=transformer_cfg.max_len)
+            self.context_per_residue_annotation = CrossAttention(dim=transformer_cfg.d_model, heads=transformer_cfg.n_heads, dropout=transformer_cfg.dropout, max_position_embeddings=transformer_cfg.max_len)
         elif context_type == "CC":  # CrossConsensus
-            self.context_ss8 = CrossConsensus(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, num_iterations=cfg.context_cfg.consensus_num_iterations,
-                connectivity_type=cfg.context_cfg.consensus_connectivity_type, w=cfg.context_cfg.consensus_w, r=cfg.context_cfg.consensus_r,
-                edge_hidden_dim=cfg.context_cfg.consensus_edge_hidden_dim, max_len=cfg.max_len)
-            self.context_sasa = CrossConsensus(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, num_iterations=cfg.context_cfg.consensus_num_iterations,
-                connectivity_type=cfg.context_cfg.consensus_connectivity_type, w=cfg.context_cfg.consensus_w, r=cfg.context_cfg.consensus_r,
-                edge_hidden_dim=cfg.context_cfg.consensus_edge_hidden_dim, max_len=cfg.max_len)
-            self.context_plddt = CrossConsensus(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, num_iterations=cfg.context_cfg.consensus_num_iterations,
-                connectivity_type=cfg.context_cfg.consensus_connectivity_type, w=cfg.context_cfg.consensus_w, r=cfg.context_cfg.consensus_r,
-                edge_hidden_dim=cfg.context_cfg.consensus_edge_hidden_dim, max_len=cfg.max_len)
-            self.context_per_residue_annotation = CrossConsensus(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, num_iterations=cfg.context_cfg.consensus_num_iterations,
-                connectivity_type=cfg.context_cfg.consensus_connectivity_type, w=cfg.context_cfg.consensus_w, r=cfg.context_cfg.consensus_r,
-                edge_hidden_dim=cfg.context_cfg.consensus_edge_hidden_dim, max_len=cfg.max_len)
+            self.context_ss8 = CrossConsensus(dim=transformer_cfg.d_model, heads=transformer_cfg.n_heads, dropout=transformer_cfg.dropout, num_iterations=transformer_cfg.context_cfg.consensus_num_iterations,
+                connectivity_type=transformer_cfg.context_cfg.consensus_connectivity_type, w=transformer_cfg.context_cfg.consensus_w, r=transformer_cfg.context_cfg.consensus_r,
+                edge_hidden_dim=transformer_cfg.context_cfg.consensus_edge_hidden_dim, max_len=transformer_cfg.max_len)
+            self.context_sasa = CrossConsensus(dim=transformer_cfg.d_model, heads=transformer_cfg.n_heads, dropout=transformer_cfg.dropout, num_iterations=transformer_cfg.context_cfg.consensus_num_iterations,
+                connectivity_type=transformer_cfg.context_cfg.consensus_connectivity_type, w=transformer_cfg.context_cfg.consensus_w, r=transformer_cfg.context_cfg.consensus_r,
+                edge_hidden_dim=transformer_cfg.context_cfg.consensus_edge_hidden_dim, max_len=transformer_cfg.max_len)
+            self.context_plddt = CrossConsensus(dim=transformer_cfg.d_model, heads=transformer_cfg.n_heads, dropout=transformer_cfg.dropout, num_iterations=transformer_cfg.context_cfg.consensus_num_iterations,
+                connectivity_type=transformer_cfg.context_cfg.consensus_connectivity_type, w=transformer_cfg.context_cfg.consensus_w, r=transformer_cfg.context_cfg.consensus_r,
+                edge_hidden_dim=transformer_cfg.context_cfg.consensus_edge_hidden_dim, max_len=transformer_cfg.max_len)
+            self.context_per_residue_annotation = CrossConsensus(dim=transformer_cfg.d_model, heads=transformer_cfg.n_heads, dropout=transformer_cfg.dropout, num_iterations=transformer_cfg.context_cfg.consensus_num_iterations,
+                connectivity_type=transformer_cfg.context_cfg.consensus_connectivity_type, w=transformer_cfg.context_cfg.consensus_w, r=transformer_cfg.context_cfg.consensus_r,
+                edge_hidden_dim=transformer_cfg.context_cfg.consensus_edge_hidden_dim, max_len=transformer_cfg.max_len)
         
         # Context injection module for global annotation
         # Use max of sequence length and global annotation length for positional embeddings
-        max_pos_embeddings_global = max(cfg.max_len, cfg.max_len_global)
-        self.context_global_annotation = CrossAttention(dim=cfg.d_model, heads=cfg.n_heads, dropout=cfg.dropout, max_position_embeddings=max_pos_embeddings_global)
+        max_pos_embeddings_global = max(transformer_cfg.max_len, cfg.max_len_global)
+        self.context_global_annotation = CrossAttention(dim=transformer_cfg.d_model, heads=transformer_cfg.n_heads, dropout=transformer_cfg.dropout, max_position_embeddings=max_pos_embeddings_global)
 
         # Prediction heads for sequence and structure tokens
-        self.seq_logits = nn.Linear(cfg.d_model, cfg.seq_vocab)
-        self.struct_logits = nn.Linear(cfg.d_model, cfg.struct_vocab)
+        self.seq_logits = nn.Linear(transformer_cfg.d_model, cfg.seq_vocab)
+        self.struct_logits = nn.Linear(transformer_cfg.d_model, cfg.struct_vocab)
 
     def forward(
         self,

@@ -109,29 +109,30 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         #  Model Loading
         ###########################################################################
         print(f"Model {i+1}/{num_models}: Starting {model_cfg.style} training")
-        print(f"  Training model: {model_cfg.first_block_cfg}")
+        print(f"  Training model: {model_cfg.initials()}")
         print(f"  Masking: {train_cfg.mask_config}")
         
         if train_cfg.jump_start is None: # No jump start provided.  We will cold-start the model. Create model with fixed seed
-            print(f"  Creating {model_cfg.first_block_cfg.initials()} target model...")
+            print(f"  Creating {model_cfg.initials()} target model...")
             model = load_model_from_empty(model_cfg, device)
         else: # Jump start provided.  Load model from checkpoint.
-            print(f"  Loading {model_cfg.first_block_cfg.initials()} target model from {train_cfg.jump_start}...")
+            print(f"  Loading {model_cfg.initials()} target model from {train_cfg.jump_start}...")
             model, model_cfg_loaded, train_cfg_loaded= load_model_from_checkpoint(train_cfg.jump_start, device)
             # TODO: Assert model_cfg from load and model_cfg "similar enough", but the train_cfg can be different.
 
-        fsq_encoder = None
+        autoencoder = None
         if load_fsq_encoder: 
-            autoencoder, _, _ = load_model_from_checkpoint(model_cfg.fsq_encoder_path, device)
-            fsq_encoder = autoencoder.encoder
-            fsq_encoder.eval(); fsq_encoder.requires_grad_(False)
-            if isinstance(model, Autoencoder): model.encoder = fsq_encoder
+            autoencoder, autoencoder_model_cfg, _ = load_model_from_checkpoint(model_cfg.autoencoder_path, device)
+            autoencoder.encoder.eval(); autoencoder.encoder.requires_grad_(False)
+            if isinstance(model, Autoencoder): 
+                model.encoder = autoencoder.encoder # Update the encoder to match the loaded encoder
+                model_cfg.encoder_cfg = autoencoder_model_cfg.encoder_cfg # Update the encoder_cfg to match the loaded encoder_cfg
                 
-        models.append((model, fsq_encoder))
+        models.append((model, autoencoder))
 
         # Print parameter count
         total_params = sum(p.numel() for p in model.parameters())
-        print(f"  {model_cfg.first_block_cfg.initials()} total parameters: {total_params:,}")
+        print(f"  {model_cfg.initials()} total parameters: {total_params:,}")
 
         ###########################################################################
         # Initializing optimizer and scheduler
@@ -175,15 +176,15 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         train_ds, val_ds = random_split(dataset, [train_size, val_size], generator=g_val)
         
         # Pass appropriate FSQ encoder
-        model, fsq_encoder = models[i]
+        model, autoencoder = models[i]
         train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, tracks_list[i], device, 
                                                batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, 
                                                worker_init_fn=worker_init_fn, min_unmasked=min_unmasked_list[i], 
-                                               fsq_encoder=fsq_encoder)
+                                               autoencoder=autoencoder)
         val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, tracks_list[i], device, 
                                             batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, 
                                             worker_init_fn=worker_init_fn, min_unmasked=min_unmasked_list[i], 
-                                            fsq_encoder=fsq_encoder)
+                                            autoencoder=autoencoder)
         
         train_loaders.append(train_loader)
         val_loaders.append(val_loader)
@@ -208,7 +209,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         
         # Training phase for all models
         for model_idx in range(num_models):
-            model, fsq_encoder = models[model_idx]
+            model, autoencoder = models[model_idx]
             model_cfg = model_cfg_list[model_idx]
             train_cfg = train_cfg_list[model_idx]
             optimizer = optimizers[model_idx]
@@ -217,7 +218,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             step_fn = step_fns[model_idx]
             
             model.train()
-            with tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs} [Model {model_idx+1}: {model_cfg.first_block_cfg.initials()} Train]",
+            with tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs} [Model {model_idx+1}: {model_cfg.initials()} Train]",
                      ascii=True, leave=True, ncols=150) as pbar:
                 for batch_data in pbar:
                     # Skip empty/None batches
@@ -237,12 +238,12 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                     # Update progress bar with running average
                     running_avg = {k: train_metrics_sum_all[model_idx][k] / train_metrics_count_all[model_idx][k] 
                                   for k in train_metrics_sum_all[model_idx].keys()}
-                    prefix = model_cfg.first_block_cfg.initials()
+                    prefix = model_cfg.initials()
                     pbar.set_postfix({f"{prefix}_{k}": f"{v:.3f}" for k, v in running_avg.items()})
 
         # Validation phase for all models
         for model_idx in range(num_models):
-            model, fsq_encoder = models[model_idx]
+            model, autoencoder = models[model_idx]
             model_cfg = model_cfg_list[model_idx]
             train_cfg = train_cfg_list[model_idx]
             optimizer = optimizers[model_idx]
@@ -283,7 +284,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                                for k in val_metrics_sum_all[model_idx].keys()}
             
             # Print model summary
-            print(f"\nModel {model_idx+1}: {model_cfg.first_block_cfg.initials()} ({model_cfg.style}):")
+            print(f"\nModel {model_idx+1}: {model_cfg.initials()} ({model_cfg.style}):")
             print(f"  Train: " + " | ".join([f"{k}: {v:.3f}" for k, v in epoch_train_metrics.items()]))
             print(f"  Val:   " + " | ".join([f"{k}: {v:.3f}" for k, v in epoch_val_metrics.items()]))
             
@@ -305,19 +306,17 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
 
     # Save final checkpoints and metrics for all models
     for model_idx in range(num_models):
-        model, fsq_encoder = models[model_idx]
+        model, autoencoder = models[model_idx]
         model_cfg = model_cfg_list[model_idx]
         train_cfg = train_cfg_list[model_idx]
         optimizer = optimizers[model_idx]
         
-        # final_checkpoint_path = Path(train_cfg.checkpoint_dir) / f"{model_cfg.first_block_cfg.initials()}_{model_cfg.style}_{train_cfg.mask_config}_model.pt"
         final_checkpoint_path = Path(train_cfg.checkpoint_dir) / "model.pt"
         save_model_checkpoint(final_checkpoint_path, model, model_cfg, train_cfg, optimizer)
-        print(f"\nSaved final checkpoint for Model {model_idx+1}")
+        print(f"\nSaved final checkpoint for Model {model_idx+1} to {final_checkpoint_path}")
         
         # Save epoch history to CSV
         metrics_array = np.array(epoch_metrics_all[model_idx])
-        # history_csv_path = Path(train_cfg.checkpoint_dir) / f"{model_cfg.first_block_cfg.initials()}_{model_cfg.style}_{train_cfg.mask_config}_epoch_metrics.csv"
         history_csv_path = Path(train_cfg.checkpoint_dir) / "history.csv"
         np.savetxt(history_csv_path, metrics_array, delimiter=',', header=','.join(csv_header), comments='')
         print(f"Saved epoch metrics to {history_csv_path}")

@@ -45,9 +45,9 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
     seq_x_0, struct_x_0 = batch.unmasked_data['seq'], batch.unmasked_data['struct']
     seq_valid, struct_valid = ~batch.beospank['seq'], ~batch.beospank['struct']
     coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
-    ss8_x_0, sasa_x_0 = batch.unmasked_data['ss8'], batch.unmasked_data['sasa']
-    global_annotation_x_0, per_residue_annotation_x_0 = batch.unmasked_data['global_annotation'], batch.unmasked_data['per_residue_annotation']
-    plddt_x_0 = batch.unmasked_data['plddt']
+    ss8_x_0, sasa_x_0 = batch.masked_data['ss8'], batch.masked_data['sasa']
+    global_annotation_x_0, per_residue_annotation_x_0 = batch.unmasked_data['global_annotation'], batch.masked_data['per_residue_annotation']
+    plddt_x_0 = batch.masked_data['plddt']
     B, L = seq_x_t.shape
 
     content_elements = ~batch.masks['coords'] & ~batch.beospank['coords']

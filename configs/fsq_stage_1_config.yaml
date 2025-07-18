@@ -5,36 +5,63 @@
 # Model Configuration
 # =============================================================================
 model_cfg:
-  fsq_cfg:  # Options: "fsq_cfg", "trunk_cfg"
+  autoencoder_cfg:  # Options: "autoencoder_cfg", "trunk_cfg"
     style: "stage_1"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
-    d_model: 128
-    n_heads: 1
-    n_layers: 3
-    max_len: 2048
-    max_annotations_per_residue: 4
-    max_len_global: 512
-    dropout: 0.1
-    ff_mult: 4
+    autoencoder_path: null
     reference_model_seed: 42
-    latent_dim: 32
-    fsq_levels: "7x5x5x5x5"
-    fsq_encoder_path: null  # Required for stage_2
+
     vocab_per_residue_path: "/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt"
     vocab_global_path: "/workspace/demo/Odyssey/odyssey/train/vocab_global_annotations.txt"
-    
-    # First block configuration
-    first_block_cfg:
-      self_consensus_cfg:   # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
-        consensus_num_iterations: 1
-        consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
-        consensus_w: 2
-        consensus_r: 24
-        consensus_edge_hidden_dim: 12
-      # - self_attention_cfg: {}
-      # - geometric_attention_cfg: {}
-      # - reflexive_attention_cfg: {}
-    
-    context_cfg: null  # Not needed for stage_1
+    max_annotations_per_residue: 4
+    max_len_global: 512
+
+    encoder_cfg:
+      encoder_cfg:
+        latent_dim: 32
+        fsq_levels: "7x5x5x5x5"
+        d_model: 128
+        n_heads: 1
+        n_layers: 3
+        max_len: 2048
+        dropout: 0.1
+        ff_mult: 4
+        context_cfg: null  # Not needed for stage_1
+
+        # First block configuration
+        first_block_cfg:
+          self_consensus_cfg:   # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
+            consensus_num_iterations: 1
+            consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
+            consensus_w: 2
+            consensus_r: 24
+            consensus_edge_hidden_dim: 12
+          # - self_attention_cfg: {}
+          # - geometric_attention_cfg: {}
+          # - reflexive_attention_cfg: {}
+
+    decoder_cfg:
+      decoder_cfg:
+        latent_dim: 32
+        fsq_levels: "7x5x5x5x5"
+        d_model: 128
+        n_heads: 1
+        n_layers: 3
+        max_len: 2048
+        dropout: 0.1
+        ff_mult: 4
+        context_cfg: null  # Not needed for stage_1
+
+        # First block configuration
+        first_block_cfg:
+          self_consensus_cfg:   # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
+            consensus_num_iterations: 1
+            consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
+            consensus_w: 2
+            consensus_r: 24
+            consensus_edge_hidden_dim: 12
+          # - self_attention_cfg: {}
+          # - geometric_attention_cfg: {}
+          # - reflexive_attention_cfg: {}
 
 # =============================================================================
 # Training Configuration

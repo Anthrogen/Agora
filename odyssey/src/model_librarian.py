@@ -87,8 +87,8 @@ def ensure_identical_parameters_autoencoders(models: Dict[str, Autoencoder], see
                 model.encoder.encoder_proj.load_state_dict(ref_model.encoder.encoder_proj.state_dict())
                 
                 # Copy decoder components  
-                # Input projection and conv blocks are shared
-                model.decoder.decoder_input.load_state_dict(ref_model.decoder.decoder_input.state_dict())
+                # Decoder projection and conv blocks are shared
+                model.decoder.decoder_proj.load_state_dict(ref_model.decoder.decoder_proj.state_dict())
                 model.decoder.decoder_conv1.load_state_dict(ref_model.decoder.decoder_conv1.state_dict())
                 model.decoder.decoder_conv2.load_state_dict(ref_model.decoder.decoder_conv2.state_dict())
                 model.decoder.output_proj.load_state_dict(ref_model.decoder.output_proj.state_dict())
@@ -122,13 +122,17 @@ def load_model_from_empty(model_cfg, device):
     torch.manual_seed(model_cfg.reference_model_seed)
     
     # Determine constructor and sync function based on model type
-    desired_constructor = Autoencoder if isinstance(model_cfg, FSQConfig) else TransformerTrunk
-    sync_function = ensure_identical_parameters_autoencoders if isinstance(model_cfg, FSQConfig) else ensure_identical_parameters_transformers
+    desired_constructor = Autoencoder if isinstance(model_cfg, AutoencoderConfig) else TransformerTrunk
+    sync_function = ensure_identical_parameters_autoencoders if isinstance(model_cfg, AutoencoderConfig) else ensure_identical_parameters_transformers
 
     # Create SA reference model
-    # model_cfg_sa = replace(model_cfg, first_block_cfg=SelfAttentionConfig())
     model_cfg_sa = model_cfg.make_copy()
-    model_cfg_sa.first_block_cfg = SelfAttentionConfig()
+    # Set first_block_cfg in the appropriate sub-configuration
+    if isinstance(model_cfg_sa, AutoencoderConfig):
+        model_cfg_sa.encoder_cfg.first_block_cfg = SelfAttentionConfig()
+        model_cfg_sa.decoder_cfg.first_block_cfg = SelfAttentionConfig()
+    elif isinstance(model_cfg_sa, TrunkConfig):
+        model_cfg_sa.transformer_cfg.first_block_cfg = SelfAttentionConfig()
     
     model_sa = desired_constructor(model_cfg_sa).to(device)
 
@@ -150,6 +154,7 @@ def load_model_from_empty(model_cfg, device):
 
 def save_model_checkpoint(path, model, model_cfg, train_cfg, optimizer):
     # Save final checkpoint
+    assert isinstance(model, Autoencoder) or isinstance(model, TransformerTrunk)
     torch.save({
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
@@ -169,7 +174,7 @@ def load_model_from_checkpoint(model_path, device, freeze=False):
         freeze: Whether to freeze the model parameters
         
     Returns:
-        model: Loaded model (full Autoencoder for FSQConfig, TransformerTrunk for TrunkConfig)
+        model: Loaded model (full Autoencoder for AutoencoderConfig, TransformerTrunk for TrunkConfig)
     """
     assert freeze == False
 
@@ -179,7 +184,7 @@ def load_model_from_checkpoint(model_path, device, freeze=False):
     model_cfg = checkpoint['model_config']
     train_cfg = checkpoint['train_config']
 
-    constructor = Autoencoder if isinstance(model_cfg, FSQConfig) else TransformerTrunk
+    constructor = Autoencoder if isinstance(model_cfg, AutoencoderConfig) else TransformerTrunk
     model = constructor(model_cfg)
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)

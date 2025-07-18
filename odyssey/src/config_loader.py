@@ -28,8 +28,13 @@ def load_config(config_path: Union[str, Path]) -> Tuple[Config, Config, Dict, Di
     training_config = Config.from_dict(config_dict['train_cfg'])
     
     # Get backup dictionaries
-    model_config_dict = model_config.get_config_dict()
-    training_config_dict = training_config.get_config_dict()
+    model_config_dict = model_config.to_dict()
+    training_config_dict = training_config.to_dict()
+
+    # print("########################################################")
+    # print(model_config)
+    # print(training_config)
+    # print("########################################################")
     
     return model_config, training_config, model_config_dict, training_config_dict
 

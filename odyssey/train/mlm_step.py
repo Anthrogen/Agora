@@ -50,9 +50,9 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, schedule
     assert train_cfg.loss_config.loss_elements == "masked"
     """Perform a single MLM step with train/validation mode."""
     masked_seq, masked_struct, masked_coords = batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords']
-    ss8_tokens, sasa_tokens = batch.unmasked_data['ss8'], batch.unmasked_data['sasa']
-    global_annotation_tokens, per_residue_annotation_tokens = batch.unmasked_data['global_annotation'], batch.unmasked_data['per_residue_annotation']
-    plddt_tokens = batch.unmasked_data['plddt']
+    ss8_tokens, sasa_tokens = batch.masked_data['ss8'], batch.masked_data['sasa']
+    global_annotation_tokens, per_residue_annotation_tokens = batch.unmasked_data['global_annotation'], batch.masked_data['per_residue_annotation']
+    plddt_tokens = batch.masked_data['plddt']
     B, L = masked_seq.shape
 
     # Create mask for GA/RA/SA/SC models and for SS8/SASA
@@ -92,8 +92,7 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, schedule
         elif train_cfg.loss_config.loss_elements == "non_special":
             loss_elements_seq = ~batch.beospank['seq'] & ~batch.masks['seq']
             loss_elements_struct = ~batch.beospank['struct'] & ~batch.masks['struct']
-        else:
-            raise ValueError(f"What is {train_cfg.loss_config.loss_elements}?")
+        else: raise ValueError(f"What is {train_cfg.loss_config.loss_elements}?")
 
         # Find which batch elements have valid loss elements and count effective batch sizes
         valid_seq_mask = loss_elements_seq.any(dim=1)  # [B]
@@ -154,6 +153,9 @@ def generate_mlm(model, model_cfg, train_cfg, batch):
 
     content_elements_coords = ~batch.beospank['coords'] & ~batch.masks['coords']
 
+    # finished = False
+    # while not finished:
+
     masked_data_all = [batch.masked_data[t] for t in ('seq', 'struct', 'ss8', 'sasa', 'global_annotation', 'per_residue_annotation', 'plddt')]
     nonbeospanks_all = {'nonbeospank': ~batch.beospank['coords'] & ~batch.beospank['seq'],
                         'nonbeospank_ss8': ~batch.beospank['ss8'],
@@ -168,44 +170,56 @@ def generate_mlm(model, model_cfg, train_cfg, batch):
         outputs = model(masked_data, **nonbeospanks_all)
 
     seq_logits, struct_logits = outputs
+    logits =  {'seq': seq_logits, 'struct': struct_logits}
 
-    seq_probs = torch.nn.functional.softmax(seq_logits, dim=-1)
+    for track in ('seq', 'struct'):
+        probs = torch.nn.functional.softmax(logits[track], dim=-1)
 
-    NUM_TO_UNMASK = 3
-    UNMASK_STRATEGY = "max_confidence"
-    # Pick the NUM_TO_UNMASK favorite masked positions to unmask:
-    # Three ways to pick:
-    # 1. Randomly, uniformly over all masked positions.
-    # 2. Randomly, with probability proportional to likelihoods.
-    # 3. Deterministically, picking the three tokens of which you are most confident.
+        NUM_TO_UNMASK = 3
+        UNMASK_STRATEGY = "max_confidence"
+        # Pick the NUM_TO_UNMASK favorite masked positions to unmask:
+        # Three ways to pick:
+        # 1. Randomly, uniformly over all masked positions.
+        # 2. Randomly, with probability proportional to probabilities of logits at only masked positions.
+        # 3. Deterministically, picking the three tokens of which you are most confident.
 
-    masked_positions = torch.arange(len(batch.masks['seq']))[batch.masks['seq']]
-    probs = seq_probs[masked_positions]
-
-    N = min(len(probs), NUM_TO_UNMASK)
-    if UNMASK_STRATEGY == "uniform":
-        idxs = torch.randperm(len(masked_positions))[:N]
-        positions_to_unmask = masked_positions[idxs]
-    elif UNMASK_STRATEGY == "prob_confidence":
+        masked_positions = torch.arange(len(batch.masks[track]))[batch.masks[track]]
         probs_masked = probs[masked_positions]
-        idxs = torch.multinomial(probs_masked, N, replacement=False)
-        positions_to_unmask = masked_positions[idxs]
-    elif UNMASK_STRATEGY == "max_confidence":
-        probs_masked = probs[masked_positions]
-        idxs = torch.argsort(probs_masked, dim=-1, descending=True)[:N]
-        positions_to_unmask = masked_positions[idxs]
-    else:
-        raise ValueError(f"Unknown unmask strategy: {UNMASK_STRATEGY}")
 
-    # Now, actually go through and unmask at each position:
-    # Sample according to a probability law that DOES NOT INCLUDE special tokens.
+        N = min(len(masked_positions), NUM_TO_UNMASK)
+        if UNMASK_STRATEGY == "uniform":
+            idxs = torch.randperm(len(masked_positions))[:N]
+            positions_to_unmask = masked_positions[idxs]
+        elif UNMASK_STRATEGY == "prob_confidence":
+            idxs = torch.multinomial(probs_masked, N, replacement=False)
+            positions_to_unmask = masked_positions[idxs]
+        elif UNMASK_STRATEGY == "max_confidence":
+            idxs = torch.argsort(probs_masked, dim=-1, descending=True)[:N]
+            positions_to_unmask = masked_positions[idxs]
+        else:
+            raise ValueError(f"Unknown unmask strategy: {UNMASK_STRATEGY}")
+
+        # Now, actually go through and unmask at each position:
+        # Sample according to a probability law that DOES NOT INCLUDE special tokens.
+        
+        # probs is [B, L, V] long
+        probs = probs.squeeze(0) # Now [L, V] long
+        probs = probs[positions_to_unmask, :] # Now [N, V] long
+
+        # Next, we need to "chop off" the special tokens as they are not on the menu.
+        nonspecial_elements = torch.ones_like(probs).float()
+        nonspecial_elements[:, -len(SPECIAL_TOKENS):] = 0.0
+
+        probs = probs * nonspecial_elements
+        # Renormalize, now that we've zero-ed out many elements.
+        probs = probs / probs.sum(dim=-1, keepdim=True) # quotient is [N, V_content]
+
+        # Now, sample from the renormalized probabilities:
+        sampled_tokens = torch.multinomial(probs, 1, replacement=False).squeeze(0) # [N]
+
+        # Now, we need to "write" the sampled tokens to the batch:
+        batch.masked_data[track][positions_to_unmask] = sampled_tokens
+        batch.masks[track][positions_to_unmask] = False
     
-    # probs is [B, L, V] long
-    probs = probs.squeeze(0) # Now [L, V] long
-    probs = probs[positions_to_unmask, :] # Now [N, V] long
-
-    # Next, we need to "chop off" the special tokens as they are not on the menu.
-    V_basic = model_cfg.seq_vocab - len(SPECIAL_TOKENS)
-
-
-
+        
+    return batch

@@ -27,7 +27,7 @@ stage_1_model_cfg = FSQConfig(
     reference_model_seed= 42,
     latent_dim= 32,
     fsq_levels= "7x5x5x5x5",
-    fsq_encoder_path= None,  # Required for stage_2
+    autoencoder_path= None,  # Required for stage_2
     first_block_cfg=block_cfg,
     context_cfg= None,
 )
@@ -43,7 +43,7 @@ stage_2_model_cfg = FSQConfig(
     reference_model_seed= 42,
     latent_dim= 32,
     fsq_levels= "7x5x5x5x5",
-    fsq_encoder_path= "/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_simple_model.pt",  # Required for stage_2
+    autoencoder_path= "/workspace/demo/Odyssey/checkpoints/fsq/SC_stage_1_simple_model.pt",  # Required for stage_2
     first_block_cfg=block_cfg,
     context_cfg=None,
 )
