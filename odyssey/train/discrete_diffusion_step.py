@@ -43,7 +43,7 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
     """Perform a single step with discrete diffusion."""
     seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
     seq_x_0, struct_x_0 = batch.unmasked_data['seq'], batch.unmasked_data['struct']
-    seq_valid, struct_valid = ~batch.beospank['seq'], ~batch.beospank['struct']
+    nonbeospank_seq, nonbeospank_struct = ~batch.beospank['seq'], ~batch.beospank['struct']
     coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
     ss8_x_0, sasa_x_0 = batch.masked_data['ss8'], batch.masked_data['sasa']
     global_annotation_x_0, per_residue_annotation_x_0 = batch.unmasked_data['global_annotation'], batch.masked_data['per_residue_annotation']
@@ -75,22 +75,43 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
         if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, content_elements, nonbeospank, nonbeospank_ss8, nonbeospank_sasa, nonbeospank_global_annotation, nonbeospank_per_residue_annotation, nonbeospank_plddt, timesteps)
         else: outputs = model(inputs, nonbeospank=nonbeospank, nonbeospank_ss8=nonbeospank_ss8, nonbeospank_sasa=nonbeospank_sasa, nonbeospank_global_annotation=nonbeospank_global_annotation, nonbeospank_per_residue_annotation=nonbeospank_per_residue_annotation, nonbeospank_plddt=nonbeospank_plddt, timesteps=timesteps)
         seq_logits, struct_logits = outputs
-
+        
         score_entropy_loss_fn = score_entropy_loss_absorb if train_cfg.mask_config.corruption_mode == "absorb" else score_entropy_loss_uniform
         
-        # Compute losses using score entropy loss
-        loss_seq = score_entropy_loss_fn(seq_logits, seq_x_0, seq_x_t, cumulative_noise, inst_noise, model_cfg.seq_absorb_token, valid_mask=seq_valid)
-        loss_struct = score_entropy_loss_fn(struct_logits, struct_x_0, struct_x_t, cumulative_noise, inst_noise, model_cfg.struct_absorb_token, valid_mask=struct_valid)
-                
-        # Total loss
-        loss = train_cfg.loss_config.seq_loss_weight * loss_seq + train_cfg.loss_config.struct_loss_weight * loss_struct
+        # Find which batch elements have valid elements and count effective batch sizes
+        valid_seq_mask = nonbeospank_seq.any(dim=1)  # [B] - which sequences have at least one valid position
+        valid_struct_mask = nonbeospank_struct.any(dim=1)  # [B] - which sequences have at least one valid position
+        effective_batch_size_seq = valid_seq_mask.sum().item()
+        effective_batch_size_struct = valid_struct_mask.sum().item()
         
-        if train_mode:
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
+        # Compute losses only on valid sequences and structures
+        if effective_batch_size_seq > 0:
+            seq_logits_valid = seq_logits[valid_seq_mask]
+            seq_x_0_valid, seq_x_t_valid = seq_x_0[valid_seq_mask], seq_x_t[valid_seq_mask]
+            nonbeospank_seq_valid = nonbeospank_seq[valid_seq_mask]
+            cumulative_noise_valid, inst_noise_valid = cumulative_noise[valid_seq_mask], inst_noise[valid_seq_mask]
+            loss_seq = score_entropy_loss_fn(seq_logits_valid, seq_x_0_valid, seq_x_t_valid, cumulative_noise_valid, inst_noise_valid, model_cfg.seq_absorb_token, valid_mask=nonbeospank_seq_valid)
+        else: loss_seq = torch.tensor(0.0, device=seq_logits.device)
         
-        # Return metrics
-        return {'loss': (loss.item(), B), 'loss_seq': (loss_seq.item(), B), 'loss_struct': (loss_struct.item(), B)}
+        if effective_batch_size_struct > 0:
+            struct_logits_valid = struct_logits[valid_struct_mask]
+            struct_x_0_valid, struct_x_t_valid = struct_x_0[valid_struct_mask], struct_x_t[valid_struct_mask]
+            nonbeospank_struct_valid = nonbeospank_struct[valid_struct_mask]
+            cumulative_noise_valid, inst_noise_valid = cumulative_noise[valid_struct_mask], inst_noise[valid_struct_mask]
+            loss_struct = score_entropy_loss_fn(struct_logits_valid, struct_x_0_valid, struct_x_t_valid, cumulative_noise_valid, inst_noise_valid, model_cfg.struct_absorb_token, valid_mask=nonbeospank_struct_valid)
+        else: loss_struct = torch.tensor(0.0, device=struct_logits.device)
+
+        # Compute combined loss
+        seq_loss_weight = train_cfg.loss_config.seq_loss_weight * (effective_batch_size_seq / B)
+        struct_loss_weight = train_cfg.loss_config.struct_loss_weight * (effective_batch_size_struct / B)
+        loss = seq_loss_weight * loss_seq + struct_loss_weight * loss_struct
+        
+        if train_mode: # Check if we have any valid gradients to backpropagate
+            if effective_batch_size_seq > 0 or effective_batch_size_struct > 0:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+        
+        # Return metrics as tuples (value, effective_batch_size)
+        return {'loss': (loss.item(), B), 'loss_seq': (loss_seq.item(), effective_batch_size_seq), 'loss_struct': (loss_struct.item(), effective_batch_size_struct)}

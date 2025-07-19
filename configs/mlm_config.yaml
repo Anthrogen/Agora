@@ -75,7 +75,7 @@ train_cfg:
     
     # Masking configuration
     mask_config:
-      # simple_mask_cfg:
-      #   mask_prob_seq: 0.2
-      #   mask_prob_struct: 0.2
-      complex_mask_cfg: {}
+      - simple_mask_cfg:
+          mask_prob_seq: 0.2
+          mask_prob_struct: 0.2
+      - complex_mask_cfg: {}

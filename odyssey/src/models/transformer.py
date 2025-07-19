@@ -20,7 +20,7 @@ class TransformerTrunk(nn.Module):
         # Store config
         self.cfg = cfg
         self.use_adaln = use_adaln
-        
+
         # Extract transformer config for convenience
         transformer_cfg = cfg.transformer_cfg
 

@@ -54,11 +54,15 @@ for k in ATOMS:
     assert ATOMS[k][ATOM_O_ENC] == "O"
     assert len(ATOMS[k]) <= ENCODING_LEN
 
+
+# Note: this does not include "struct", which we do not have at this point.
+ALL_TRACKS = ('seq', 'coords', 'ss8', 'sasa', 'global_annotation', 'per_residue_annotation', 'plddt')
+
 class Protein():
     """
     To test this code, try it with:
 
-    Protein("/workspace/demo/transformer_stack/data/sample_training_data/7x99_B.json", True)
+    Protein("/workspace/demo/Odyssey/sample_data/3k/1a04_A.json", mode="side_chain")
 
     Modes: side_chain, backbone
 
@@ -74,19 +78,23 @@ class Protein():
         data = json.load(open(file_path))
 
         # This dataloader assumes that each amino acid begins with an "N".
-        atom_names = data["all_atoms"]["atom_names"]
-        sequence = data["sequence"]
-        atom_coords = torch.Tensor(data["all_atoms"]["atom_coordinates"])
-        ss8 = data["secondary_structure"]
-        sasa = data["sasa"]
-        global_annotation = data["global_annotation"]
-        per_residue_annotation = data["per_residue_annotation"]
-        plddt = data["plddt"]
-        structure_source = data["structure_source"]
+        atom_names = data.get("all_atoms", {}).get('atom_names', None)
+        sequence = data.get('sequence', None)
+        atom_coords = data.get('all_atoms', {}).get('atom_coordinates', None)
+        ss8 = data.get('secondary_structure', None)
+        sasa = data.get('sasa', None)
+        global_annotation = data.get('global_annotation', None)
+        per_residue_annotation = data.get('per_residue_annotation', None)
+        plddt = data.get('plddt', None)
+        structure_source = data.get('structure_source', None)
+
+        if atom_coords is not None:
+            atom_coords = torch.Tensor(atom_coords)
 
         # Handle secondary structure
         if ss8 is None: ss8 = [None] * len(sequence) # If entire field is None, create array of None with sequence length
-        elif isinstance(ss8, list): # Replace individual NaN/None elements with None
+        else:
+            assert isinstance(ss8, list) # Replace individual NaN/None elements with None
             ss8[:] = [None if (x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x))) else x for x in ss8]
 
         # Handle sasa
@@ -101,17 +109,18 @@ class Protein():
             global_annotation = [term.strip() for term in terms if term.strip()]
 
         # Handle per-residue annotations
-        if not per_residue_annotation: per_residue_annotation = [[None] for _ in range(len(sequence))] # Handles both None and empty dict {}
+        if not per_residue_annotation: per_residue_annotation = [[] for _ in range(len(sequence))] # Handles both None and empty dict {}
         elif isinstance(per_residue_annotation, dict):
             # Convert dictionary format to list format
-            list_annotations = [[None] for _ in range(len(sequence))]
+            list_annotations = [[] for _ in range(len(sequence))]
             for pos_str, annotations in per_residue_annotation.items():
                 pos_idx = int(pos_str)
                 # Ensure the position is within sequence bounds
-                if 0 <= pos_idx < len(sequence):
-                     # Annotations are always in list format
-                     if isinstance(annotations, list):
-                         list_annotations[pos_idx] = annotations
+                assert 0 <= pos_idx < len(sequence)
+
+                # Annotations are always in list format
+                if isinstance(annotations, list):
+                    list_annotations[pos_idx] = annotations
 
             # Set the per_residue_annotation to the list of annotations
             per_residue_annotation = list_annotations
@@ -288,10 +297,17 @@ class ProteinDataset(Dataset):
     PROTEIN_ID_COL = 1
     JSON_PATH_COL = 2 # Within the index.csv file, this is the colun (0-indexed) that points ot member Json Path 
     TOTAL_COLS = 4
-    def __init__(self, index_csv_path: str, center: bool = True, mode: str = "backbone", max_length: int = 2048, max_length_global: int = 512, eager: bool = False, verbose: bool = False):
+    def __init__(self, index_csv_path: str, center: bool = True, mode: str = "backbone", max_length: int = 2048, critical_tracks=None, max_length_global: int = 512, eager: bool = False, verbose: bool = False):
         """
         Eager: if true, check for malformed files up front. Otherwise, do so on the fly and potentially return None from __getitem__.
         """
+        if critical_tracks is None:
+            # Default value: everything.
+            critical_tracks = {t: True for t in ALL_TRACKS}
+
+        self.critical_tracks = critical_tracks
+
+
         self.index_csv_path = index_csv_path
         self.index_csv_dir = os.path.dirname(index_csv_path) # all paths expressed in the .csv file are relative to this position.
 
@@ -413,4 +429,3 @@ class ProteinDataset(Dataset):
             coords = torch.where(non_zero_mask.unsqueeze(-1), coords - centroid, coords)
 
         return seq, coords, ss8, sasa, global_annotation, per_residue_annotation, plddt, l
-

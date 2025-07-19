@@ -105,7 +105,6 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, schedule
             seq_logits_valid = seq_logits[valid_seq_mask]
             seq_labels_valid = batch.unmasked_data['seq'][valid_seq_mask]
             loss_elements_seq_valid = loss_elements_seq[valid_seq_mask]
-                
             loss_seq = cross_entropy_loss(seq_logits_valid, seq_labels_valid, loss_elements_seq_valid)
             seq_acc = calculate_accuracy(seq_logits_valid, seq_labels_valid, loss_elements_seq_valid)
         else:
@@ -116,7 +115,6 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, schedule
             struct_logits_valid = struct_logits[valid_struct_mask]
             struct_labels_valid = batch.unmasked_data['struct'][valid_struct_mask]
             loss_elements_struct_valid = loss_elements_struct[valid_struct_mask]
-                
             loss_struct = cross_entropy_loss(struct_logits_valid, struct_labels_valid, loss_elements_struct_valid)
             struct_acc = calculate_accuracy(struct_logits_valid, struct_labels_valid, loss_elements_struct_valid)
         else:
@@ -124,14 +122,16 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, schedule
             struct_acc = torch.tensor(0.0, device=struct_logits.device)
 
         # Compute combined loss
-        loss = train_cfg.loss_config.seq_loss_weight * loss_seq + train_cfg.loss_config.struct_loss_weight * loss_struct
+        seq_loss_weight = train_cfg.loss_config.seq_loss_weight * (effective_batch_size_seq / B)
+        struct_loss_weight = train_cfg.loss_config.struct_loss_weight * (effective_batch_size_struct / B)
+        loss = seq_loss_weight * loss_seq + struct_loss_weight * loss_struct
         
-        if train_mode:
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
+        if train_mode: # Check if we have any valid gradients to backpropagate
+            if effective_batch_size_seq > 0 or effective_batch_size_struct > 0:
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
         
         # Return metrics as tuples (value, effective_batch_size)
         return {'loss': (loss.item(), B), 'loss_seq': (loss_seq.item(), effective_batch_size_seq), 'loss_struct': (loss_struct.item(), effective_batch_size_struct), 'seq_acc': (seq_acc.item(), effective_batch_size_seq), 'struct_acc': (struct_acc.item(), effective_batch_size_struct)}
@@ -220,6 +220,5 @@ def generate_mlm(model, model_cfg, train_cfg, batch):
         # Now, we need to "write" the sampled tokens to the batch:
         batch.masked_data[track][positions_to_unmask] = sampled_tokens
         batch.masks[track][positions_to_unmask] = False
-    
         
     return batch

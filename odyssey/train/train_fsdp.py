@@ -9,10 +9,36 @@ from torch.optim.lr_scheduler import LambdaLR
 import numpy as np
 from tqdm import tqdm
 from dataclasses import dataclass, field, asdict, replace
-from typing import Optional, Tuple, Callable, Dict
+from typing import Optional, Tuple, Callable, Dict, List
 import random
 from types import SimpleNamespace
 import argparse
+
+# FSDP imports
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.wrap import (
+    size_based_auto_wrap_policy,
+    enable_wrap,
+    wrap,
+    _or_policy,
+    lambda_auto_wrap_policy,
+    transformer_auto_wrap_policy,
+)
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    CPUOffload,
+    BackwardPrefetch,
+    ShardingStrategy,
+)
+import functools
+import torch.distributed as dist
+
+# Wandb import
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    print("Warning: wandb not installed. Install with 'pip install wandb' for experiment tracking.")
 
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -34,9 +60,92 @@ from odyssey.src.model_librarian import ensure_identical_parameters_transformers
 from odyssey.train.yaml_expander import expand_yaml_to_directory
 from odyssey.train.generate_experiment_map import generate_experiment_map
 
+# Import transformer block classes for FSDP wrapping policy
+from odyssey.src.models.blocks import (
+    StandardTransformerBlock,
+    GeometricTransformerBlock,
+    ReflexiveTransformerBlock,
+    ConsensusTransformerBlock
+)
+
 class FakeScheduler():
     def __init__(self): pass
     def step(self): pass
+
+def create_transformer_block_wrap_policy():
+    """Create FSDP wrapping policy that only wraps transformer blocks.
+    
+    This policy will wrap only the transformer block classes to avoid
+    double wrapping issues with other model components.
+    """
+    def lambda_policy_fn(module):
+        # Only wrap the transformer block modules
+        return isinstance(module, (
+            StandardTransformerBlock,
+            GeometricTransformerBlock,
+            ReflexiveTransformerBlock,
+            ConsensusTransformerBlock
+        ))
+    
+    return functools.partial(
+        lambda_auto_wrap_policy,
+        lambda_fn=lambda_policy_fn
+    )
+
+def setup_distributed():
+    """Initialize distributed training if available."""
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        dist.init_process_group('nccl')
+        torch.cuda.set_device(rank)
+        return True, rank, world_size
+    return False, 0, 1
+
+def reduce_metrics_across_gpus(metrics_dict, world_size, rank=0, debug=False):
+    """Reduce metrics across all GPUs by averaging.
+    
+    Args:
+        metrics_dict: Dictionary of metrics to reduce
+        world_size: Number of GPUs
+        rank: Current GPU rank
+        debug: Whether to print debug information
+    
+    Returns:
+        Dictionary of reduced (averaged) metrics
+    """
+    if world_size == 1:
+        return metrics_dict
+    
+    reduced_metrics = {}
+    
+    # Debug: collect all metrics from all GPUs for printing
+    if debug and 'loss' in metrics_dict:
+        # First, gather all loss values to rank 0 for debugging
+        loss_tensor = torch.tensor(metrics_dict['loss'], dtype=torch.float32).cuda()
+        if rank == 0:
+            gathered_losses = [torch.zeros_like(loss_tensor) for _ in range(world_size)]
+            dist.gather(loss_tensor, gathered_losses, dst=0)
+            print(f"\n[DEBUG] Loss values from all GPUs:")
+            for i, loss in enumerate(gathered_losses):
+                print(f"  GPU {i}: {loss.item():.6f}")
+        else:
+            dist.gather(loss_tensor, dst=0)
+    
+    for key, value in metrics_dict.items():
+        # Convert to tensor if not already
+        tensor_value = torch.tensor(value, dtype=torch.float32).cuda()
+        # All-reduce across GPUs (sum)
+        dist.all_reduce(tensor_value, op=dist.ReduceOp.SUM)
+        # Average by dividing by world size
+        reduced_metrics[key] = (tensor_value / world_size).item()
+    
+    # Debug: print averaged loss
+    if debug and rank == 0 and 'loss' in reduced_metrics:
+        print(f"  Averaged loss: {reduced_metrics['loss']:.6f}")
+        print(f"  (Sum: {reduced_metrics['loss'] * world_size:.6f}, divided by {world_size} GPUs)\n")
+    
+    return reduced_metrics
 
 def create_linear_decay(base_learning_rate: float, min_learning_rate: float, num_epochs_decay: int, num_epochs_warmup: int):
     def lr_lambda(current_step): # One step = one forward pass through the model
@@ -54,7 +163,7 @@ def create_linear_decay(base_learning_rate: float, min_learning_rate: float, num
 
     return lr_lambda
 
-def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[TrainingConfig], callback=None):
+def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[TrainingConfig], callback=None, use_fsdp: bool = True, use_wandb: bool = True):
     # If a user just passes in a single set of configs, listify them.
     if isinstance(model_cfg_list, TransformerConfig) and isinstance(train_cfg_list, TrainingConfig):
         model_cfg_list = [model_cfg_list]
@@ -63,7 +172,38 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
     assert len(model_cfg_list) == len(train_cfg_list), "model_cfg_list and train_cfg_list must have the same length"
     num_models = len(model_cfg_list)
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Setup distributed training if available
+    is_distributed, rank, world_size = setup_distributed()
+    
+    # Set device based on distributed setup
+    if is_distributed:
+        device = torch.device(f"cuda:{rank}")
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        use_fsdp = False  # Disable FSDP if not distributed
+    
+    # Initialize wandb (only on rank 0)
+    wandb_run = None
+    if WANDB_AVAILABLE and use_wandb and (not is_distributed or rank == 0):
+        # Create a run name based on the first model config
+        run_name = f"{model_cfg_list[0].initials()}_{model_cfg_list[0].style}"
+        if len(model_cfg_list) > 1:
+            run_name += f"_and_{len(model_cfg_list)-1}_more"
+        
+        # Initialize wandb
+        wandb_run = wandb.init(
+            project="odyssey-training",
+            name=run_name,
+            config={
+                "num_models": num_models,
+                "model_configs": [asdict(cfg) for cfg in model_cfg_list],
+                "training_configs": [asdict(cfg) for cfg in train_cfg_list],
+                "distributed": is_distributed,
+                "world_size": world_size,
+                "use_fsdp": use_fsdp and is_distributed,
+            },
+            reinit=True
+        )
     
     # Create checkpoint directories for all models
     for train_cfg in train_cfg_list:
@@ -108,15 +248,18 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         ###########################################################################
         #  Model Loading
         ###########################################################################
-        print(f"Model {i+1}/{num_models}: Starting {model_cfg.style} training")
-        print(f"  Training model: {model_cfg.initials()}")
-        print(f"  Masking: {train_cfg.mask_config}")
+        if not is_distributed or rank == 0:
+            print(f"Model {i+1}/{num_models}: Starting {model_cfg.style} training")
+            print(f"  Training model: {model_cfg.initials()}")
+            print(f"  Masking: {train_cfg.mask_config}")
         
         if train_cfg.jump_start is None: # No jump start provided.  We will cold-start the model. Create model with fixed seed
-            print(f"  Creating {model_cfg.initials()} target model...")
+            if not is_distributed or rank == 0:
+                print(f"  Creating {model_cfg.initials()} target model...")
             model = load_model_from_empty(model_cfg, device)
         else: # Jump start provided.  Load model from checkpoint.
-            print(f"  Loading {model_cfg.initials()} target model from {train_cfg.jump_start}...")
+            if not is_distributed or rank == 0:
+                print(f"  Loading {model_cfg.initials()} target model from {train_cfg.jump_start}...")
             model, model_cfg_loaded, train_cfg_loaded= load_model_from_checkpoint(train_cfg.jump_start, device)
             # TODO: Assert model_cfg from load and model_cfg "similar enough", but the train_cfg can be different.
             model_cfg = model_cfg_loaded  # Replace the original model_cfg with the loaded one
@@ -130,12 +273,44 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                 model.encoder = autoencoder.encoder  # Update the encoder to match the loaded encoder
                 model_cfg.encoder_cfg = autoencoder_model_cfg.encoder_cfg  # Update the encoder_cfg to match the loaded encoder_cfg
                 model_cfg_list[i] = model_cfg  # Ensure the updated config is saved to the list
+        
+        # Wrap model with FSDP if enabled
+        if use_fsdp and is_distributed:
+            if rank == 0:
+                print(f"  Wrapping model with FSDP (only transformer blocks)...")
+            
+            # Debug: Show which modules will be wrapped
+            if rank == 0:
+                print("  Modules to be wrapped by FSDP:")
+                for name, module in model.named_modules():
+                    if isinstance(module, (StandardTransformerBlock, GeometricTransformerBlock, 
+                                         ReflexiveTransformerBlock, ConsensusTransformerBlock)):
+                        print(f"    - {name}: {module.__class__.__name__}")
+            
+            # Create the wrapping policy that only wraps transformer blocks
+            auto_wrap_policy = create_transformer_block_wrap_policy()
+            
+            # FSDP configuration
+            fsdp_config = dict(
+                auto_wrap_policy=auto_wrap_policy,
+                mixed_precision=None,  # Can be enabled if needed
+                sharding_strategy=ShardingStrategy.FULL_SHARD,
+                cpu_offload=CPUOffload(offload_params=False),
+                backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+                device_id=torch.cuda.current_device(),
+                sync_module_states=True,  # Ensure all ranks have same initial weights
+            )
+            
+            model = FSDP(model, **fsdp_config)
+            if rank == 0:
+                print(f"  FSDP wrapping complete")
                 
         models.append((model, autoencoder))
 
-        # Print parameter count
+        # Print parameter count (only on rank 0)
         total_params = sum(p.numel() for p in model.parameters())
-        print(f"  {model_cfg.initials()} total parameters: {total_params:,}")
+        if not is_distributed or rank == 0:
+            print(f"  {model_cfg.initials()} total parameters: {total_params:,}")
 
         ###########################################################################
         # Initializing optimizer and scheduler
@@ -221,8 +396,10 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             step_fn = step_fns[model_idx]
             
             model.train()
+            # Only show progress bar on rank 0
+            disable_tqdm = is_distributed and rank != 0
             with tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs} [Model {model_idx+1}: {model_cfg.initials()} Train]",
-                     ascii=True, leave=True, ncols=150) as pbar:
+                     ascii=True, leave=True, ncols=150, disable=disable_tqdm) as pbar:
                 for batch_data in pbar:
                     # Skip empty/None batches
                     if batch_data is None: continue
@@ -271,10 +448,11 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                         val_metrics_sum_all[model_idx][k] += value * count
                         val_metrics_count_all[model_idx][k] += count
         
-        # Calculate and print epoch averages for all models
-        print(f"\n{'='*80}")
-        print(f"Epoch {epoch+1}/{max_epochs} Summary:")
-        print(f"{'='*80}")
+        # Calculate and print epoch averages for all models (only on rank 0)
+        if not is_distributed or rank == 0:
+            print(f"\n{'='*80}")
+            print(f"Epoch {epoch+1}/{max_epochs} Summary:")
+            print(f"{'='*80}")
         
         for model_idx in range(num_models):
             model_cfg = model_cfg_list[model_idx]
@@ -286,10 +464,44 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             epoch_val_metrics = {k: val_metrics_sum_all[model_idx][k] / val_metrics_count_all[model_idx][k] 
                                for k in val_metrics_sum_all[model_idx].keys()}
             
-            # Print model summary
-            print(f"\nModel {model_idx+1}: {model_cfg.initials()} ({model_cfg.style}):")
-            print(f"  Train: " + " | ".join([f"{k}: {v:.3f}" for k, v in epoch_train_metrics.items()]))
-            print(f"  Val:   " + " | ".join([f"{k}: {v:.3f}" for k, v in epoch_val_metrics.items()]))
+            # Average metrics across all GPUs for display/wandb logging
+            if is_distributed:
+                # Enable debug for first epoch and every 10 epochs to see GPU losses
+                debug_mode = (epoch == 0) or (epoch % 10 == 0)
+                if debug_mode and rank == 0:
+                    print(f"\n[DEBUG] Epoch {epoch+1} - Model {model_idx+1} ({model_cfg.initials()})")
+                display_train_metrics = reduce_metrics_across_gpus(epoch_train_metrics, world_size, rank, debug=debug_mode)
+                display_val_metrics = reduce_metrics_across_gpus(epoch_val_metrics, world_size, rank, debug=debug_mode)
+            else:
+                display_train_metrics = epoch_train_metrics
+                display_val_metrics = epoch_val_metrics
+            
+            # Print model summary (only on rank 0)
+            if not is_distributed or rank == 0:
+                print(f"\nModel {model_idx+1}: {model_cfg.initials()} ({model_cfg.style}):")
+                print(f"  Train: " + " | ".join([f"{k}: {v:.3f}" for k, v in display_train_metrics.items()]))
+                print(f"  Val:   " + " | ".join([f"{k}: {v:.3f}" for k, v in display_val_metrics.items()]))
+                
+                # Log to wandb
+                if wandb_run is not None:
+                    # Create a prefix for multi-model scenarios
+                    prefix = f"model_{model_idx}/" if num_models > 1 else ""
+                    model_name = model_cfg.initials()
+                    
+                    # Log metrics with model-specific prefix
+                    wandb_log_dict = {
+                        f"{prefix}{model_name}/train/{k}": v for k, v in display_train_metrics.items()
+                    }
+                    wandb_log_dict.update({
+                        f"{prefix}{model_name}/val/{k}": v for k, v in display_val_metrics.items()
+                    })
+                    wandb_log_dict["epoch"] = epoch + 1
+                    
+                    # Log learning rate if available
+                    current_lr = optimizers[model_idx].param_groups[0]['lr']
+                    wandb_log_dict[f"{prefix}{model_name}/learning_rate"] = current_lr
+                    
+                    wandb.log(wandb_log_dict)
             
             # Store metrics for CSV
             
@@ -316,14 +528,24 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         
         final_checkpoint_path = Path(train_cfg.checkpoint_dir) / "model.pt"
         save_model_checkpoint(final_checkpoint_path, model, model_cfg, train_cfg, optimizer)
-        print(f"\nSaved final checkpoint for Model {model_idx+1} to {final_checkpoint_path}")
+        if not is_distributed or rank == 0:
+            print(f"\nSaved final checkpoint for Model {model_idx+1} to {final_checkpoint_path}")
         
         # Save epoch history to CSV
         metrics_array = np.array(epoch_metrics_all[model_idx])
         history_csv_path = Path(train_cfg.checkpoint_dir) / "history.csv"
         np.savetxt(history_csv_path, metrics_array, delimiter=',', header=','.join(csv_header), comments='')
-        print(f"Saved epoch metrics to {history_csv_path}")
+        if not is_distributed or rank == 0:
+            print(f"Saved epoch metrics to {history_csv_path}")
 
+    # Finish wandb run
+    if wandb_run is not None:
+        wandb.finish()
+    
+    # Cleanup distributed training if needed
+    if is_distributed:
+        dist.destroy_process_group()
+    
     return models, epoch_metrics_all, csv_headers
 
 if __name__ == "__main__":
@@ -371,7 +593,11 @@ if __name__ == "__main__":
     
     # Load all expanded configs and train
     model_cfg_list, train_cfg_list = load_multi_configs(str(expanded_yaml_dir))
-    _, epoch_metrics_all, csv_headers = train(model_cfg_list, train_cfg_list)
+    
+    # Check if wandb should be disabled via environment variable
+    use_wandb = os.environ.get('DISABLE_WANDB', '').lower() not in ['1', 'true', 'yes']
+    
+    _, epoch_metrics_all, csv_headers = train(model_cfg_list, train_cfg_list, use_fsdp=True, use_wandb=use_wandb)
 
     base_dir = Path(train_cfg_list[0].checkpoint_dir).parent
     summary_history_csv_path = base_dir / "summary_history.csv"

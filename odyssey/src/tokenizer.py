@@ -121,6 +121,7 @@ class SequenceTokenizer(Tokenizer):
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
 
     def print_token(self, tok):
+        if isinstance(tok, torch.Tensor): tok = tok.item()
         return self.reverse_mapping[tok]
 
 
@@ -177,6 +178,17 @@ class CoordinatesTokenizer(Tokenizer):
         assert padded_coords.shape == (self.full_length, H, 3), "Structure padding length mismatch!"
 
         return padded_coords, masked_coords, coords_beospank.bool(), coords_masks.bool() # coords_pad_pos.bool()
+
+
+    def print_token(self, tok):
+        s = "["
+        for row in range(tok.shape[0]):
+            s += f"{tok[row].tolist()}\n"
+
+        if s[-1] == '\n': s = s[:-1]
+
+        s += ']\n'
+        return s
 
 
 class StructureTokenizer(Tokenizer):
@@ -277,6 +289,7 @@ class StructureTokenizer(Tokenizer):
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
 
     def print_token(self, tok):
+        if isinstance(tok, torch.Tensor): tok = tok.item()
         return self.reverse_mapping[tok]
 
 
@@ -361,6 +374,7 @@ class SS8Tokenizer(Tokenizer):
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
     
     def print_token(self, tok):
+        if isinstance(tok, torch.Tensor): tok = tok.item()
         return self.reverse_mapping[tok]
 
 
@@ -449,6 +463,7 @@ class SASATokenizer(Tokenizer):
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
     
     def print_token(self, tok):
+        if isinstance(tok, torch.Tensor): tok = tok.item()
         return self.reverse_mapping[tok]
 
 
@@ -536,6 +551,7 @@ class PLDDTTokenizer(Tokenizer):
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
 
     def print_token(self, tok):
+        if isinstance(tok, torch.Tensor): tok = tok.item()
         return self.reverse_mapping[tok]
 
 class GlobalAnnotationTokenizer(Tokenizer):
@@ -558,6 +574,9 @@ class GlobalAnnotationTokenizer(Tokenizer):
         self.reverse_mapping = {v: k for k, v in self.mapping.items()}
         self.full_length = full_length
 
+        # TODO: once vocabulary.py is object-based, remove this check.
+        assert len(self.mapping) > 0
+
     def tokenize(self, observation):
         """
         Args:
@@ -570,7 +589,8 @@ class GlobalAnnotationTokenizer(Tokenizer):
         global_annotation_tokens = []
         for label in observation:
             if label in self.mapping: global_annotation_tokens.append(self.mapping[label])
-            else: global_annotation_tokens.append(self.mapping["UNK"])
+            # else: global_annotation_tokens.append(self.mapping["UNK"])
+            else: pass
         
         # Truncate if too long (reserve space for BOS/EOS)
         global_annotation_tokens = global_annotation_tokens[:self.full_length-2]
@@ -609,6 +629,7 @@ class GlobalAnnotationTokenizer(Tokenizer):
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
 
     def print_token(self, tok):
+        if isinstance(tok, torch.Tensor): tok = tok.item()
         return self.reverse_mapping[tok]
 
 
@@ -621,7 +642,7 @@ class PerResidueAnnotationTokenizer(Tokenizer):
     def __init__(self, full_length, max_annotations_per_residue, generator=None, corruption_mode=CorruptionMode.MASK):
         # Get per-residue annotation tokens (dynamically loaded vocabulary)
         per_residue_annotation = {name: value for name, value in PER_RESIDUE_ANNOTATION_TOKENS._members.items()}
-
+        
         # Get the highest per-residue annotation token value to avoid conflicts
         self.max_annotation_value = max(per_residue_annotation.values()) if per_residue_annotation else -1
 
@@ -636,29 +657,28 @@ class PerResidueAnnotationTokenizer(Tokenizer):
         self.generator = generator
         self.corruption_mode = corruption_mode
 
+        # TODO: once vocabulary.py is object-based, remove this check.
+        assert len(self.mapping) > 0
+
     def _process_residue_annotations(self, annotations):
         """Convert residue annotations to list of token indices, pad/truncate to max_annotations_per_residue."""        
         # Convert to token IDs
         tokens = []
-        for term in annotations[:self.max_annotations_per_residue]:  # Truncate to max
-            if term is None:
-                tokens.append(self.mapping["UNK"])
-            else:
-                term = term.strip()
-                if term in self.mapping: tokens.append(self.mapping[term])
-                else: tokens.append(self.mapping["UNK"])
-        
-        # Pad to max_annotations_per_residue
-        while len(tokens) < self.max_annotations_per_residue:
-            tokens.append(self.mapping["PAD"])
-        
-        return tokens
+        for term in annotations: 
+            term = term.strip()
+            if term in self.mapping: tokens.append(self.mapping[term])
+
+        tokens = tokens[:self.max_annotations_per_residue]
+        p = [self.mapping["PAD"]] * self.max_annotations_per_residue
+        p[:len(tokens)] = tokens
+
+        return p
         
     def tokenize(self, observation, mask):
         """
         Args:
             observation: List of annotation lists per residue, e.g., 
-                        [["dimer interface","DNA binding site"], None, ["active site"], ...]
+                        [["dimer interface","DNA binding site"], [], ["active site"], ...]
                         Each element is either None or a list of annotation term strings.
             mask: Boolean mask for MASK positions
         Returns:
@@ -716,7 +736,11 @@ class PerResidueAnnotationTokenizer(Tokenizer):
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
 
     def print_token(self, tok):
-        return self.reverse_mapping[tok]
+        ret = []
+        for item in tok:
+            if isinstance(item, torch.Tensor): item = item.item()
+            ret.append(self.reverse_mapping[item])
+        return str(ret).replace("'", "").replace('"', '')
 
 
 """
@@ -724,9 +748,8 @@ To use the following test function, run the following code:
 
 from odyssey.src.tokenizer import *
 from odyssey.src.dataset import *
-
 pd = ProteinDataset("/workspace/demo/Odyssey/sample_data/3k.csv")
-mask = torch.bernoulli(torch.full((2048,), 0.1)).bool()
+mask = torch.bernoulli(torch.full((2048,), 0.2)).bool()
 idx = 0
 
 seq = SequenceTokenizer(2048)
@@ -734,11 +757,46 @@ print_tokenized_sequence(seq.print_token, *seq.tokenize(pd.__getitem__(idx)[0], 
 
 coord = CoordinatesTokenizer(2048)
 print_tokenized_sequence(coord.print_token, *coord.tokenize(pd.__getitem__(idx)[1], mask))
+
+from odyssey.src.model_librarian import load_model_from_checkpoint
+device = torch.device('cpu')
+autoencoder, _, _ = load_model_from_checkpoint("/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt", device)
+struct = StructureTokenizer(2048, autoencoder)
+_, _, _, _, struct_unmasked, struct_masked, struct_beospank, struct_mask = struct.tokenize(pd.__getitem__(idx)[1], mask)
+print_tokenized_sequence(struct.print_token, struct_unmasked, struct_masked, struct_beospank, struct_mask)
+
+ss8 = SS8Tokenizer(2048)
+print_tokenized_sequence(ss8.print_token, *ss8.tokenize(pd.__getitem__(idx)[2], mask))
+
+sasa = SASATokenizer(2048)
+print_tokenized_sequence(sasa.print_token, *sasa.tokenize(pd.__getitem__(idx)[3], mask))
+
+from odyssey.src.vocabulary import *
+_ = load_annotation_tokens("/workspace/demo/Odyssey/odyssey/train/vocab_global_annotations.txt", GLOBAL_ANNOTATION_TOKENS)
+global_annotation = GlobalAnnotationTokenizer(2048)
+data, beospank = global_annotation.tokenize(pd.__getitem__(idx)[4])
+print_tokenized_sequence(global_annotation.print_token, data, data, beospank, torch.zeros_like(mask))
+
+from odyssey.src.vocabulary import *
+_ = load_annotation_tokens("/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt", PER_RESIDUE_ANNOTATION_TOKENS)
+per_residue = PerResidueAnnotationTokenizer(2048, 4)
+print_tokenized_sequence(per_residue.print_token, *per_residue.tokenize(pd.__getitem__(idx)[5], mask))
+
+plddt = PLDDTTokenizer(2048)
+print_tokenized_sequence(plddt.print_token, *plddt.tokenize(pd.__getitem__(idx)[6], mask))
 """
-def print_tokenized_sequence(print_token, unmasked, masked, beospank, mask, limit=500):
+def print_tokenized_sequence(print_token, unmasked, masked, beospank, mask, limit=100):
 
     def hot(b):
-        return "1" if b else ""
+
+        if isinstance(b, torch.Tensor) and b.numel() > 1:
+            s = []
+            for i in range(b.shape[0]):
+                s.append("1" if b[i] else "0")
+            return str(s).replace("'", "").replace('"', '')
+        else:
+            return "1" if b else "0"
+            # return "1" if b else ""
 
 
     data = {'Unmasked': [print_token(tok) for tok in unmasked[:limit]], 
@@ -747,6 +805,6 @@ def print_tokenized_sequence(print_token, unmasked, masked, beospank, mask, limi
             'Mask?': [hot(m) for m in mask[:limit]],
             }
 
-    table = tabulate(data, headers='keys', tablefmt='rst')
+    table = tabulate(data, headers='keys', tablefmt='grid')
 
     print(table)

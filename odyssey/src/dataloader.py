@@ -198,7 +198,8 @@ class SimpleDataLoader(MaskingDataLoader):
         super(SimpleDataLoader, self).__init__(dataset, CorruptionMode.MASK, model_cfg, train_cfg, tracks, device, autoencoder=autoencoder, min_unmasked=min_unmasked,  **kwargs)
 
         assert isinstance(train_cfg.mask_config, SimpleMaskConfig)
-        self.simple_mask_prob = {'seq': train_cfg.mask_config.mask_prob_seq, 'coords': train_cfg.mask_config.mask_prob_struct}
+        # Use mask_prob_seq as default for sequence-like tracks, mask_prob_struct for structure-like tracks
+        self.simple_mask_prob = {'seq': train_cfg.mask_config.mask_prob_seq, 'coords': train_cfg.mask_config.mask_prob_struct, 'ss8': train_cfg.mask_config.mask_prob_seq, 'sasa': train_cfg.mask_config.mask_prob_seq, 'plddt': train_cfg.mask_config.mask_prob_seq, 'per_residue_annotation': train_cfg.mask_config.mask_prob_seq}
 
     def sample_masks(self, tracks, batch_len):
 
