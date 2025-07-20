@@ -33,6 +33,7 @@ from odyssey.src.model_librarian import ensure_identical_parameters_transformers
 
 from odyssey.train.yaml_expander import expand_yaml_to_directory
 from odyssey.train.generate_experiment_map import generate_experiment_map
+from odyssey.train.mlm_step import generate_mlm
 
 
 def generate(model_checkpoint, callback=None):
@@ -78,20 +79,32 @@ def generate(model_checkpoint, callback=None):
     g_val = torch.Generator()
     g_val.manual_seed(data_seed + 5000)
 
+    print("Loading dataset...")
     dataset = ProteinDataset(transformer_train_cfg.data_dir, mode=dataset_mode, max_length=transformer_model_cfg.max_len - 2, max_length_global=transformer_model_cfg.max_len_global - 2)
+    print("...done.")
     val_size = max(1, int(0.2 * len(dataset)))
     train_size = len(dataset) - val_size
 
     # We use g_val as the generator of the split
     _, data = random_split(dataset, [train_size, val_size], generator=g_val)
 
+    print(f"Constructed Validation Dataset of size {val_size}")
+    print(data)
+
     # Do not mask anything.
     GENERATION_BATCH_SIZE = 1
-    val_loader = NoMaskDataLoader(data, transformer_model_cfg, transformer_train_cfg, tracks, device, batch_size=GENERATION_BATCH_SIZE, shuffle=False, generator=g_val, 
+    # For actual generation we need to use Nonmasking dataloader.
+    # val_loader = NoMaskDataLoader(data, transformer_model_cfg, transformer_train_cfg, tracks, device, batch_size=GENERATION_BATCH_SIZE, shuffle=False, generator=g_val, 
+    #                                     worker_init_fn=worker_init_fn, min_unmasked=min_unmasked, 
+    #                                     autoencoder=autoencoder)
+    val_loader = _get_training_dataloader(data, transformer_model_cfg, transformer_train_cfg, tracks, device, batch_size=GENERATION_BATCH_SIZE, shuffle=False, generator=g_val, 
                                         worker_init_fn=worker_init_fn, min_unmasked=min_unmasked, 
-                                        fsq_encoder=autoencoder.encoder)
+                                        autoencoder=autoencoder)
 
     for batch in val_loader:
+        if batch is None:
+            continue
+        
         if transformer_model_cfg.style == "mlm":
             batch = generate_mlm(transformer, transformer_model_cfg, transformer_train_cfg, batch)
         else:
@@ -102,7 +115,7 @@ def generate(model_checkpoint, callback=None):
 if __name__ == "__main__":
     """
     Easy way to test:
-    python generate.py --checkpoint ../../checkpoints/connor_test/connor_test_000/model.pt
+    python generate.py --checkpoint ../../checkpoints/transformer_trunk/mlm_config/mlm_config_000/model.pt
     """
     parser = argparse.ArgumentParser(description='Train Odyssey models')
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to fully trained model checkpoint')

@@ -116,6 +116,7 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, scheduler
     
     model.train(train_mode)
     model.encoder.eval()  # Encoder is frozen
+    model.quantizer.eval()  # Quantizer is also frozen
     
     with torch.set_grad_enabled(train_mode):
         # Forward pass through frozen encoder to get z_q

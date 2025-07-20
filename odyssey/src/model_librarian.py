@@ -12,6 +12,9 @@ from odyssey.src.models.transformer import TransformerTrunk
 from odyssey.src.models.blocks import StandardTransformerBlock
 from odyssey.src.models.autoencoder import Autoencoder, FSQEncoder
 from odyssey.src.configurations import *
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import StateDictType
+import warnings
 
 def ensure_identical_parameters_transformers(models: Dict[str, TransformerTrunk], seed: int):
     """Ensure all models have identical parameters where possible.
@@ -153,16 +156,32 @@ def load_model_from_empty(model_cfg, device):
     return model
 
 def save_model_checkpoint(path, model, model_cfg, train_cfg, optimizer):
-    # Save final checkpoint
-    assert isinstance(model, Autoencoder) or isinstance(model, TransformerTrunk)
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'model_config': model_cfg,
-        'train_config': train_cfg,
-        'model_config_dict': model_cfg.to_dict(),  # Backup dictionary
-        'training_config_dict': train_cfg.to_dict()  # Backup dictionary
-    }, path)
+    if isinstance(model, FSDP):
+        # Entire model is FSDP wrapped
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning, message="FSDP.state_dict_type.*are being deprecated")
+            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT):
+                state_dict = model.state_dict()
+    elif hasattr(model, 'decoder') and isinstance(model.decoder, FSDP):
+        # Only decoder is FSDP wrapped (stage_2)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning, message="FSDP.state_dict_type.*are being deprecated")
+            with FSDP.state_dict_type(model.decoder, StateDictType.FULL_STATE_DICT):
+                state_dict = model.state_dict()
+    else:
+        # No FSDP wrapping
+        state_dict = model.state_dict()
+    
+    # Only rank 0 saves to disk
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        torch.save({
+            'model_state_dict': state_dict,
+            'optimizer_state_dict': optimizer.state_dict(),
+            'model_config': model_cfg,
+            'train_config': train_cfg,
+            'model_config_dict': model_cfg.to_dict(),
+            'training_config_dict': train_cfg.to_dict()
+        }, path)
 
 def load_model_from_checkpoint(model_path, device, freeze=False):
     """

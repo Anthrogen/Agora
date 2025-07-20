@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Tuple, Callable, List, Dict
 import random
 from types import SimpleNamespace
+import pdb
 
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
@@ -148,15 +149,29 @@ def generate_mlm(model, model_cfg, train_cfg, batch):
     """
 
     # We want only one batch element at a time
-    B = batch.masked_data['seq'].shape[0]
+    # pdb.set_trace()
+    assert batch is not None
+    B = batch.unmasked_data['seq'].shape[0]
     assert B == 1, "Right now we only generate for batches of one."
+    device = batch.unmasked_data['seq'].device
 
     content_elements_coords = ~batch.beospank['coords'] & ~batch.masks['coords']
 
     # finished = False
     # while not finished:
 
-    masked_data_all = [batch.masked_data[t] for t in ('seq', 'struct', 'ss8', 'sasa', 'global_annotation', 'per_residue_annotation', 'plddt')]
+    # Masked data for all tracks except global_annotation, which is unmasked.
+
+    # data_all = [batch.masked_data[t] for t in ('seq', 'struct', 'ss8', 'sasa', 'global_annotation', 'per_residue_annotation', 'plddt')]
+
+    data_all = [batch.masked_data['seq'],
+                batch.masked_data['struct'],
+                batch.masked_data['ss8'],
+                batch.masked_data['sasa'],
+                batch.unmasked_data['global_annotation'],
+                batch.masked_data['per_residue_annotation'],
+                batch.masked_data['plddt']]
+
     nonbeospanks_all = {'nonbeospank': ~batch.beospank['coords'] & ~batch.beospank['seq'],
                         'nonbeospank_ss8': ~batch.beospank['ss8'],
                         'nonbeospank_sasa': ~batch.beospank['sasa'],
@@ -165,9 +180,9 @@ def generate_mlm(model, model_cfg, train_cfg, batch):
                         'nonbeospank_plddt': ~batch.beospank['plddt']}
 
     if model_cfg.first_block_cfg.initials() in ("GA", "RA"):
-        outputs = model(masked_data, batch.masked_data['coords'], content_elements_coords, **nonbeospanks_all)
+        outputs = model(data_all, batch.masked_data['coords'], content_elements_coords, **nonbeospanks_all)
     else: 
-        outputs = model(masked_data, **nonbeospanks_all)
+        outputs = model(data_all, **nonbeospanks_all)
 
     seq_logits, struct_logits = outputs
     logits =  {'seq': seq_logits, 'struct': struct_logits}
@@ -183,8 +198,12 @@ def generate_mlm(model, model_cfg, train_cfg, batch):
         # 2. Randomly, with probability proportional to probabilities of logits at only masked positions.
         # 3. Deterministically, picking the three tokens of which you are most confident.
 
-        masked_positions = torch.arange(len(batch.masks[track]))[batch.masks[track]]
+        # pdb.set_trace()
+
+        masked_positions = torch.arange(batch.masks[track].shape[1], device=device)[batch.masks[track].squeeze(0)]
         probs_masked = probs[masked_positions]
+
+        pdb.set_trace()
 
         N = min(len(masked_positions), NUM_TO_UNMASK)
         if UNMASK_STRATEGY == "uniform":

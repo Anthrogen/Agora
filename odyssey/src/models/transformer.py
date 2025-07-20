@@ -210,7 +210,7 @@ class TransformerTrunk(nn.Module):
 
         # Per-residue annotation context
         # Simple [B, L] mask: True where at least one of K positions is valid (non-BOS/EOS/PAD/UNK)
-        nonbeospank_per_residue_annotation_simplified = (~nonbeospank_per_residue_annotation).any(dim=2)  # [B, L]
+        nonbeospank_per_residue_annotation_simplified = nonbeospank_per_residue_annotation.any(dim=2)  # [B, L]
         valid_per_residue_annotation_indices = nonbeospank_per_residue_annotation_simplified.any(dim=1).nonzero(as_tuple=True)[0]  # Get indices of valid rows
         if len(valid_per_residue_annotation_indices) > 0:
             per_residue_annotation_context = self.context_per_residue_annotation(h[valid_per_residue_annotation_indices], per_residue_annotation_emb[valid_per_residue_annotation_indices], nonbeospank[valid_per_residue_annotation_indices], nonbeospank_per_residue_annotation_simplified[valid_per_residue_annotation_indices])

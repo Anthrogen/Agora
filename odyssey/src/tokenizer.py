@@ -788,7 +788,9 @@ print_tokenized_sequence(plddt.print_token, *plddt.tokenize(pd.__getitem__(idx)[
 def print_tokenized_sequence(print_token, unmasked, masked, beospank, mask, limit=100):
 
     def hot(b):
-
+        """
+        Print boolean tensors.
+        """
         if isinstance(b, torch.Tensor) and b.numel() > 1:
             s = []
             for i in range(b.shape[0]):

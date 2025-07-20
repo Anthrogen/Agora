@@ -86,6 +86,8 @@ train_cfg:
   training_cfg:
     batch_size: 4
     max_epochs: 50
+    checkpoint_freq: null
+    max_steps_val: null
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/fsq"
     jump_start: null

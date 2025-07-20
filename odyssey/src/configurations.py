@@ -490,6 +490,8 @@ class TrainingConfig(Config):
     # Model types should be in models configuration...
     batch_size:                   int = None # Training hyperparameters
     max_epochs:                   int = None
+    checkpoint_freq:              Optional[int] = None  # Save checkpoints every N steps (if None, once per epoch)
+    max_steps_val:                Optional[int] = None  # Max validation steps (if None, all validation batches)
     optim_schedule_config:        SchedulerConfig = None
     mask_config:                  MaskConfig = None
     loss_config:                  LossConfig = None
@@ -503,6 +505,8 @@ class TrainingConfig(Config):
     def __post_init__(self):
         assert isinstance(self.batch_size, int) and self.batch_size > 0
         assert isinstance(self.max_epochs, int) and self.max_epochs > 0
+        assert self.checkpoint_freq is None or (isinstance(self.checkpoint_freq, int) and self.checkpoint_freq > 0)
+        assert self.max_steps_val is None or (isinstance(self.max_steps_val, int) and self.max_steps_val > 0)
         assert isinstance(self.optim_schedule_config, SchedulerConfig)
         assert isinstance(self.mask_config, MaskConfig)
         assert isinstance(self.loss_config, LossConfig)

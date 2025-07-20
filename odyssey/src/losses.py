@@ -2,6 +2,7 @@
 import torch
 import torch.nn.functional as F
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+import pdb
 
 # --------------------------------------------------------------------------- #
 #  MLM Utilities                                                              #
@@ -74,7 +75,7 @@ def cross_entropy_loss(logits, labels, loss_elements, reduction='sum'):
 # --------------------------------------------------------------------------- #
 def score_entropy_loss_absorb(output, x_0, x_t, cumulative_noise_levels, inst_noise_levels, mask_token, valid_mask):
     """
-    Score entropy loss from SEDD paper for absorb discrete diffusion.
+    Score entropy loss for absorb discrete diffusion.
     
     Args:
         output: Model predictions of shape (B, L, V)
@@ -88,78 +89,54 @@ def score_entropy_loss_absorb(output, x_0, x_t, cumulative_noise_levels, inst_no
     Returns:
         Loss value
     """
-
     B, L, V = output.shape
     
-    # Output represents log score ratios, apply exp to get ratios p_t(y)/p_t(x^i)
-    # This ensures the ratios are positive
-    output = torch.exp(output)
-
-    # Create one-hot encoding of x_t
-    # x_t shape: [B, L] with values in [0, V-1]
-    x_t_onecold = 1.0 - F.one_hot(x_t, num_classes=V).float()  # [B, L, V]
+    # Compute esigm1 = exp(sigma) - 1, with numerical stability for small sigma
+    esigm1 = torch.where(
+        cumulative_noise_levels < 0.5,
+        torch.expm1(cumulative_noise_levels),
+        torch.exp(cumulative_noise_levels) - 1
+    )  # shape (B, 1)
     
-    # Calculate delta = output @ (1 - one_hot_{x_t})
-    # This computes the dot product along the vocabulary dimension
-    # (1 - x_t_onehot) zeros out the position corresponding to x_t
-    #x_t_onecold = 1.0 - x_t_onehot  # [B, L, V]
+    # Identify positions that are in the absorbing state (masked)
+    rel_ind = (x_t == mask_token)  # [B, L]
     
-    # Compute dot product: sum over vocabulary dimension
-    # delta[b, l] = sum_v output[b, l, v] * x_t_onecold[b, l, v]
-    delta = (output * x_t_onecold).sum(dim=-1)  # [B, L]
+    # Compute ratio = 1 / esigm1 for all positions
+    ratio = 1 / esigm1  # [B, 1]
     
-    # The delta tensor now has shape [B, L] where:
-    # delta[b, l] = sum of all output[b, l, v] except where v == x_t[b, l]
-
-    # More numerically stable computation of base
-    # base = (1 - exp(-σ)) / exp(-σ) = exp(σ) - 1
-    base = torch.exp(cumulative_noise_levels) - 1.0
-    base = base.unsqueeze(1)
-    masked_positions = (x_t == mask_token).bool()
-    assert masked_positions.shape == (B,L)
-
-    alpha = 1.0 - 2.0 * masked_positions.float()
-
-    # Define "opposite": if x_t is masked, opposite is x_0; if x_t is not masked, opposite is mask_token
-    opposite = torch.where(masked_positions, x_0, torch.full_like(x_t, mask_token))
+    # Negative term: ratio * score[x_0] for masked positions, 0 for others
+    neg_term = ratio * torch.gather(output, -1, x_0[..., None]).squeeze(-1)  # [B, L]
+    neg_term = neg_term * rel_ind.float()  # Zero out non-masked positions
     
-    # epsilon_1[b, l] = output[b, l, opposite[b, l]]
-    # Gather values from output at opposite positions
-    # batch_indices = torch.arange(B, device=output.device).unsqueeze(1).expand(B, L)  # [B, L]
-    # position_indices = torch.arange(L, device=output.device).unsqueeze(0).expand(B, L)  # [B, L]
+    # Positive term: sum of exp(score) over all tokens except the mask token
+    # Create a one-hot mask to exclude the mask token dimension while maintaining gradients
+    mask_onehot = F.one_hot(torch.tensor(mask_token, device=output.device), num_classes=V).float()  # [V]
+    exclude_mask = 1.0 - mask_onehot  # [V] - zeros out the mask token position
     
-    #epsilon_1 = output[batch_indices, position_indices, opposite]  # [B, L]
-    epsilon_1 = torch.gather(output, dim=2, index=opposite.unsqueeze(-1)).squeeze(-1)
+    score_exp = torch.exp(output)  # [B, L, V]
+    pos_term = (score_exp * exclude_mask.unsqueeze(0).unsqueeze(0)).sum(dim=-1)  # [B, L]
+    pos_term = pos_term * rel_ind.float()  # Only for masked positions
     
-    # epsilon_2: base^alpha
-    # base has shape [B, 1, 1] after unsqueeze, alpha has shape [B, L]
-    # We need to squeeze base back to [B, 1] for proper broadcasting
-    base = base.squeeze(-1)  # [B, 1, 1] -> [B, 1]
-    epsilon_2 = torch.pow(base, alpha)  # [B, L]
-    epsilon_2 = torch.clamp(epsilon_2, min=1e-10)
-
-    # Clip epsilon_1 to prevent log of very small numbers
-    epsilon_1 = torch.clamp(epsilon_1, min=1e-10)
-    epsilon = epsilon_2 * torch.log(epsilon_1)
-
-    gamma = (delta - epsilon) # Gamma is (B, L)
-    K = epsilon_2 * (torch.log(epsilon_2) - 1) # (B, L)
-    gamma += K # now >= 0 element-wise
+    # Constant term: ratio * (log(ratio) - 1) for masked positions, 0 for others
+    const = ratio * (torch.log(torch.clamp(ratio, min=1e-10)) - 1)  # [B, 1]
+    const = const.expand(-1, L) * rel_ind.float()  # [B, L], only for masked positions
     
-    # inst_noise_levels has shape [B, 1], we want to broadcast with gamma [B, L]
-    # We should NOT unsqueeze, as [B, 1] will broadcast correctly to [B, L]
-    per_residue = gamma * inst_noise_levels  # [B, L] * [B, 1] -> [B, L]
-
+    # Combine terms: entropy = pos_term - neg_term + const
+    entropy = pos_term - neg_term + const  # [B, L]
+    
+    # Apply instantaneous noise levels and valid mask
+    per_residue = entropy * inst_noise_levels  # [B, L] * [B, 1] -> [B, L]
+    
     # Apply mask to per_residue losses and compute average over valid positions only
     per_residue_masked = per_residue * valid_mask.float()  # [B, L]
     valid_counts = valid_mask.sum(dim=1).float()  # [B]
     per_protein = per_residue_masked.sum(dim=1) / valid_counts  # (B,)
 
-    return per_protein.mean(0) # scalar
-    
+    return per_protein.mean(0)  # scalar
+
 def score_entropy_loss_uniform(output, x_0, x_t, cumulative_noise_levels, inst_noise_levels, mask_token, valid_mask):
     """
-    Score entropy loss from SEDD paper for uniform discrete diffusion.
+    Score entropy loss for uniform discrete diffusion.
     
     Args:
         output: Model predictions of shape (B, L, V)
@@ -173,83 +150,56 @@ def score_entropy_loss_uniform(output, x_0, x_t, cumulative_noise_levels, inst_n
     Returns:
         Loss value
     """
-    
     B, L, V = output.shape
     
-    # Output represents log score ratios, apply exp to get ratios p_t(y)/p_t(x^i)
-    # This ensures the ratios are positive
-    output = torch.exp(output)
+    # Compute esigm1 = exp(sigma) - 1, with numerical stability for small sigma
+    esigm1 = torch.where(
+        cumulative_noise_levels < 0.5,
+        torch.expm1(cumulative_noise_levels),
+        torch.exp(cumulative_noise_levels) - 1
+    )  # shape (B, 1)
     
-    # Compute F_t and S_t for uniform discrete diffusion
-    # F_t = (exp(sigma_total(t)) - 1) / (n * exp(sigma_total(t)))  
-    # S_t = exp(-sigma_total(t))
-    F_t = (torch.exp(cumulative_noise_levels) - 1.0) / (V * torch.exp(cumulative_noise_levels))  # shape (B, 1)
-    S_t = torch.exp(-cumulative_noise_levels)  # shape (B, 1)
+    # Ratio for uniform discrete diffusion
+    ratio = 1 - V / (esigm1 + V)  # shape (B, 1)
     
-    # Determine which positions have x_t^i = x_0^i vs x_t^i ≠ x_0^i
-    unchanged_positions = (x_t == x_0).bool()  # shape (B, L)
+    # Positive term: exp(score).mean(dim=-1) - exp(score)[x_t] / V
+    sexp = torch.exp(output)  # [B, L, V]
+    pos_term = sexp.mean(dim=-1) - torch.gather(sexp, -1, x_t[..., None]).squeeze(-1) / V  # [B, L]
     
-    # Create one-hot encodings for x_0 and x_t
-    x_0_onehot = F.one_hot(x_0, num_classes=V).float()  # [B, L, V]
-    x_t_onehot = F.one_hot(x_t, num_classes=V).float()  # [B, L, V]
+    # Negative term: depends on whether x_t == x_0
+    score_mean = output.mean(dim=-1)  # [B, L]
+    score_xt = torch.gather(output, -1, x_t[..., None]).squeeze(-1)  # [B, L]
     
-    # Clamp output to prevent log of very small numbers
-    output_clamped = torch.clamp(output, min=1e-10)
-    log_output = torch.log(output_clamped)
+    neg_term_base = score_mean - score_xt / V  # [B, L]
     
-    # Initialize gamma
-    gamma = torch.zeros(B, L, device=output.device)
+    # Case 1: x_t == x_0 (unchanged)
+    unchanged_positions = (x_t == x_0)  # [B, L]
+    neg_term_unchanged = ratio * neg_term_base  # [B, 1] * [B, L] -> [B, L]
     
-    # Case 1: x_t^i = x_0^i
-    # Sum over y ≠ x_0^i with coefficient F_t/(F_t + S_t)
-    if unchanged_positions.any():
-        coeff_unchanged = F_t / (F_t + S_t)  # shape (B, 1)
-        
-        # Create mask for positions y ≠ x_0^i: (1 - x_0_onehot)
-        not_x0_mask = 1.0 - x_0_onehot  # [B, L, V]
-        
-        # For unchanged positions, compute the sum over vocabulary except x_0^i
-        # s_θ(x_t,t)_{i,y} - (F_t/(F_t + S_t)) * log s_θ(x_t,t)_{i,y}
-        terms_unchanged = output - coeff_unchanged.unsqueeze(-1) * log_output  # [B, L, V]
-        
-        # Apply mask and sum over vocabulary dimension
-        masked_terms = terms_unchanged * not_x0_mask  # [B, L, V]
-        gamma_unchanged = masked_terms.sum(dim=-1)  # [B, L]
-        
-        # Apply only to unchanged positions
-        gamma = torch.where(unchanged_positions, gamma_unchanged, gamma)
+    # Case 2: x_t != x_0 (changed)
+    score_x0 = torch.gather(output, -1, x_0[..., None]).squeeze(-1)  # [B, L]
+    neg_term_changed = score_x0 / esigm1 + neg_term_base  # [B, L] (esigm1 broadcasts from [B, 1])
     
-    # Case 2: x_t^i ≠ x_0^i  
-    # y = x_0^i: coefficient (1 + S_t/F_t)
-    # y ≠ x_0^i, y ≠ x_t^i: coefficient 1
-    changed_positions = ~unchanged_positions  # shape (B, L)
+    # Combine negative terms based on position type
+    neg_term = torch.where(unchanged_positions, neg_term_unchanged, neg_term_changed)  # [B, L]
     
-    if changed_positions.any():
-        coeff_x0 = 1.0 + S_t / F_t  # coefficient for y = x_0^i, shape (B, 1)
-        coeff_other = 1.0  # coefficient for other positions
-        
-        # Term for y = x_0^i: s_θ - (1 + S_t/F_t) * log s_θ
-        x0_terms = output - coeff_x0.unsqueeze(-1) * log_output  # [B, L, V]
-        gamma_x0 = (x0_terms * x_0_onehot).sum(dim=-1)  # [B, L]
-        
-        # Terms for y ≠ x_0^i and y ≠ x_t^i: s_θ - log s_θ
-        other_terms = output - coeff_other * log_output  # [B, L, V]
-        
-        # Create mask for positions y ≠ x_0^i and y ≠ x_t^i
-        not_x0_or_xt_mask = (1.0 - x_0_onehot) * (1.0 - x_t_onehot)  # [B, L, V]
-        
-        # Apply mask and sum
-        gamma_other = (other_terms * not_x0_or_xt_mask).sum(dim=-1)  # [B, L]
-        
-        # Combine the two terms for changed positions
-        gamma_changed = gamma_x0 + gamma_other
-        
-        # Apply only to changed positions
-        gamma = torch.where(changed_positions, gamma_changed, gamma)
+    # Constant term: depends on whether x_t == x_0
+    ratio_squeezed = ratio.squeeze(-1)  # [B]
+    
+    # Case 1: x_t == x_0
+    const_unchanged = (V - 1) / V * ratio_squeezed * (torch.log(torch.clamp(ratio_squeezed, min=1e-10)) - 1)  # [B]
+    
+    # Case 2: x_t != x_0  
+    const_changed = ((-torch.log(torch.clamp(ratio_squeezed, min=1e-10)) - 1) / torch.clamp(ratio_squeezed, min=1e-10) - (V - 2)) / V  # [B]
+    
+    # Combine constant terms and broadcast to [B, L]
+    const = torch.where(unchanged_positions, const_unchanged.unsqueeze(-1), const_changed.unsqueeze(-1))  # [B, L]
+    
+    # Final entropy: pos_term - neg_term + const
+    entropy = pos_term - neg_term + const  # [B, L]
     
     # Apply instantaneous noise levels and valid mask
-    # inst_noise_levels has shape [B, 1], we want to broadcast with gamma [B, L]
-    per_residue = gamma * inst_noise_levels  # [B, L] * [B, 1] -> [B, L]
+    per_residue = entropy * inst_noise_levels  # [B, L] * [B, 1] -> [B, L]
     
     # Apply mask to per_residue losses and compute average over valid positions only
     per_residue_masked = per_residue * valid_mask.float()  # [B, L]
@@ -261,23 +211,6 @@ def score_entropy_loss_uniform(output, x_0, x_t, cumulative_noise_levels, inst_n
 # --------------------------------------------------------------------------- #
 #  FSQ Utilities                                                              #
 # --------------------------------------------------------------------------- #
-def mse_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """
-    Mean-squared error between pred and target.
-    Args:
-        pred, target: (..., L, 3, 3) or (..., N, 3) tensors or list of [1, M, 3] tensors
-    Returns:
-        scalar MSE
-    """
-    if isinstance(pred, list):
-        losses = []
-        for p, t in zip(pred, target):
-            mse = (p - t).pow(2).mean()
-            losses.append(mse)
-        return torch.stack(losses).mean()
-    return torch.mean((pred - target) ** 2)
-
-
 def _kabsch_align(pred_pts: torch.Tensor,
                   tgt_pts: torch.Tensor) -> torch.Tensor:
     """

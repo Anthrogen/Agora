@@ -1,0 +1,1 @@
+{"_runtime":107,"batch/train_loss":21.894794464111328,"_timestamp":1.7530210236942859e+09,"batch/train_rmsd":6.690305233001709,"_wandb":{"runtime":107},"model/val_loss":6.050507476649334,"_step":305,"step":303,"batch/epoch":4,"batch/learning_rate":5e-05,"model/val_rmsd":3.8718563613203383}

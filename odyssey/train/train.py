@@ -126,8 +126,10 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         if load_fsq_encoder: 
             autoencoder, autoencoder_model_cfg, _ = load_model_from_checkpoint(model_cfg.autoencoder_path, device)
             autoencoder.encoder.eval(); autoencoder.encoder.requires_grad_(False)
+            autoencoder.quantizer.eval(); autoencoder.quantizer.requires_grad_(False)  # Also freeze quantizer
             if isinstance(model, Autoencoder): 
                 model.encoder = autoencoder.encoder  # Update the encoder to match the loaded encoder
+                model.quantizer = autoencoder.quantizer  # Update the quantizer to match the loaded quantizer
                 model_cfg.encoder_cfg = autoencoder_model_cfg.encoder_cfg  # Update the encoder_cfg to match the loaded encoder_cfg
                 model_cfg_list[i] = model_cfg  # Ensure the updated config is saved to the list
                 
@@ -193,6 +195,20 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         val_loaders.append(val_loader)
 
     ###########################################################################
+    #  Set default values for checkpoint_freq and max_steps_val if None
+    ###########################################################################
+    for i, train_cfg in enumerate(train_cfg_list):
+        # Set checkpoint_freq to number of training batches per epoch if None
+        if train_cfg.checkpoint_freq is None:
+            train_cfg.checkpoint_freq = len(train_loaders[i])
+            print(f"  Model {i+1}: checkpoint_freq set to {train_cfg.checkpoint_freq} (once per epoch)")
+        
+        # Set max_steps_val to number of validation batches if None  
+        if train_cfg.max_steps_val is None:
+            train_cfg.max_steps_val = len(val_loaders[i])
+            print(f"  Model {i+1}: max_steps_val set to {train_cfg.max_steps_val} (all validation batches)")
+
+    ###########################################################################
     #  Training Loop
     ###########################################################################
     # Prepare containers to store epoch-level history for CSV saving
@@ -203,8 +219,10 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
     max_epochs = train_cfg_list[0].max_epochs
     
     # -------------------- Training loop -------------------- #
+    step = 0
+    
     for epoch in range(max_epochs):
-        # Reset epoch accumulators for all models
+        # Reset epoch accumulators for all models (for callback)
         train_metrics_sum_all = [{} for _ in range(num_models)]
         train_metrics_count_all = [{} for _ in range(num_models)]
         val_metrics_sum_all = [{} for _ in range(num_models)]
@@ -218,19 +236,20 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             optimizer = optimizers[model_idx]
             scheduler = schedulers[model_idx]
             train_loader = train_loaders[model_idx]
+            val_loader = val_loaders[model_idx]
             step_fn = step_fns[model_idx]
             
             model.train()
-            with tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs} [Model {model_idx+1}: {model_cfg.initials()} Train]",
-                     ascii=True, leave=True, ncols=150) as pbar:
+            with tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs} [Model {model_idx+1}: {model_cfg.initials()} Train]", ascii=True, leave=True, ncols=150) as pbar:
                 for batch_data in pbar:
+                    step += 1
                     # Skip empty/None batches
                     if batch_data is None: continue
                     
                     # Train single model on batch
                     train_metrics = step_fn(model, optimizer, scheduler, batch_data, model_cfg, train_cfg, train_mode=True)
                     
-                    # Accumulate metrics (step functions now return (value, count) tuples)
+                    # Accumulate metrics for epoch-level callback
                     for k, (value, count) in train_metrics.items():
                         if k not in train_metrics_sum_all[model_idx]:
                             train_metrics_sum_all[model_idx][k] = 0.0
@@ -238,40 +257,71 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                         train_metrics_sum_all[model_idx][k] += value * count
                         train_metrics_count_all[model_idx][k] += count
                     
-                    # Update progress bar with running average
-                    running_avg = {k: train_metrics_sum_all[model_idx][k] / train_metrics_count_all[model_idx][k] 
-                                  for k in train_metrics_sum_all[model_idx].keys()}
-                    prefix = model_cfg.initials()
-                    pbar.set_postfix({f"{prefix}_{k}": f"{v:.3f}" for k, v in running_avg.items()})
-
-        # Validation phase for all models
-        for model_idx in range(num_models):
-            model, autoencoder = models[model_idx]
-            model_cfg = model_cfg_list[model_idx]
-            train_cfg = train_cfg_list[model_idx]
-            optimizer = optimizers[model_idx]
-            scheduler = schedulers[model_idx]
-            val_loader = val_loaders[model_idx]
-            step_fn = step_fns[model_idx]
-            
-            model.eval()
-            with torch.no_grad():
-                for batch_data in val_loader:
-                    # Skip empty/None batches
-                    if batch_data is None: continue
-                        
-                    # Validate single model on batch
-                    val_metrics = step_fn(model, optimizer, scheduler, batch_data, model_cfg, train_cfg, train_mode=False)
+                    # Extract single-batch training metrics for display and checkpointing
+                    epoch_train_metrics = {k: value for k, (value, count) in train_metrics.items()}
                     
-                    # Accumulate validation metrics (step functions now return (value, count) tuples)
-                    for k, (value, count) in val_metrics.items():
-                        if k not in val_metrics_sum_all[model_idx]:
-                            val_metrics_sum_all[model_idx][k] = 0.0
-                            val_metrics_count_all[model_idx][k] = 0
-                        val_metrics_sum_all[model_idx][k] += value * count
-                        val_metrics_count_all[model_idx][k] += count
+                    # Update progress bar with current batch metrics
+                    prefix = model_cfg.initials()
+                    pbar.set_postfix({f"{prefix}_{k}": f"{v:.3f}" for k, v in epoch_train_metrics.items()})
+
+                    # Save periodic checkpoints and calculate validation metrics
+                    if train_cfg.checkpoint_freq > 0 and step % train_cfg.checkpoint_freq == 0:
+                        print(f"\nSaving checkpoint at step {step}...")
+                        
+                        # Save checkpoint for current model
+                        checkpoint_path = Path(train_cfg.checkpoint_dir) / f"checkpoint_step_{step}.pt"
+                        save_model_checkpoint(checkpoint_path, model, model_cfg, train_cfg, optimizer)
+                        print(f"Saved checkpoint for Model {model_idx+1} at {checkpoint_path}")
+
+                        # Run validation for current model
+                        model.eval()
+                        val_metrics_sum = {}
+                        val_metrics_count = {}
+                        
+                        with torch.no_grad():
+                            for idx_val, val_batch_data in enumerate(val_loader):
+                                if idx_val >= train_cfg.max_steps_val: break
+
+                                # Skip empty/None batches
+                                if val_batch_data is None: continue
+                                    
+                                # Validate single model on batch
+                                val_metrics = step_fn(model, optimizer, scheduler, val_batch_data, model_cfg, train_cfg, train_mode=False)
+                                
+                                # Accumulate validation metrics across validation batches
+                                for k, (value, count) in val_metrics.items():
+                                    if k not in val_metrics_sum:
+                                        val_metrics_sum[k] = 0.0
+                                        val_metrics_count[k] = 0
+                                    val_metrics_sum[k] += value * count
+                                    val_metrics_count[k] += count
+                                    
+                                    # Also accumulate for epoch-level callback
+                                    if k not in val_metrics_sum_all[model_idx]:
+                                        val_metrics_sum_all[model_idx][k] = 0.0
+                                        val_metrics_count_all[model_idx][k] = 0
+                                    val_metrics_sum_all[model_idx][k] += value * count
+                                    val_metrics_count_all[model_idx][k] += count
+                        
+                        # Calculate validation averages
+                        epoch_val_metrics = {k: val_metrics_sum[k] / val_metrics_count[k] 
+                                           for k in val_metrics_sum.keys()}
+                        
+                        # Create row with current step's training metrics and validation metrics
+                        metric_names = sorted(list(epoch_train_metrics.keys()))
+                        
+                        # Store metrics for CSV headers (only if not set yet)
+                        if csv_headers[model_idx] is None:
+                            csv_header = [f"train_{k}" for k in metric_names] + [f"val_{k}" for k in metric_names]
+                            csv_headers[model_idx] = csv_header
+                        
+                        row = [epoch_train_metrics[k] for k in metric_names] + [epoch_val_metrics[k] for k in metric_names]
+                        epoch_metrics_all[model_idx].append(row)
+                        
+                        # Set model back to training mode
+                        model.train()
         
-        # Calculate and print epoch averages for all models
+        # Calculate and print epoch averages for all models (for callback)
         print(f"\n{'='*80}")
         print(f"Epoch {epoch+1}/{max_epochs} Summary:")
         print(f"{'='*80}")
@@ -281,31 +331,21 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             train_cfg = train_cfg_list[model_idx]
             
             # Calculate final epoch averages
-            epoch_train_metrics = {k: train_metrics_sum_all[model_idx][k] / train_metrics_count_all[model_idx][k] 
-                                 for k in train_metrics_sum_all[model_idx].keys()}
-            epoch_val_metrics = {k: val_metrics_sum_all[model_idx][k] / val_metrics_count_all[model_idx][k] 
-                               for k in val_metrics_sum_all[model_idx].keys()}
+            epoch_train_metrics_avg = {k: train_metrics_sum_all[model_idx][k] / train_metrics_count_all[model_idx][k] 
+                                     for k in train_metrics_sum_all[model_idx].keys()}
+            epoch_val_metrics_avg = {k: val_metrics_sum_all[model_idx][k] / val_metrics_count_all[model_idx][k] 
+                                   for k in val_metrics_sum_all[model_idx].keys()}
             
             # Print model summary
             print(f"\nModel {model_idx+1}: {model_cfg.initials()} ({model_cfg.style}):")
-            print(f"  Train: " + " | ".join([f"{k}: {v:.3f}" for k, v in epoch_train_metrics.items()]))
-            print(f"  Val:   " + " | ".join([f"{k}: {v:.3f}" for k, v in epoch_val_metrics.items()]))
+            print(f"  Train: " + " | ".join([f"{k}: {v:.3f}" for k, v in epoch_train_metrics_avg.items()]))
+            if epoch_val_metrics_avg:  # Only check val metrics since they might be empty if no checkpoints occurred
+                print(f"  Val:   " + " | ".join([f"{k}: {v:.3f}" for k, v in epoch_val_metrics_avg.items()]))
             
-            # Store metrics for CSV
-            
-            if epoch == 0:
-                metric_names = sorted(list(epoch_train_metrics.keys()))
-                csv_header = [f"train_{k}" for k in metric_names] + [f"val_{k}" for k in metric_names]
-                csv_headers[model_idx] = csv_header
-            
-            row = [epoch_train_metrics[k] for k in metric_names] + [epoch_val_metrics[k] for k in metric_names]
-            epoch_metrics_all[model_idx].append(row)
-
         if callback is not None:
             with torch.no_grad():
                 ret = {'train_metrics': train_metrics_sum_all, 'val_metrics': val_metrics_sum_all, 'model': model}
                 callback(ret)
-            
 
     # Save final checkpoints and metrics for all models
     for model_idx in range(num_models):
@@ -318,13 +358,14 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         save_model_checkpoint(final_checkpoint_path, model, model_cfg, train_cfg, optimizer)
         print(f"\nSaved final checkpoint for Model {model_idx+1} to {final_checkpoint_path}")
         
-        # Save epoch history to CSV
+        # Save step history to CSV
         metrics_array = np.array(epoch_metrics_all[model_idx])
         history_csv_path = Path(train_cfg.checkpoint_dir) / "history.csv"
-        np.savetxt(history_csv_path, metrics_array, delimiter=',', header=','.join(csv_header), comments='')
-        print(f"Saved epoch metrics to {history_csv_path}")
+        np.savetxt(history_csv_path, metrics_array, delimiter=',', header=','.join(csv_headers[model_idx]), comments='')
+        print(f"Saved step metrics to {history_csv_path}")
 
     return models, epoch_metrics_all, csv_headers
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train Odyssey models')

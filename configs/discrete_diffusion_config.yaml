@@ -52,6 +52,8 @@ train_cfg:
   training_cfg:
     batch_size: 4
     max_epochs: 100
+    checkpoint_freq: null
+    max_steps_val: null
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/transformer_trunk"
     jump_start: null
