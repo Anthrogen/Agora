@@ -64,6 +64,8 @@ def generate(model_checkpoint, callback=None):
 
     dataset_mode = "side_chain" if transformer_model_cfg.style == "stage_2" else "backbone"
 
+    print(f"Generating for model with style {transformer_model_cfg.style} and masking strategy {transformer_train_cfg.mask_config}")
+
     ###########################################################################
     #  Data Loading 
     ###########################################################################
@@ -107,6 +109,10 @@ def generate(model_checkpoint, callback=None):
         
         if transformer_model_cfg.style == "mlm":
             batch = generate_mlm(transformer, transformer_model_cfg, transformer_train_cfg, batch)
+        elif transformer_model_cfg.style == "discrete_diffusion" and transformer_train_cfg.mask_cfg.corruption_mode == "uniform":
+            raise NotImplementedError("Uniform corruption mode not implemented for generation at this time.")
+         elif transformer_model_cfg.style == "discrete_diffusion" and transformer_train_cfg.mask_cfg.corruption_mode == "absorb":
+            raise NotImplementedError("Absorb corruption mode not implemented for generation at this time.")
         else:
             raise NotImplementedError(f"Style {transformer_model_cfg.style} not implemented for generation at this time.")
 

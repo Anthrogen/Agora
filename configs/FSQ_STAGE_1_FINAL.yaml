@@ -72,7 +72,7 @@ train_cfg:
     max_epochs: 50
     checkpoint_freq: null
     max_steps_val: null
-    data_dir: "/workspace/demo/Odyssey/sample_data/1k_old.csv"
+    data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/fsq"
     jump_start: null # "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt"
 

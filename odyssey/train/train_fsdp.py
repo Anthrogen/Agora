@@ -426,14 +426,12 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         # For FSDP, we need to use DistributedSampler
         if is_fsdp:
             train_sampler = DistributedSampler(train_ds, num_replicas=world_size, rank=rank, shuffle=True)
-            val_sampler = DistributedSampler(val_ds, num_replicas=world_size, rank=rank, shuffle=False)
+            val_sampler = None # DON'T use DistributedSampler for validation - all ranks should see same data to avoid synchronization issues
             
-            # Calculate optimal number of workers
-            # For H100s with high throughput, we want more workers
+            # Calculate optimal number of workers - For H100s with high throughput, we want more workers
             # Rule of thumb: (num_cpus / num_gpus) * 0.75 to leave some headroom
             # Setting to 0 to avoid generator pickling issues
             num_workers = 0  # int((os.cpu_count() / world_size) * 0.75)  # About 84 workers per GPU
-            
             train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, tracks_list[i], device, 
                                                    batch_size=train_cfg.batch_size, sampler=train_sampler, 
                                                    shuffle=False, generator=g_train,  # shuffle=False when using sampler
@@ -442,7 +440,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                                                    pin_memory=True, persistent_workers=False, prefetch_factor=None)
             val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, tracks_list[i], device, 
                                                 batch_size=train_cfg.batch_size, sampler=val_sampler, 
-                                                shuffle=False, generator=g_val,  # shuffle=False when using sampler
+                                                shuffle=False, generator=g_val,  # No sampler, all ranks see same data
                                                 worker_init_fn=worker_init_fn, min_unmasked=min_unmasked_list[i], 
                                                 autoencoder=autoencoder, num_workers=num_workers, 
                                                 pin_memory=True, persistent_workers=False, prefetch_factor=None)
@@ -450,7 +448,6 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             # For single GPU, use fewer workers
             # Setting to 0 to avoid generator pickling issues
             num_workers = 0  # int((os.cpu_count() * 0.5))  # Use half the CPUs for single GPU
-            
             train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, tracks_list[i], device, 
                                                    batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, 
                                                    worker_init_fn=worker_init_fn, min_unmasked=min_unmasked_list[i], 
@@ -542,8 +539,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                     for metric_name in epoch_train_metrics:
                         if metric_name in train_metric_buffers[model_idx] and len(train_metric_buffers[model_idx][metric_name]) > 0:
                             moving_avg_metrics[metric_name] = sum(train_metric_buffers[model_idx][metric_name]) / len(train_metric_buffers[model_idx][metric_name])
-                        else:
-                            moving_avg_metrics[metric_name] = epoch_train_metrics[metric_name]
+                        else: moving_avg_metrics[metric_name] = epoch_train_metrics[metric_name]
                     
                     # Update progress bar with moving average metrics
                     prefix = model_cfg.first_block_cfg.initials()
@@ -594,15 +590,13 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                             checkpoint_artifact.add_file(str(checkpoint_path))
                             wandb_run.log_artifact(checkpoint_artifact)
 
-                        # Validation phase - ALL RANKS must wait, even if only rank 0 computes
-                        # This prevents FSDP issues when one rank changes to eval mode while others don't
+                        # Validation phase - Only rank 0 does validation, others wait
                         if is_distributed: dist.barrier()
                         model.eval()
-                        
-                        # ALL ranks need to iterate through validation data together
                         val_metrics_sum = {}; val_metrics_count = {}
                         val_loader = val_loaders[model_idx] # Get the val_loader for this model
                         
+                        # All ranks must iterate together for FSDP synchronization
                         with torch.no_grad():
                             for idx_val, val_batch_data in enumerate(val_loader):
                                 if idx_val >= train_cfg.max_steps_val: break
@@ -610,10 +604,10 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                                 # Skip empty/None batches
                                 if val_batch_data is None: continue
                                     
-                                # ALL ranks participate in forward pass (FSDP requirement)
+                                # All ranks participate in forward pass (FSDP requirement)
                                 val_metrics = step_fn(model, optimizer, scheduler, val_batch_data, model_cfg, train_cfg, train_mode=False)
                                 
-                                # Only rank 0 accumulates metrics
+                                # Only rank 0 accumulates metrics to avoid duplicate counting
                                 if rank == 0:
                                     # Accumulate validation metrics across validation batches
                                     for k, (value, count) in val_metrics.items():

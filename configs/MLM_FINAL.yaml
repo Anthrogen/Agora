@@ -54,7 +54,7 @@ train_cfg:
     max_epochs: 50
     checkpoint_freq: null
     max_steps_val: null
-    data_dir: "/workspace/demo/Odyssey/sample_data/1k_old.csv"
+    data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/transformer_trunk"
     jump_start: null # "/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_config/mlm_config_000/model.pt"
 

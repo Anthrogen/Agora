@@ -751,8 +751,9 @@ from odyssey.src.dataset import *
 pd = ProteinDataset("/workspace/demo/Odyssey/sample_data/3k.csv")
 mask = torch.bernoulli(torch.full((2048,), 0.2)).bool()
 idx = 0
+mode = CorruptionMode.UNIFORM
 
-seq = SequenceTokenizer(2048)
+seq = SequenceTokenizer(2048, corruption_mode=mode)
 print_tokenized_sequence(seq.print_token, *seq.tokenize(pd.__getitem__(idx)[0], mask))
 
 coord = CoordinatesTokenizer(2048)
@@ -761,14 +762,14 @@ print_tokenized_sequence(coord.print_token, *coord.tokenize(pd.__getitem__(idx)[
 from odyssey.src.model_librarian import load_model_from_checkpoint
 device = torch.device('cpu')
 autoencoder, _, _ = load_model_from_checkpoint("/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt", device)
-struct = StructureTokenizer(2048, autoencoder)
+struct = StructureTokenizer(2048, autoencoder, corruption_mode=mode)
 _, _, _, _, struct_unmasked, struct_masked, struct_beospank, struct_mask = struct.tokenize(pd.__getitem__(idx)[1], mask)
 print_tokenized_sequence(struct.print_token, struct_unmasked, struct_masked, struct_beospank, struct_mask)
 
-ss8 = SS8Tokenizer(2048)
+ss8 = SS8Tokenizer(2048, corruption_mode=mode)
 print_tokenized_sequence(ss8.print_token, *ss8.tokenize(pd.__getitem__(idx)[2], mask))
 
-sasa = SASATokenizer(2048)
+sasa = SASATokenizer(2048, corruption_mode=mode)
 print_tokenized_sequence(sasa.print_token, *sasa.tokenize(pd.__getitem__(idx)[3], mask))
 
 from odyssey.src.vocabulary import *
@@ -779,10 +780,10 @@ print_tokenized_sequence(global_annotation.print_token, data, data, beospank, to
 
 from odyssey.src.vocabulary import *
 _ = load_annotation_tokens("/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt", PER_RESIDUE_ANNOTATION_TOKENS)
-per_residue = PerResidueAnnotationTokenizer(2048, 4)
+per_residue = PerResidueAnnotationTokenizer(2048, 4, corruption_mode=mode)
 print_tokenized_sequence(per_residue.print_token, *per_residue.tokenize(pd.__getitem__(idx)[5], mask))
 
-plddt = PLDDTTokenizer(2048)
+plddt = PLDDTTokenizer(2048, corruption_mode=mode)
 print_tokenized_sequence(plddt.print_token, *plddt.tokenize(pd.__getitem__(idx)[6], mask))
 """
 def print_tokenized_sequence(print_token, unmasked, masked, beospank, mask, limit=100):

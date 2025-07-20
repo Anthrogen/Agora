@@ -54,7 +54,7 @@ train_cfg:
     max_epochs: 100
     checkpoint_freq: null # 10000  # Save checkpoints every 10000 steps
     max_steps_val: null # 500    # Maximum number of steps for validation
-    data_dir: "/workspace/demo/Odyssey/sample_data/1k_old.csv"
+    data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/transformer_trunk"
     jump_start: "/workspace/demo/Odyssey/checkpoints/transformer_trunk/discrete_diffusion_config/discrete_diffusion_config_000/model.pt"
 
