@@ -19,9 +19,9 @@ model_cfg:
       encoder_cfg:
         latent_dim: 32
         fsq_levels: "7x5x5x5x5"
-        d_model: 128
-        n_heads: 1
-        n_layers: 3
+        d_model: 256
+        n_heads: 8
+        n_layers: 16
         max_len: 2048
         dropout: 0.1
         ff_mult: 4
@@ -33,7 +33,7 @@ model_cfg:
             consensus_num_iterations: 1
             consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
             consensus_w: 2
-            consensus_r: 24
+            consensus_r: 12
             consensus_edge_hidden_dim: 12
           # - self_attention_cfg: {}
           # - geometric_attention_cfg: {}
@@ -43,9 +43,9 @@ model_cfg:
       decoder_cfg:
         latent_dim: 32
         fsq_levels: "7x5x5x5x5"
-        d_model: 128
-        n_heads: 1
-        n_layers: 3
+        d_model: 256
+        n_heads: 8
+        n_layers: 16
         max_len: 2048
         dropout: 0.1
         ff_mult: 4
@@ -57,7 +57,7 @@ model_cfg:
             consensus_num_iterations: 1
             consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
             consensus_w: 2
-            consensus_r: 24
+            consensus_r: 12
             consensus_edge_hidden_dim: 12
           # - self_attention_cfg: {}
           # - geometric_attention_cfg: {}
@@ -68,23 +68,23 @@ model_cfg:
 # =============================================================================
 train_cfg:
   training_cfg:
-    batch_size: 4
-    max_epochs: 50
-    checkpoint_freq: null
-    max_steps_val: null
+    batch_size: 6
+    max_epochs: 5
+    checkpoint_freq: 10000
+    max_steps_val: 500
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/fsq"
-    jump_start: null # "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt"
+    jump_start: null
 
     # Optimizer schedule configuration.
     optim_schedule_config:
-      # linear_decay_scheduler_cfg:
-      #   base_learning_rate: 0.00025
-      #   min_learning_rate: 0.00005
-      #   num_epochs_decay: 100000
-      #   num_epochs_warmup: 5000
-      flat_scheduler_cfg:
-        learning_rate: 0.00005
+      linear_decay_scheduler_cfg:
+        base_learning_rate: 0.00025
+        min_learning_rate: 0.00005
+        num_epochs_decay: 100000
+        num_epochs_warmup: 5000
+      # flat_scheduler_cfg:
+      #   learning_rate: 0.00005
     
     # Loss configuration.
     loss_config:

@@ -17,9 +17,9 @@ model_cfg:
 
     transformer_cfg:
       transformer_cfg:
-        d_model: 128
-        n_heads: 1
-        n_layers: 3
+        d_model: 1024
+        n_heads: 8
+        n_layers: 16
         max_len: 2048
         dropout: 0.1
         ff_mult: 4
@@ -29,7 +29,7 @@ model_cfg:
             consensus_num_iterations: 1
             consensus_connectivity_type: "local_window"
             consensus_w: 2
-            consensus_r: 24
+            consensus_r: 12
             consensus_edge_hidden_dim: 12
           # cross_attention_cfg: {}
 
@@ -39,7 +39,7 @@ model_cfg:
             consensus_num_iterations: 1
             consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
             consensus_w: 2
-            consensus_r: 24
+            consensus_r: 12
             consensus_edge_hidden_dim: 12
           # self_attention_cfg: {}
           # geometric_attention_cfg: {}
@@ -51,12 +51,12 @@ model_cfg:
 train_cfg:
   training_cfg:
     batch_size: 4
-    max_epochs: 50
-    checkpoint_freq: null
-    max_steps_val: null
+    max_epochs: 5
+    checkpoint_freq: 10000
+    max_steps_val: 500
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/transformer_trunk"
-    jump_start: null # "/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_config/mlm_config_000/model.pt"
+    jump_start: "/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_config/mlm_config_000/model.pt"
 
     # Optimizer schedule configuration.
     optim_schedule_config:
