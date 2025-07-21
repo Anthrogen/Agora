@@ -19,6 +19,7 @@ import gc
 import atexit
 import signal
 import functools
+import yaml
 
 # FSDP imports
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -713,18 +714,25 @@ if __name__ == "__main__":
         world_size = 1
         is_distributed = False
     
-    # Create expanded directory name based on config file - save to configs folder
+    # Create expanded directory name based on config file and checkpoint directory
     config_path = Path(args.config)
     yaml_name = config_path.stem
-    # Go up to the project root and into configs/expanded (base directory)
-    expanded_base_dir = Path(__file__).parent.parent.parent / "checkpoints"
-    expanded_yaml_dir = expanded_base_dir / yaml_name
+    
+    # Load config temporarily to get the checkpoint directory structure
+    with open(args.config, 'r') as f: temp_config = yaml.safe_load(f)
+    
+    # Extract the checkpoint directory from the config
+    checkpoint_dir = temp_config['train_cfg']['training_cfg']['checkpoint_dir']
+    checkpoint_path = Path(checkpoint_dir)
+    
+    # Use the same directory structure as the checkpoints for YAML files
+    expanded_yaml_dir = checkpoint_path / yaml_name
     
     # Only rank 0 should expand the YAML file
     if rank == 0:
         # Expand the YAML file
         print(f"Expanding configuration file: {args.config}")
-        num_generated = expand_yaml_to_directory(args.config, str(expanded_base_dir))
+        num_generated = expand_yaml_to_directory(args.config, str(checkpoint_path))
         
         if num_generated <= 0:
             print("Error: No configurations were generated")

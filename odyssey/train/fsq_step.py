@@ -122,7 +122,9 @@ def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, scheduler
         # Forward pass through frozen encoder to get z_q
         with torch.no_grad():
             four_atom = batch.masked_data['coords'][:, :, :4, :]  # [B, L, 4, 3] for encoder
-            z_q = model.quantizer.indices_to_codes(batch.masked_data['struct'])
+            struct_tokens = batch.masked_data['struct'] # Filter out special tokens before passing to quantizer
+            nonbeospank_struct_tokens = torch.where(struct_tokens < model.codebook_size, struct_tokens, torch.zeros_like(struct_tokens))
+            z_q = model.quantizer.indices_to_codes(nonbeospank_struct_tokens)
 
         # Zero out BOS/EOS/PAD/UNK positions in z_q
         z_q[batch.beospank['coords']] = 0.0

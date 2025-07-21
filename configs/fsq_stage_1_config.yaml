@@ -92,13 +92,13 @@ train_cfg:
     
     # Masking configuration
     mask_config:
-      # simple_mask_cfg:
-      #   mask_prob_seq: 0.2
-      #   mask_prob_struct: 0.2
-      # complex_mask_cfg: {}
-      diffusion_mask_cfg:
-        noise_schedule: "uniform"
-        sigma_min: 0.31
-        sigma_max: 5.68
-        num_timesteps: 100
-        corruption_mode: "absorb"
+      - simple_mask_cfg:
+          mask_prob_seq: 0.2
+          mask_prob_struct: 0.2
+      - complex_mask_cfg: {}
+      - diffusion_mask_cfg:
+          noise_schedule: "uniform"
+          sigma_min: 0.31
+          sigma_max: 5.68
+          num_timesteps: 100
+          corruption_mode: "absorb"

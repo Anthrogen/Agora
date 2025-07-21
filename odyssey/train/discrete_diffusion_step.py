@@ -18,6 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.optim import AdamW
+import pdb
 
 import numpy as np
 from tqdm import tqdm
@@ -26,6 +27,7 @@ from typing import Optional, Tuple, Callable, List, Dict
 import random
 import math
 from types import SimpleNamespace
+from odyssey.src.dataloader import _get_noise_levels
 
 
 # Import the model and data loader from the src directory
@@ -115,3 +117,66 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
         
         # Return metrics as tuples (value, effective_batch_size)
         return {'loss': (loss.item(), B), 'loss_seq': (loss_seq.item(), effective_batch_size_seq), 'loss_struct': (loss_struct.item(), effective_batch_size_struct)}
+
+
+def generate_discrete_diffusion(model, model_cfg, train_cfg, batch):
+
+    if batch is None:
+        return None
+
+    seq_x_t, struct_x_t, = batch.masked_data['seq'], batch.masked_data['struct']
+    seq_x_0, struct_x_0 = batch.unmasked_data['seq'], batch.unmasked_data['struct']
+    nonbeospank_seq, nonbeospank_struct = ~batch.beospank['seq'], ~batch.beospank['struct']
+    coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
+    ss8_x_0, sasa_x_0 = batch.masked_data['ss8'], batch.masked_data['sasa']
+    global_annotation_x_0, per_residue_annotation_x_0 = batch.unmasked_data['global_annotation'], batch.masked_data['per_residue_annotation']
+    plddt_x_0 = batch.masked_data['plddt']
+    B, L = seq_x_t.shape
+    V = {'seq': model_cfg.seq_vocab, 'struct': model_cfg.struct_vocab}
+    x_t = {'seq': seq_x_t, 'struct': struct_x_t}
+
+    assert B == 1, "Batch must be of size 1 for generation."
+
+    content_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
+    nonbeospank = ~batch.beospank['coords'] & ~batch.beospank['seq']
+    nonbeospank_ss8 = ~batch.beospank['ss8']
+    nonbeospank_sasa = ~batch.beospank['sasa']
+    nonbeospank_global_annotation = ~batch.beospank['global_annotation']
+    nonbeospank_per_residue_annotation = ~batch.beospank['per_residue_annotation']
+    nonbeospank_plddt = ~batch.beospank['plddt']
+    assert content_elements.any(dim=1).all() # Need at least one real residue in each sequence
+    
+    # Pass raw timestep indices following DiT convention
+    timesteps = batch.metadata['timestep_indices'] if 'timestep_indices' in batch.metadata else batch.metadata['pseudo_timestep_indices']
+    cumulative_noise = batch.metadata['cumulative_noise'] if 'cumulative_noise' in batch.metadata else batch.metadata['pseudo_cumulative_noise']
+    inst_noise = batch.metadata['inst_noise'] if 'inst_noise' in batch.metadata else batch.metadata['pseudo_inst_noise']
+    timesteps = timesteps.float().unsqueeze(-1)
+    
+    # Prepare inputs
+    inputs = (seq_x_t, struct_x_t, ss8_x_0, sasa_x_0, global_annotation_x_0, per_residue_annotation_x_0, plddt_x_0)
+    model.eval()
+    
+    # Forward pass with time conditioning
+    model_type = model.cfg.first_block_cfg.initials()
+    if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, content_elements, nonbeospank, nonbeospank_ss8, nonbeospank_sasa, nonbeospank_global_annotation, nonbeospank_per_residue_annotation, nonbeospank_plddt, timesteps)
+    else: outputs = model(inputs, nonbeospank=nonbeospank, nonbeospank_ss8=nonbeospank_ss8, nonbeospank_sasa=nonbeospank_sasa, nonbeospank_global_annotation=nonbeospank_global_annotation, nonbeospank_per_residue_annotation=nonbeospank_per_residue_annotation, nonbeospank_plddt=nonbeospank_plddt, timesteps=timesteps)
+    seq_logits, struct_logits = outputs
+
+    s = {'seq': torch.exp(seq_logits), 'struct': torch.exp(struct_logits)}
+
+    # Generate a [L,V] matrix where the i,y-th entry is Q_t(x_t^i, y)
+    inst_noise_levels, cumulative_noise_levels = _get_noise_levels(
+        train_cfg.diffusion_cfg.sigma_min, 
+        train_cfg.diffusion_cfg.sigma_max, 
+        train_cfg.diffusion_cfg.num_timesteps,
+        train_cfg.diffusion_cfg.noise_schedule
+    )
+
+
+
+    # Generate a [L,V] matrix where the i,y-th entry is \delta_{x_t^i}(y)
+    one_hot = torch.nn.functional.one_hot(x_t['seq'], num_classes=V['seq'])
+
+    pdb.set_trace()
+
+

@@ -45,6 +45,11 @@ class Quantizer(nn.Module):
         basis = torch.cumprod(torch.tensor([1] + levels[:-1], dtype=torch.int32), dim=0)
         self.register_buffer("_basis", basis, persistent=False)
 
+        max_output = 1
+        for l in levels:
+            max_output *= l
+        self.max_output = max_output - 1
+
         self.scale = scale
         self.num_codebooks = num_codebooks
         self.codebook_dim = len(levels)
@@ -73,6 +78,8 @@ class Quantizer(nn.Module):
                 persistent=False
             )
 
+
+
     def bound(self, z: Tensor, eps: float = 1e-3) -> Tensor:
         """Map to quantization range per dimension."""
         half_l = (self._levels - 1) * (1 - eps) / 2
@@ -100,10 +107,17 @@ class Quantizer(nn.Module):
         """Convert codes to flat codebook index."""
         # zhat shape (..., codebook_dim)
         z = self._scale_and_shift(zhat)
-        return (z * self._basis).sum(dim=-1).to(torch.int32)
+        retval = (z * self._basis).sum(dim=-1).to(torch.int32)
+
+        assert retval.max() <= self.max_output
+        assert retval.min() >= 0
+        return retval
 
     def indices_to_codes(self, indices: Tensor, project_out: bool = True) -> Tensor:
         """Inverse of `codes_to_indices`."""
+        assert indices.max() <= self.max_output
+        assert indices.min() >= 0
+
         is_video = indices.ndim >= (3 + int(self.keep_num_codebooks_dim))
         idx = rearrange(indices, '... -> ... 1')
         codes_nc = (idx // self._basis) % self._levels

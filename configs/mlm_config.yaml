@@ -7,7 +7,7 @@
 model_cfg:
   trunk_cfg:
     style: "mlm"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
-    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt"
+    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_2_config/fsq_stage_2_config_000/model.pt"
     reference_model_seed: 42
 
     vocab_per_residue_path: "/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt"
@@ -51,7 +51,7 @@ model_cfg:
 train_cfg:
   training_cfg:
     batch_size: 4
-    max_epochs: 50
+    max_epochs: 20
     checkpoint_freq: null
     max_steps_val: null
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"

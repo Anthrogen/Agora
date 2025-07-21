@@ -51,7 +51,7 @@ model_cfg:
 train_cfg:
   training_cfg:
     batch_size: 4
-    max_epochs: 100
+    max_epochs: 50
     checkpoint_freq: null
     max_steps_val: null
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
@@ -81,4 +81,6 @@ train_cfg:
         sigma_min: 0.31
         sigma_max: 5.68
         num_timesteps: 100
-        corruption_mode: "uniform"
+        corruption_mode:
+          - "uniform"
+          - "absorb"
