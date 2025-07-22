@@ -7,7 +7,10 @@
 model_cfg:
   autoencoder_cfg:  # Options: "autoencoder_cfg", "trunk_cfg"
     style: "stage_2"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
-    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt"
+    autoencoder_path:
+      - "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/checkpoint_step_26316.pt"
+      - "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_001/checkpoint_step_26316.pt"
+      - "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_002/checkpoint_step_26316.pt"
     reference_model_seed: 42
 
     vocab_per_residue_path: "/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt"
@@ -19,7 +22,7 @@ model_cfg:
       encoder_cfg:
         latent_dim: 32
         fsq_levels: "7x5x5x5x5"
-        d_model: 128
+        d_model: 256
         n_heads: 1
         n_layers: 10
         max_len: 2048
@@ -94,13 +97,17 @@ train_cfg:
 
     # Optimizer schedule configuration.
     optim_schedule_config:
-      # linear_decay_scheduler_cfg:
+      # warmup_decay_scheduler_cfg:
       #   base_learning_rate: 0.00025
       #   min_learning_rate: 0.00005
       #   num_epochs_decay: 100000
       #   num_epochs_warmup: 5000
       flat_scheduler_cfg:
         learning_rate: 0.00005
+      # decay_scheduler_cfg:
+      #   base_learning_rate: 0.0002
+      #   min_learning_rate: 0.00005
+      #   num_epochs_decay: 70000
     
     # Loss configuration
     loss_config:

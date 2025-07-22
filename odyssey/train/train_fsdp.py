@@ -20,6 +20,7 @@ import atexit
 import signal
 import functools
 import yaml
+from datetime import timedelta
 
 # FSDP imports
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -98,8 +99,36 @@ def setup_distributed():
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         rank = int(os.environ['RANK'])
         world_size = int(os.environ['WORLD_SIZE'])
-        dist.init_process_group('nccl')
-        torch.cuda.set_device(rank)
+        
+        # Print debug info from ALL ranks to diagnose connection issues
+        print(f"\n[Rank {rank}] Distributed Training Environment:")
+        print(f"[Rank {rank}]   RANK: {rank}")
+        print(f"[Rank {rank}]   LOCAL_RANK: {os.environ.get('LOCAL_RANK', 'not set')}")
+        print(f"[Rank {rank}]   WORLD_SIZE: {world_size}")
+        print(f"[Rank {rank}]   MASTER_ADDR: {os.environ.get('MASTER_ADDR', 'not set')}")
+        print(f"[Rank {rank}]   MASTER_PORT: {os.environ.get('MASTER_PORT', 'not set')}")
+        print(f"[Rank {rank}]   GROUP_RANK: {os.environ.get('GROUP_RANK', 'not set')}")
+        print(f"[Rank {rank}]   ROLE_RANK: {os.environ.get('ROLE_RANK', 'not set')}")
+        print(f"[Rank {rank}]   RDZV vars: BACKEND={os.environ.get('RDZV_BACKEND', 'not set')}, ENDPOINT={os.environ.get('RDZV_ENDPOINT', 'not set')}")
+        print(f"[Rank {rank}] About to call dist.init_process_group()...")
+        
+        # Initialize with timeout for better error messages
+        try:
+            dist.init_process_group(
+                backend='nccl',
+                timeout=timedelta(minutes=30)  # Increase timeout for multi-node setup
+            )
+            print(f"[Rank {rank}] Successfully initialized process group!")
+        except Exception as e:
+            print(f"[Rank {rank}] ERROR in dist.init_process_group: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        
+        # Use LOCAL_RANK for CUDA device, not global rank
+        local_rank = int(os.environ.get('LOCAL_RANK', '0'))
+        torch.cuda.set_device(local_rank)
+        print(f"[Rank {rank}] Set CUDA device to {local_rank} (local_rank)")
         return True, rank, world_size
     return False, 0, 1
 
@@ -152,7 +181,7 @@ class FakeScheduler():
     def __init__(self): pass
     def step(self): pass
 
-def create_linear_decay(base_learning_rate: float, min_learning_rate: float, num_steps_decay: int, num_steps_warmup: int):
+def create_warmup_decay(base_learning_rate: float, min_learning_rate: float, num_steps_decay: int, num_steps_warmup: int):
     def lr_lambda(current_step): # One step = one forward pass through the model
         if current_step < num_steps_warmup: # Linear warmup from min_lr to base_lr
             warmup_progress = current_step / num_steps_warmup
@@ -161,6 +190,17 @@ def create_linear_decay(base_learning_rate: float, min_learning_rate: float, num
         elif current_step < (num_steps_warmup + num_steps_decay): # Linear decay from base_lr to min_lr
             decay_step = current_step - num_steps_warmup
             decay_progress = decay_step / num_steps_decay
+            decay_lr = base_learning_rate - decay_progress * (base_learning_rate - min_learning_rate)
+            return decay_lr / base_learning_rate
+        else: # Stay at min_lr after decay period
+            return min_learning_rate / base_learning_rate
+
+    return lr_lambda
+
+def create_decay(base_learning_rate: float, min_learning_rate: float, num_steps_decay: int):
+    def lr_lambda(current_step): # One step = one forward pass through the model
+        if current_step < num_steps_decay: # Linear decay from base_lr to min_lr
+            decay_progress = current_step / num_steps_decay
             decay_lr = base_learning_rate - decay_progress * (base_learning_rate - min_learning_rate)
             return decay_lr / base_learning_rate
         else: # Stay at min_lr after decay period
@@ -177,8 +217,8 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
     
     # Set device based on distributed setup
     if is_distributed:
-        device = torch.device(f"cuda:{rank}")
-        local_rank = rank
+        local_rank = int(os.environ.get('LOCAL_RANK', '0'))
+        device = torch.device(f"cuda:{local_rank}")
         is_fsdp = use_fsdp
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -357,28 +397,43 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                 cpu_offload=CPUOffload(offload_params=False),
                 backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
                 device_id=torch.cuda.current_device(),
-                sync_module_states=True,  # Ensure all ranks have same initial weights
+                sync_module_states=False,  # Disabled for multi-node training
             )
             
             # For stage_2: only wrap decoder (frozen encoder incompatible with FSDP)
             if model_cfg.style == "stage_2": model.decoder = FSDP(model.decoder, **fsdp_config)
             else: model = FSDP(model, **fsdp_config)
             
-            # Debug: Show which modules were actually wrapped
+            # Debug: Show which modules were actually wrapped and FSDP's view of world
             if rank == 0:
                 print("  Modules wrapped by FSDP:")
                 for name, module in model.named_modules():
                     if isinstance(module, FSDP): print(f"    - {name}: {module.__class__.__name__}")
-                
-            if rank == 0: print(f"  FSDP wrapping complete")
+            
+            # CRITICAL: Verify FSDP sees all ranks
+            fsdp_world_size = dist.get_world_size()
+            fsdp_rank = dist.get_rank()
+            print(f"  [Rank {rank}] FSDP world_size: {fsdp_world_size}, FSDP rank: {fsdp_rank}")
+            
+            if rank == 0: 
+                print(f"  FSDP wrapping complete")
+                print(f"  FSDP is sharding across {fsdp_world_size} ranks (expecting {world_size})")
             
         models.append((model, autoencoder))
 
-        # Print parameter count
+        # Print parameter count and sharding info
+        total_params = sum(p.numel() for p in model.parameters())
+        if is_fsdp:
+            # For FSDP, each rank only holds a shard of parameters
+            local_params = sum(p.numel() for p in model.parameters() if p.is_leaf)
+            print(f"  [Rank {rank}] Local parameters (shard): {local_params:,}")
+            
         if rank == 0:
-            total_params = sum(p.numel() for p in model.parameters())
             print(f"  {model_cfg.first_block_cfg.initials()} total parameters: {total_params:,}")
             print(f"  Using float32 training")
+            if is_fsdp:
+                expected_shard_size = total_params // fsdp_world_size
+                print(f"  Expected parameters per rank: ~{expected_shard_size:,} (total/{fsdp_world_size})")
         
         ###########################################################################
         # Initializing optimizer and scheduler
@@ -386,9 +441,13 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         if isinstance(train_cfg.optim_schedule_config, FlatSchedulerConfig):
             optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.optim_schedule_config.learning_rate)
             scheduler = FakeScheduler()
-        elif isinstance(train_cfg.optim_schedule_config, LinearDecaySchedulerConfig):
+        elif isinstance(train_cfg.optim_schedule_config, WarmupDecaySchedulerConfig):
             optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.optim_schedule_config.base_learning_rate)
-            lr_lambda = create_linear_decay(train_cfg.optim_schedule_config.base_learning_rate, train_cfg.optim_schedule_config.min_learning_rate, train_cfg.optim_schedule_config.num_epochs_decay, train_cfg.optim_schedule_config.num_epochs_warmup)
+            lr_lambda = create_warmup_decay(train_cfg.optim_schedule_config.base_learning_rate, train_cfg.optim_schedule_config.min_learning_rate, train_cfg.optim_schedule_config.num_epochs_decay, train_cfg.optim_schedule_config.num_epochs_warmup)
+            scheduler = LambdaLR(optimizer, lr_lambda)
+        elif isinstance(train_cfg.optim_schedule_config, DecaySchedulerConfig):
+            optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.optim_schedule_config.base_learning_rate)
+            lr_lambda = create_decay(train_cfg.optim_schedule_config.base_learning_rate, train_cfg.optim_schedule_config.min_learning_rate, train_cfg.optim_schedule_config.num_epochs_decay)
             scheduler = LambdaLR(optimizer, lr_lambda)
         else: raise ValueError(f"Invalid optimizer schedule: {train_cfg.optim_schedule_config}")
 
@@ -488,7 +547,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
     max_epochs = train_cfg_list[0].max_epochs
     
     # -------------------- Training loop -------------------- #
-    step = 0
+    steps = [0] * num_models  # Track steps per model
     
     # Moving average tracking for smoother model metric plots
     moving_avg_window = 100  # Number of batches to average over
@@ -515,7 +574,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             disable_pbar = rank != 0
             with tqdm(train_loader, desc=f"Epoch {epoch+1} [Model {model_idx+1}: {model_cfg.first_block_cfg.initials()} Train]", ascii=True, leave=True, ncols=150, disable=disable_pbar) as pbar:
                 for batch_data in pbar:
-                    step += 1
+                    steps[model_idx] += 1
                     # Skip empty/None batches
                     if batch_data is None: continue
                     
@@ -548,7 +607,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
 
                     # Log batch-level training metrics to wandb (high frequency)
                     if rank == 0 and wandb_run is not None and model_idx == 0:  # Only log first model's batch metrics
-                        batch_log = {"step": step}  # Using 'step' as step counter (it's actually batch number)
+                        batch_log = {"step": steps[model_idx]}  # Using 'step' as step counter (it's actually batch number)
                         batch_log["batch/epoch"] = epoch + 1  # Current epoch (actual epoch)
                         
                         # Log all training metrics at batch level
@@ -562,7 +621,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
 
                     # Save periodic checkpoints and calculate validation metrics
                     # ALL RANKS must participate in checkpoint saving for FSDP
-                    checkpoint_needed = train_cfg.checkpoint_freq > 0 and step % train_cfg.checkpoint_freq == 0
+                    checkpoint_needed = train_cfg.checkpoint_freq > 0 and steps[model_idx] % train_cfg.checkpoint_freq == 0
                     
                     # Synchronize checkpoint decision across all ranks
                     if is_distributed:
@@ -572,10 +631,10 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                     
                     if checkpoint_needed:
                         if is_distributed: dist.barrier()
-                        if rank == 0: print(f"\nSaving checkpoint at step {step}...")
+                        if rank == 0: print(f"\nSaving checkpoint at step {steps[model_idx]}...")
                         
                         # ALL RANKS must call this function for FSDP state dict extraction
-                        checkpoint_path = Path(train_cfg.checkpoint_dir) / f"checkpoint_step_{step}.pt"
+                        checkpoint_path = Path(train_cfg.checkpoint_dir) / f"checkpoint_step_{steps[model_idx]}.pt"
                         save_model_checkpoint(checkpoint_path, model, model_cfg, train_cfg, optimizer)
                         
                         if is_distributed: dist.barrier()
@@ -584,9 +643,9 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                         # Log checkpoint to wandb (only on rank 0)
                         if rank == 0 and wandb_run is not None:
                             checkpoint_artifact = wandb.Artifact(
-                                f"checkpoint_model_{model_idx}_step_{step}", 
+                                f"checkpoint_model_{model_idx}_step_{steps[model_idx]}", 
                                 type="model",
-                                metadata={"step": step, "epoch": epoch, "model_idx": model_idx, "model_style": model_cfg.style, "model_type": model_cfg.first_block_cfg.initials()}
+                                metadata={"step": steps[model_idx], "epoch": epoch, "model_idx": model_idx, "model_style": model_cfg.style, "model_type": model_cfg.first_block_cfg.initials()}
                             )
                             checkpoint_artifact.add_file(str(checkpoint_path))
                             wandb_run.log_artifact(checkpoint_artifact)
@@ -630,7 +689,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                             
                             # Print metrics summary
                             print(f"\n{'='*80}")
-                            print(f"Epoch {epoch+1}, Step {step} Summary:")
+                            print(f"Epoch {epoch+1}, Step {steps[model_idx]} Summary:")
                             print(f"{'='*80}")
                             print(f"\nModel {model_idx+1}: {model_cfg.first_block_cfg.initials()} ({model_cfg.style}):")
                             print(f"  Train: " + " | ".join([f"{k}: {v:.3f}" for k, v in display_train_metrics.items()]))
@@ -649,7 +708,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                             
                             # Log validation metrics to wandb
                             if wandb_run is not None:
-                                wandb_log = {"step": step}
+                                wandb_log = {"step": steps[model_idx]}
                                 
                                 # Log only validation metrics for current model
                                 for metric_name in metric_names:
@@ -771,7 +830,15 @@ if __name__ == "__main__":
             time.sleep(5)
     
     # Load all expanded configs and train
-    model_cfg_list, train_cfg_list = load_multi_configs(str(expanded_yaml_dir))
+    print(f"[Rank {rank}] About to load configs from: {expanded_yaml_dir}")
+    try:
+        model_cfg_list, train_cfg_list = load_multi_configs(str(expanded_yaml_dir))
+        print(f"[Rank {rank}] Successfully loaded configs")
+    except Exception as e:
+        print(f"[Rank {rank}] ERROR loading configs: {e}")
+        raise
+    
+    print(f"[Rank {rank}] About to call train()")
     _, epoch_metrics_all, csv_headers, wandb_run = train(
         model_cfg_list, 
         train_cfg_list, 

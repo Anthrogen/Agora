@@ -130,6 +130,13 @@ def generate(model_checkpoint, callback=None):
     transformer, transformer_model_cfg, transformer_train_cfg = load_model_from_checkpoint(model_checkpoint, device)
     autoencoder, autoencoder_model_cfg, autoencoder_train_cfg = load_model_from_checkpoint(transformer_model_cfg.autoencoder_path, device)
 
+    # Call post_init after loading configs from checkpoint to set global and local annotation information
+    # When deserializing from checkpoint, __post_init__ is not called, so vocab sizes aren't computed
+    transformer_model_cfg.__post_init__()
+    transformer_train_cfg.__post_init__()
+    autoencoder_model_cfg.__post_init__()
+    autoencoder_train_cfg.__post_init__()
+
     transformer.eval()
     transformer.requires_grad_(False)
     autoencoder.eval()
@@ -225,14 +232,17 @@ def generate(model_checkpoint, callback=None):
                 # Get structure tokens and feed through autoencoder decoder
                 struct_tokens = batch.masked_data['struct']  # [B, L]
                 nonbeospank_struct_tokens = torch.where(struct_tokens < autoencoder.codebook_size, struct_tokens, torch.zeros_like(struct_tokens))
-                quantized_vectors = autoencoder.quantizer.indices_to_codes(nonbeospank_struct_tokens)  # [B, L, fsq_dim]
+                z_q = autoencoder.quantizer.indices_to_codes(nonbeospank_struct_tokens)  # [B, L, fsq_dim]
+
+                # Zero out BOS/EOS/PAD/UNK positions in z_q
+                z_q[batch.beospank['coords']] = 0.0
                 
                 # Different arguments based on autoencoder architecture
                 model_type = autoencoder_model_cfg.first_block_cfg.initials()
                 if model_type in ("GA", "RA"): 
                     four_atom = batch.masked_data['coords'][:, :, :4, :]  # [B, L, 4, 3] for GA/RA
-                    coords = autoencoder.decoder(quantized_vectors, coords=four_atom, content_elements=content_elements, nonbeospank=nonbeospank, seq_tokens=batch.masked_data['seq'])
-                else: coords = autoencoder.decoder(quantized_vectors, nonbeospank=nonbeospank, seq_tokens=batch.masked_data['seq'])
+                    coords = autoencoder.decoder(z_q, coords=four_atom, content_elements=content_elements, nonbeospank=nonbeospank, seq_tokens=batch.masked_data['seq'])
+                else: coords = autoencoder.decoder(z_q, nonbeospank=nonbeospank, seq_tokens=batch.masked_data['seq'])
                 
                 # Get reconstructed coordinates by passing original through autoencoder
                 with torch.no_grad():

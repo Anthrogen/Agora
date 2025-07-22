@@ -39,7 +39,7 @@ class FakeScheduler():
     def __init__(self): pass
     def step(self): pass
 
-def create_linear_decay(base_learning_rate: float, min_learning_rate: float, num_epochs_decay: int, num_epochs_warmup: int):
+def create_warmup_decay(base_learning_rate: float, min_learning_rate: float, num_epochs_decay: int, num_epochs_warmup: int):
     def lr_lambda(current_step): # One step = one forward pass through the model
         if current_step < num_epochs_warmup: # Linear warmup from min_lr to base_lr
             warmup_progress = current_step / num_epochs_warmup
@@ -48,6 +48,17 @@ def create_linear_decay(base_learning_rate: float, min_learning_rate: float, num
         elif current_step < (num_epochs_warmup + num_epochs_decay): # Linear decay from base_lr to min_lr
             decay_step = current_step - num_epochs_warmup
             decay_progress = decay_step / num_epochs_decay
+            decay_lr = base_learning_rate - decay_progress * (base_learning_rate - min_learning_rate)
+            return decay_lr / base_learning_rate
+        else: # Stay at min_lr after decay period
+            return min_learning_rate / base_learning_rate
+
+    return lr_lambda
+
+def create_decay(base_learning_rate: float, min_learning_rate: float, num_epochs_decay: int):
+    def lr_lambda(current_step): # One step = one forward pass through the model
+        if current_step < num_epochs_decay: # Linear decay from base_lr to min_lr
+            decay_progress = current_step / num_epochs_decay
             decay_lr = base_learning_rate - decay_progress * (base_learning_rate - min_learning_rate)
             return decay_lr / base_learning_rate
         else: # Stay at min_lr after decay period
@@ -146,9 +157,13 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         if isinstance(train_cfg.optim_schedule_config, FlatSchedulerConfig):
             optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.optim_schedule_config.learning_rate)
             scheduler = FakeScheduler()
-        elif isinstance(train_cfg.optim_schedule_config, LinearDecaySchedulerConfig):
+        elif isinstance(train_cfg.optim_schedule_config, WarmupDecaySchedulerConfig):
             optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.optim_schedule_config.base_learning_rate)
-            lr_lambda = create_linear_decay(train_cfg.optim_schedule_config.base_learning_rate, train_cfg.optim_schedule_config.min_learning_rate, train_cfg.optim_schedule_config.num_epochs_decay, train_cfg.optim_schedule_config.num_epochs_warmup)
+            lr_lambda = create_warmup_decay(train_cfg.optim_schedule_config.base_learning_rate, train_cfg.optim_schedule_config.min_learning_rate, train_cfg.optim_schedule_config.num_epochs_decay, train_cfg.optim_schedule_config.num_epochs_warmup)
+            scheduler = LambdaLR(optimizer, lr_lambda)
+        elif isinstance(train_cfg.optim_schedule_config, DecaySchedulerConfig):
+            optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.optim_schedule_config.base_learning_rate)
+            lr_lambda = create_decay(train_cfg.optim_schedule_config.base_learning_rate, train_cfg.optim_schedule_config.min_learning_rate, train_cfg.optim_schedule_config.num_epochs_decay)
             scheduler = LambdaLR(optimizer, lr_lambda)
         else: raise ValueError(f"Invalid optimizer schedule: {train_cfg.optim_schedule_config}")
 
@@ -220,7 +235,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
     max_epochs = train_cfg_list[0].max_epochs
     
     # -------------------- Training loop -------------------- #
-    step = 0
+    steps = [0] * num_models  # Track steps per model
     
     for epoch in range(max_epochs):
         # Reset epoch accumulators for all models (for callback)
@@ -243,7 +258,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             model.train()
             with tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs} [Model {model_idx+1}: {model_cfg.initials()} Train]", ascii=True, leave=True, ncols=150) as pbar:
                 for batch_data in pbar:
-                    step += 1
+                    steps[model_idx] += 1
                     # Skip empty/None batches
                     if batch_data is None: continue
                     
@@ -266,11 +281,11 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                     pbar.set_postfix({f"{prefix}_{k}": f"{v:.3f}" for k, v in epoch_train_metrics.items()})
 
                     # Save periodic checkpoints and calculate validation metrics
-                    if train_cfg.checkpoint_freq > 0 and step % train_cfg.checkpoint_freq == 0:
-                        print(f"\nSaving checkpoint at step {step}...")
+                    if train_cfg.checkpoint_freq > 0 and steps[model_idx] % train_cfg.checkpoint_freq == 0:
+                        print(f"\nSaving checkpoint at step {steps[model_idx]}...")
                         
                         # Save checkpoint for current model
-                        checkpoint_path = Path(train_cfg.checkpoint_dir) / f"checkpoint_step_{step}.pt"
+                        checkpoint_path = Path(train_cfg.checkpoint_dir) / f"checkpoint_step_{steps[model_idx]}.pt"
                         save_model_checkpoint(checkpoint_path, model, model_cfg, train_cfg, optimizer)
                         print(f"Saved checkpoint for Model {model_idx+1} at {checkpoint_path}")
 

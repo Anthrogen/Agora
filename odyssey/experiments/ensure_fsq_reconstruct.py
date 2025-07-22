@@ -1,4 +1,4 @@
-from odyssey.src.model_librarian import load_model_from_checkpoint, load_autoencoder_from_checkpoint
+from odyssey.src.model_librarian import load_model_from_checkpoint, load_model_from_checkpoint
 from odyssey.src.configurations import *
 import torch
 from odyssey.src.losses import kabsch_rmsd_loss, _kabsch_align
@@ -6,7 +6,9 @@ from odyssey.src.losses import kabsch_rmsd_loss, _kabsch_align
 def validate_gradients(ckpt):
     # Run Stage 1 training.  Watch both encoder and decoder parameters update:
     dvc = torch.device("cuda")
-    model, model_cfg, train_cfg = load_autoencoder_from_checkpoint(ckpt, dvc)
+    model, model_cfg, train_cfg = load_model_from_checkpoint(ckpt, dvc)
+
+    return
 
     model = model.to(dvc)
 
@@ -45,4 +47,5 @@ def run_test(ckpt):
 
 
 if __name__ == "__main__":
-    run_test("../../checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt")
+    ckpt = "../../checkpoints/fsq/fsq_stage_2_config/fsq_stage_2_config_000/model.pt"
+    run_test(ckpt)

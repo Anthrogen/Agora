@@ -467,10 +467,10 @@ class FlatSchedulerConfig(SchedulerConfig):
     def __post_init__(self):
         assert self.learning_rate is not None and self.learning_rate > 0
 
-@register_config("linear_decay_scheduler_cfg")
+@register_config("warmup_decay_scheduler_cfg")
 @dataclass
-class LinearDecaySchedulerConfig(SchedulerConfig):
-    """Linear decay scheduler configuration."""
+class WarmupDecaySchedulerConfig(SchedulerConfig):
+    """Warmup decay scheduler configuration."""
     base_learning_rate:              float = None
     min_learning_rate:               float = None
     num_epochs_decay:                int = None
@@ -481,6 +481,20 @@ class LinearDecaySchedulerConfig(SchedulerConfig):
         assert self.min_learning_rate is not None and isinstance(self.min_learning_rate, (int, float)) and self.min_learning_rate > 0
         assert self.num_epochs_decay is not None and isinstance(self.num_epochs_decay, int) and self.num_epochs_decay > 0
         assert self.num_epochs_warmup is not None and isinstance(self.num_epochs_warmup, int) and self.num_epochs_warmup > 0
+        assert self.base_learning_rate >= self.min_learning_rate
+
+@register_config("decay_scheduler_cfg")
+@dataclass
+class DecaySchedulerConfig(SchedulerConfig):
+    """Decay scheduler configuration."""
+    base_learning_rate:              float = None
+    min_learning_rate:               float = None
+    num_epochs_decay:                int = None
+
+    def __post_init__(self):
+        assert self.base_learning_rate is not None and isinstance(self.base_learning_rate, (int, float)) and self.base_learning_rate > 0
+        assert self.min_learning_rate is not None and isinstance(self.min_learning_rate, (int, float)) and self.min_learning_rate > 0
+        assert self.num_epochs_decay is not None and isinstance(self.num_epochs_decay, int) and self.num_epochs_decay > 0
         assert self.base_learning_rate >= self.min_learning_rate
 
 @register_config("training_cfg")

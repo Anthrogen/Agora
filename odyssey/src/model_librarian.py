@@ -203,11 +203,6 @@ def load_model_from_checkpoint(model_path, device, freeze=False):
     model_cfg = checkpoint['model_config']
     train_cfg = checkpoint['train_config']
 
-    # Call post_init after loading config from checkpoint
-    # When deserializing from checkpoint, __post_init__ is not called, so vocab sizes aren't computed
-    model_cfg.__post_init__()
-    train_cfg.__post_init__()
-
     constructor = Autoencoder if isinstance(model_cfg, AutoencoderConfig) else TransformerTrunk
     model = constructor(model_cfg)
     model.load_state_dict(checkpoint['model_state_dict'])

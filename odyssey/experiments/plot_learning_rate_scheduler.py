@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Plot the learning rate schedule for the linear decay scheduler.
+Plot the learning rate schedule for the warmup decay scheduler.
 """
 import sys
 import os
@@ -9,11 +9,11 @@ import numpy as np
 
 # Add the parent directory to the path to import from train module
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from odyssey.train.train import create_linear_decay
+from odyssey.train.train import create_warmup_decay
 
 def plot_learning_rate_schedule(base_lr: float, min_lr: float, decay_epochs: int, warmup_epochs: int, total_steps: int = 20000):
     """
-    Plot the learning rate schedule for the linear decay scheduler.
+    Plot the learning rate schedule for the warmup decay scheduler.
     
     Args:
         base_lr: Base learning rate
@@ -23,7 +23,7 @@ def plot_learning_rate_schedule(base_lr: float, min_lr: float, decay_epochs: int
         total_steps: Total number of steps to plot
     """
     # Create the lr_lambda function
-    lr_lambda = create_linear_decay(base_lr, min_lr, decay_epochs, warmup_epochs)
+    lr_lambda = create_warmup_decay(base_lr, min_lr, decay_epochs, warmup_epochs)
     
     # Generate learning rates for each step
     steps = np.arange(total_steps)
@@ -55,7 +55,7 @@ def plot_learning_rate_schedule(base_lr: float, min_lr: float, decay_epochs: int
     # Customize the plot
     plt.xlabel('Training Step', fontsize=12)
     plt.ylabel('Learning Rate', fontsize=12)
-    plt.title('Linear Decay Learning Rate Schedule with Warmup', fontsize=14, fontweight='bold')
+    plt.title('Warmup Decay Learning Rate Schedule', fontsize=14, fontweight='bold')
     plt.legend(fontsize=10)
     plt.grid(True, alpha=0.3)
     
@@ -112,7 +112,7 @@ if __name__ == "__main__":
     num_epochs_warmup = 100
     total_steps = 20000
     
-    print("Plotting Linear Decay Learning Rate Schedule...")
+    print("Plotting Warmup Decay Learning Rate Schedule...")
     print(f"Configuration:")
     print(f"  Base LR: {base_learning_rate}")
     print(f"  Min LR: {min_learning_rate}")

@@ -137,6 +137,9 @@ def score_entropy_loss_absorb(output, x_0, x_t, cumulative_noise_levels, inst_no
 def score_entropy_loss_uniform(output, x_0, x_t, cumulative_noise_levels, inst_noise_levels, mask_token, valid_mask):
     """
     Score entropy loss for uniform discrete diffusion.
+
+    The repository at https://github.com/louaaron/Score-Entropy-Discrete-Diffusion/ was referenced and used during the development of this loss function.
+    Credit to the authors.
     
     Args:
         output: Model predictions of shape (B, L, V)

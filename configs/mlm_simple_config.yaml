@@ -7,7 +7,7 @@
 model_cfg:
   trunk_cfg:
     style: "mlm"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
-    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_2_config/fsq_stage_2_config_000/model.pt"
+    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_2_config/fsq_stage_2_config_000/checkpoint_step_26316.pt"
     reference_model_seed: 42
 
     vocab_per_residue_path: "/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt"
@@ -60,13 +60,17 @@ train_cfg:
 
     # Optimizer schedule configuration.
     optim_schedule_config:
-      # linear_decay_scheduler_cfg:
+      # warmup_decay_scheduler_cfg:
       #   base_learning_rate: 0.00025
       #   min_learning_rate: 0.00005
       #   num_epochs_decay: 100000
       #   num_epochs_warmup: 5000
       flat_scheduler_cfg:
         learning_rate: 0.00001
+      # decay_scheduler_cfg:
+      #   base_learning_rate: 0.0002
+      #   min_learning_rate: 0.00005
+      #   num_epochs_decay: 70000
     
     # Loss configuration
     loss_config:
@@ -77,7 +81,7 @@ train_cfg:
     
     # Masking configuration
     mask_config:
-      - simple_mask_cfg:
-          mask_prob_seq: 0.2
-          mask_prob_struct: 0.2
-      - complex_mask_cfg: {}
+      simple_mask_cfg:
+        mask_prob_seq: 0.2
+        mask_prob_struct: 0.2
+      # - complex_mask_cfg: {}
