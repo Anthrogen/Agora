@@ -1,0 +1,9 @@
+CASP15 FSQ Autoencoder Evaluation Results
+Checkpoint: ../../checkpoints/AWS/STAGE_2/checkpoint_step_40000.pt
+Evaluation Type: Stage 2 (All Heavy Atoms)
+Model Type: SC
+============================================================
+
+Summary Statistics:
+Mean Loss: 8.8807e-01 (from 34 structures)
+Mean Kabsch RMSD: 1.6228 Å (from 34 structures)

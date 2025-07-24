@@ -184,6 +184,9 @@ class Protein():
             vec_b = gly_ca - gly_n
             vec_c = gly_c - gly_ca
             vec_a = torch.linalg.cross(vec_b, vec_c)
+
+            # For construction of the virtual/"phantom" CB atom, we use the formula developed by:
+            # https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1011330
             virtual_cb = -0.58273431 * vec_a + 0.56802827 * vec_b - 0.54067466 * vec_c + gly_ca
             all_coords[gly_idx, ATOMS["G"].index("CB"), :] = virtual_cb
 

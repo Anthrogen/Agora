@@ -39,20 +39,19 @@ class FakeScheduler():
     def __init__(self): pass
     def step(self): pass
 
-def create_warmup_decay(base_learning_rate: float, min_learning_rate: float, num_epochs_decay: int, num_epochs_warmup: int):
+def create_linear_decay(base_learning_rate: float, min_learning_rate: float, num_epochs_decay: int, num_epochs_warmup: int):
     def lr_lambda(current_step): # One step = one forward pass through the model
-        if current_step < num_epochs_warmup: # Linear warmup from min_lr to base_lr
-            warmup_progress = current_step / num_epochs_warmup
-            warmup_lr = min_learning_rate + warmup_progress * (base_learning_rate - min_learning_rate)
+        if current_step < num_epochs_warmup: # Linear warmup from 0 to base_lr
+            warmup_lr = (current_step / num_epochs_warmup) * base_learning_rate
             return warmup_lr / base_learning_rate
-        elif current_step < (num_epochs_warmup + num_epochs_decay): # Linear decay from base_lr to min_lr
-            decay_step = current_step - num_epochs_warmup
-            decay_progress = decay_step / num_epochs_decay
+        elif current_step < num_epochs_decay: # Linear decay from base_lr to min_lr
+            # Calculate decay progress after warmup period
+            decay_start = num_epochs_warmup
+            decay_progress = (current_step - decay_start) / (num_epochs_decay - decay_start)
             decay_lr = base_learning_rate - decay_progress * (base_learning_rate - min_learning_rate)
             return decay_lr / base_learning_rate
         else: # Stay at min_lr after decay period
             return min_learning_rate / base_learning_rate
-
     return lr_lambda
 
 def create_decay(base_learning_rate: float, min_learning_rate: float, num_epochs_decay: int):
@@ -157,9 +156,9 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         if isinstance(train_cfg.optim_schedule_config, FlatSchedulerConfig):
             optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.optim_schedule_config.learning_rate)
             scheduler = FakeScheduler()
-        elif isinstance(train_cfg.optim_schedule_config, WarmupDecaySchedulerConfig):
+        elif isinstance(train_cfg.optim_schedule_config, LinearDecaySchedulerConfig):
             optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.optim_schedule_config.base_learning_rate)
-            lr_lambda = create_warmup_decay(train_cfg.optim_schedule_config.base_learning_rate, train_cfg.optim_schedule_config.min_learning_rate, train_cfg.optim_schedule_config.num_epochs_decay, train_cfg.optim_schedule_config.num_epochs_warmup)
+            lr_lambda = create_linear_decay(train_cfg.optim_schedule_config.base_learning_rate, train_cfg.optim_schedule_config.min_learning_rate, train_cfg.optim_schedule_config.num_epochs_decay, train_cfg.optim_schedule_config.num_epochs_warmup)
             scheduler = LambdaLR(optimizer, lr_lambda)
         elif isinstance(train_cfg.optim_schedule_config, DecaySchedulerConfig):
             optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=train_cfg.optim_schedule_config.base_learning_rate)

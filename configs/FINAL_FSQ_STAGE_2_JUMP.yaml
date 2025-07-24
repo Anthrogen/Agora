@@ -94,7 +94,7 @@ train_cfg:
 
     # Optimizer schedule configuration.
     optim_schedule_config:
-      # warmup_decay_scheduler_cfg:
+      # linear_decay_scheduler_cfg:
       #   base_learning_rate: 0.00025
       #   min_learning_rate: 0.00005
       #   num_epochs_decay: 100000

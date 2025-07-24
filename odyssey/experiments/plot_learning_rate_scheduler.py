@@ -9,7 +9,7 @@ import numpy as np
 
 # Add the parent directory to the path to import from train module
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from odyssey.train.train import create_warmup_decay
+from odyssey.train.train import create_linear_decay
 
 def plot_learning_rate_schedule(base_lr: float, min_lr: float, decay_epochs: int, warmup_epochs: int, total_steps: int = 20000):
     """
@@ -23,7 +23,7 @@ def plot_learning_rate_schedule(base_lr: float, min_lr: float, decay_epochs: int
         total_steps: Total number of steps to plot
     """
     # Create the lr_lambda function
-    lr_lambda = create_warmup_decay(base_lr, min_lr, decay_epochs, warmup_epochs)
+    lr_lambda = create_linear_decay(base_lr, min_lr, decay_epochs, warmup_epochs)
     
     # Generate learning rates for each step
     steps = np.arange(total_steps)

@@ -467,10 +467,10 @@ class FlatSchedulerConfig(SchedulerConfig):
     def __post_init__(self):
         assert self.learning_rate is not None and self.learning_rate > 0
 
-@register_config("warmup_decay_scheduler_cfg")
+@register_config("linear_decay_scheduler_cfg")
 @dataclass
-class WarmupDecaySchedulerConfig(SchedulerConfig):
-    """Warmup decay scheduler configuration."""
+class LinearDecaySchedulerConfig(SchedulerConfig):
+    """Linear decay scheduler configuration."""
     base_learning_rate:              float = None
     min_learning_rate:               float = None
     num_epochs_decay:                int = None
