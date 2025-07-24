@@ -39,6 +39,9 @@ ENV/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Calude data
+.claude/
+
 # IDE specific files
 .idea/
 .vscode/
