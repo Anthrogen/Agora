@@ -1,13 +1,13 @@
 # Odyssey Default Configuration File
-# Transformer Trunk MLM Training Configuration
+# Transformer Trunk Discrete Diffusion Training Configuration
 
 # =============================================================================
 # Model Configuration
 # =============================================================================
 model_cfg:
   trunk_cfg:
-    style: "mlm"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
-    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt"
+    style: "discrete_diffusion"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
+    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_2_config/fsq_stage_2_config_002/checkpoint_step_26316.pt"
     reference_model_seed: 42
 
     vocab_domains_path: "/workspace/demo/Odyssey/odyssey/train/vocab_domains.txt"
@@ -19,9 +19,9 @@ model_cfg:
 
     transformer_cfg:
       transformer_cfg:
-        d_model: 1024
-        n_heads: 8
-        n_layers: 16
+        d_model: 128
+        n_heads: 1
+        n_layers: 3
         max_len: 2048
         dropout: 0.1
         ff_mult: 4
@@ -31,7 +31,7 @@ model_cfg:
             consensus_num_iterations: 1
             consensus_connectivity_type: "local_window"
             consensus_w: 2
-            consensus_r: 12
+            consensus_r: 24
             consensus_edge_hidden_dim: 12
           # cross_attention_cfg: {}
 
@@ -41,7 +41,7 @@ model_cfg:
             consensus_num_iterations: 1
             consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
             consensus_w: 2
-            consensus_r: 12
+            consensus_r: 24
             consensus_edge_hidden_dim: 12
           # self_attention_cfg: {}
           # geometric_attention_cfg: {}
@@ -53,12 +53,12 @@ model_cfg:
 train_cfg:
   training_cfg:
     batch_size: 4
-    max_epochs: 5
-    checkpoint_freq: 10000
-    max_steps_val: 500
+    max_epochs: 100
+    checkpoint_freq: null
+    max_steps_val: null
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/transformer_trunk"
-    jump_start: "/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_config/mlm_config_000/model.pt"
+    jump_start: null
 
     # Optimizer schedule configuration.
     optim_schedule_config:
@@ -68,7 +68,7 @@ train_cfg:
       #   num_epochs_decay: 100000
       #   num_epochs_warmup: 5000
       flat_scheduler_cfg:
-        learning_rate: 0.00001
+        learning_rate: 0.00005
       # decay_scheduler_cfg:
       #   base_learning_rate: 0.0002
       #   min_learning_rate: 0.00005
@@ -76,14 +76,15 @@ train_cfg:
     
     # Loss configuration
     loss_config:
-      cross_entropy_loss_cfg:
+      score_entropy_loss_cfg: # Options: "cross_entropy_loss_cfg", "kabsch_rmsd_loss_cfg", "score_entropy_loss_cfg"
         seq_loss_weight: 1.0
         struct_loss_weight: 1.0
-        loss_elements: "masked"  # Different loss element strategy
     
     # Masking configuration
     mask_config:
-      # simple_mask_cfg:
-      #   mask_prob_seq: 0.2
-      #   mask_prob_struct: 0.2
-      complex_mask_cfg: {}
+      diffusion_mask_cfg:
+        noise_schedule: "uniform"
+        sigma_min: 0.31
+        sigma_max: 5.68
+        num_timesteps: 100
+        corruption_mode: "absorb"

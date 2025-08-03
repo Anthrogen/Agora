@@ -44,7 +44,11 @@ ATOMS = {'V': BACKBONE + ['O', 'CG1', 'CG2'],
          'Y': BACKBONE + ['O', 'CG', 'CD1', 'CD2', 'CE1', 'CE2', 'CZ', 'OH'], 
          'W': BACKBONE + ['O', 'CG', 'CD1', 'CD2', 'NE1', 'CE2', 'CE3', 'CZ2', 'CZ3', 'CH2'],
          'X': BACKBONE + ['O'],  # Unknown amino acid - treat like Glycine (minimal sidechain)
-         'U': BACKBONE + ['O', 'SE', 'O', 'H', 'HA', 'HB2', 'HB3'] # Selenocysteine
+         'U': BACKBONE + ['O', 'SE', 'O', 'H', 'HA', 'HB2', 'HB3'], # Selenocysteine
+         'Z': BACKBONE + ['O', 'CG', 'CD', 'OE1', 'OE2'],  # Glutamic acid or Glutamine (ambiguous) - treat as Glutamic acid
+         'B': BACKBONE + ['O', 'CG', 'OD1', 'ND2'],  # Asparagine or Aspartic acid (ambiguous) - treat as Asparagine
+         'O': BACKBONE + ['O', 'CG', 'CD', 'CE', 'NZ'],  # Ornithine - similar to Lysine
+         'J': BACKBONE + ['O', 'CG', 'CD1', 'CD2']  # Leucine or Isoleucine (ambiguous) - treat as Leucine
 }
 
 for k in ATOMS:
@@ -56,7 +60,7 @@ for k in ATOMS:
 
 
 # Note: this does not include "struct", which we do not have at this point.
-ALL_TRACKS = ('seq', 'coords', 'ss8', 'sasa', 'global_annotation', 'per_residue_annotation', 'plddt')
+ALL_TRACKS = ('seq', 'coords', 'ss8', 'sasa', 'orthologous_groups', 'semantic_description', 'domains', 'plddt')
 
 class Protein():
     """
@@ -83,8 +87,9 @@ class Protein():
         atom_coords = data.get('all_atoms', {}).get('atom_coordinates', None)
         ss8 = data.get('secondary_structure', None)
         sasa = data.get('sasa', None)
-        global_annotation = data.get('global_annotation', None)
-        per_residue_annotation = data.get('per_residue_annotation', None)
+        orthologous_groups = data.get('orthologous_groups', None)
+        semantic_description = data.get('semantic_description', None)
+        domains = data.get('domains', None)
         plddt = data.get('plddt', None)
         structure_source = data.get('structure_source', None)
 
@@ -93,8 +98,7 @@ class Protein():
 
         # Handle secondary structure
         if ss8 is None: ss8 = [None] * len(sequence) # If entire field is None, create array of None with sequence length
-        else:
-            assert isinstance(ss8, list) # Replace individual NaN/None elements with None
+        elif isinstance(ss8, list): # assert isinstance(ss8, list) # Replace individual NaN/None elements with None
             ss8[:] = [None if (x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x))) else x for x in ss8]
 
         # Handle sasa
@@ -102,28 +106,26 @@ class Protein():
         elif isinstance(sasa, list): # Replace individual NaN/None elements with None
             sasa[:] = [None if (x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x))) else x for x in sasa]
 
-        # Handle global annotations
-        if global_annotation is None or global_annotation == "": global_annotation = []
-        elif isinstance(global_annotation, str): # Split by semicolons and clean up terms
-            terms = global_annotation.split(';')
-            global_annotation = [term.strip() for term in terms if term.strip()]
+        # Handle orthologous groups
+        if orthologous_groups is None or orthologous_groups == "": orthologous_groups = []
+        elif isinstance(orthologous_groups, str): # Split by commas and clean up terms
+            terms = orthologous_groups.split(',')
+            orthologous_groups = [term.strip() for term in terms if term.strip()]
 
-        # Handle per-residue annotations
-        if not per_residue_annotation: per_residue_annotation = [[] for _ in range(len(sequence))] # Handles both None and empty dict {}
-        elif isinstance(per_residue_annotation, dict):
-            # Convert dictionary format to list format
-            list_annotations = [[] for _ in range(len(sequence))]
-            for pos_str, annotations in per_residue_annotation.items():
-                pos_idx = int(pos_str)
-                # Ensure the position is within sequence bounds
-                assert 0 <= pos_idx < len(sequence)
+        # Handle semantic description
+        if semantic_description is None or semantic_description == "": semantic_description = []
+        elif isinstance(semantic_description, str): # Split by whitespace, punctuation and clean up terms
+            import re
+            # Split on punctuation and whitespace, keeping letters and numbers together
+            terms = re.split(r'[^a-zA-Z0-9]+', semantic_description)
+            semantic_description = [term.strip() for term in terms if term.strip()]
 
-                # Annotations are always in list format
-                if isinstance(annotations, list):
-                    list_annotations[pos_idx] = annotations
-
-            # Set the per_residue_annotation to the list of annotations
-            per_residue_annotation = list_annotations
+        # Handle domains
+        if not domains: domains = [[] for _ in range(len(sequence))] # Handles both None and empty list
+        elif isinstance(domains, list):
+            assert len(domains) == len(sequence)
+            for i, domain_list in enumerate(domains):
+                if not isinstance(domain_list, list): raise ValueError(f"Domain at position {i} is not a list: {domain_list}")
         
         # Handle plddt with structure source-specific scaling
         if plddt is None: plddt = [None] * len(sequence) # If entire field is None, create array of None with sequence length
@@ -199,8 +201,9 @@ class Protein():
         self.len = len(self.seq)
         self.ss8 = ss8
         self.sasa = sasa
-        self.global_annotation = global_annotation
-        self.per_residue_annotation = per_residue_annotation
+        self.orthologous_groups = orthologous_groups
+        self.semantic_description = semantic_description
+        self.domains = domains
         self.plddt = plddt
 
     def bond_angles(self):
@@ -300,7 +303,7 @@ class ProteinDataset(Dataset):
     PROTEIN_ID_COL = 1
     JSON_PATH_COL = 2 # Within the index.csv file, this is the colun (0-indexed) that points ot member Json Path 
     TOTAL_COLS = 4
-    def __init__(self, index_csv_path: str, center: bool = True, mode: str = "backbone", max_length: int = 2048, critical_tracks=None, max_length_global: int = 512, eager: bool = False, verbose: bool = False):
+    def __init__(self, index_csv_path: str, center: bool = True, mode: str = "backbone", max_length: int = 2048, critical_tracks=None, max_length_orthologous_groups: int = 512, max_length_semantic_description: int = 128, eager: bool = False, verbose: bool = False):
         """
         Eager: if true, check for malformed files up front. Otherwise, do so on the fly and potentially return None from __getitem__.
         """
@@ -317,7 +320,8 @@ class ProteinDataset(Dataset):
         # Maximum sequence length for padding/truncation
         # Proteins longer than this will be truncated
         self.max_length = max_length
-        self.max_length_global = max_length_global
+        self.max_length_orthologous_groups = max_length_orthologous_groups
+        self.max_length_semantic_description = max_length_semantic_description
         self.mode = mode
         self.center = center
         self.verbose = verbose
@@ -401,7 +405,7 @@ class ProteinDataset(Dataset):
 
         try:
             return Protein(json_path, mode=self.mode)
-        except (AssertionError, ValueError, json.decoder.JSONDecodeError) as e:
+        except (AssertionError, ValueError, json.decoder.JSONDecodeError, PermissionError, OSError, FileNotFoundError) as e:
             if self.verbose:
                 print(f"Warning: encountered malformed file {json_path}: {e}")
             return None
@@ -415,8 +419,9 @@ class ProteinDataset(Dataset):
         seq = protein.seq[:self.max_length]
         ss8 = protein.ss8[:self.max_length]
         sasa = protein.sasa[:self.max_length]
-        global_annotation = protein.global_annotation[:self.max_length_global]
-        per_residue_annotation = protein.per_residue_annotation[:self.max_length]
+        orthologous_groups = protein.orthologous_groups[:self.max_length_orthologous_groups]
+        semantic_description = protein.semantic_description[:self.max_length_semantic_description]
+        domains = protein.domains[:self.max_length]
         plddt = protein.plddt[:self.max_length]
         l = torch.tensor(min(protein.len, self.max_length))
 
@@ -431,4 +436,4 @@ class ProteinDataset(Dataset):
             non_zero_mask = (coords != 0.0).any(dim=-1)  # [L, H] - True for real atoms
             coords = torch.where(non_zero_mask.unsqueeze(-1), coords - centroid, coords)
 
-        return seq, coords, ss8, sasa, global_annotation, per_residue_annotation, plddt, l
+        return seq, coords, ss8, sasa, orthologous_groups, semantic_description, domains, plddt, l

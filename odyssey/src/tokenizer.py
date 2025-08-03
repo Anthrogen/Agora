@@ -1,4 +1,4 @@
-from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS, PLDDT_TOKENS, GLOBAL_ANNOTATION_TOKENS, PER_RESIDUE_ANNOTATION_TOKENS
+from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS, PLDDT_TOKENS, ORTHOLOGOUS_GROUPS_TOKENS, SEMANTIC_DESCRIPTION_TOKENS, DOMAINS_TOKENS
 import torch
 from bisect import bisect_right
 from tabulate import tabulate
@@ -554,23 +554,23 @@ class PLDDTTokenizer(Tokenizer):
         if isinstance(tok, torch.Tensor): tok = tok.item()
         return self.reverse_mapping[tok]
 
-class GlobalAnnotationTokenizer(Tokenizer):
+class OrthologousGroupsTokenizer(Tokenizer):
     """
-    A Tokenizer and Padder for global annotation tokens.
+    A Tokenizer and Padder for orthologous groups tokens.
     This class does NOT handle MASK tokens.
     """
     def __init__(self, full_length):
-        # Get global annotation tokens (dynamically loaded vocabulary)
-        global_annotation = {name: value for name, value in GLOBAL_ANNOTATION_TOKENS._members.items()}
+        # Get orthologous groups tokens (dynamically loaded vocabulary)
+        orthologous_groups = {name: value for name, value in ORTHOLOGOUS_GROUPS_TOKENS._members.items()}
 
-        # Get the highest global annotation token value to avoid conflicts
-        max_global_annotation_value = max(global_annotation.values()) if global_annotation else -1
+        # Get the highest orthologous groups token value to avoid conflicts
+        self.max_orthologous_groups_value = max(orthologous_groups.values()) if orthologous_groups else -1
 
         # Add special tokens with non-conflicting values
-        special = {name: member.value + max_global_annotation_value + 1 
+        special = {name: member.value + self.max_orthologous_groups_value + 1 
                   for name, member in SPECIAL_TOKENS.__members__.items()}
 
-        self.mapping = {**global_annotation, **special}
+        self.mapping = {**orthologous_groups, **special}
         self.reverse_mapping = {v: k for k, v in self.mapping.items()}
         self.full_length = full_length
 
@@ -580,42 +580,42 @@ class GlobalAnnotationTokenizer(Tokenizer):
     def tokenize(self, observation):
         """
         Args:
-            observation: List of global annotation labels (or None values), e.g., ['dimer interface', 'DNA binding site']
+            observation: List of orthologous groups labels (or None values), e.g., ['COG4977@1|root', 'COG4977@2|Bacteria']
         Returns:
-            padded_global_annotation: Tensor of global annotation tokens
-            global_annotation_beospank: Boolean mask for BOS/EOS/PAD/None positions
+            padded_orthologous_groups: Tensor of orthologous groups tokens
+            orthologous_groups_beospank: Boolean mask for BOS/EOS/PAD/None positions
         """
-        # Convert global annotation labels to token indices
-        global_annotation_tokens = []
+        # Convert orthologous groups labels to token indices
+        orthologous_groups_tokens = []
         for label in observation:
-            if label in self.mapping: global_annotation_tokens.append(self.mapping[label])
-            # else: global_annotation_tokens.append(self.mapping["UNK"])
+            if label in self.mapping: orthologous_groups_tokens.append(self.mapping[label])
+            # else: orthologous_groups_tokens.append(self.mapping["UNK"])
             else: pass
         
         # Truncate if too long (reserve space for BOS/EOS)
-        global_annotation_tokens = global_annotation_tokens[:self.full_length-2]
+        orthologous_groups_tokens = orthologous_groups_tokens[:self.full_length-2]
 
         # Add BOS and EOS tokens
-        content = torch.tensor([self.mapping["BOS"], *global_annotation_tokens, self.mapping["EOS"]], dtype=torch.long)
+        content = torch.tensor([self.mapping["BOS"], *orthologous_groups_tokens, self.mapping["EOS"]], dtype=torch.long)
         content_len = content.numel()
 
         # Add Padding
-        padded_global_annotation = torch.full((self.full_length,), self.mapping["PAD"], dtype=torch.long)
-        padded_global_annotation[:content_len] = content[:content_len]
+        padded_orthologous_groups = torch.full((self.full_length,), self.mapping["PAD"], dtype=torch.long)
+        padded_orthologous_groups[:content_len] = content[:content_len]
 
         # Create beospank mask: 1s for BOS/EOS/PAD/None, 0s for real content
-        global_annotation_beospank = torch.zeros(self.full_length, dtype=torch.bool)
-        global_annotation_beospank[padded_global_annotation == self.mapping["BOS"]] = 1
-        global_annotation_beospank[padded_global_annotation == self.mapping["EOS"]] = 1
-        global_annotation_beospank[padded_global_annotation == self.mapping["PAD"]] = 1
-        global_annotation_beospank[padded_global_annotation == self.mapping["UNK"]] = 1
+        orthologous_groups_beospank = torch.zeros(self.full_length, dtype=torch.bool)
+        orthologous_groups_beospank[padded_orthologous_groups == self.mapping["BOS"]] = 1
+        orthologous_groups_beospank[padded_orthologous_groups == self.mapping["EOS"]] = 1
+        orthologous_groups_beospank[padded_orthologous_groups == self.mapping["PAD"]] = 1
+        orthologous_groups_beospank[padded_orthologous_groups == self.mapping["UNK"]] = 1
 
         # Sanity checks
-        assert torch.max(padded_global_annotation) < len(self.mapping), "Global Annotation Tokenization failed!"
-        assert torch.min(padded_global_annotation) >= 0, "Global Annotation Tokenization failed!"
-        assert padded_global_annotation.numel() == self.full_length, "Global Annotation Tokenization failed!"
+        assert torch.max(padded_orthologous_groups) < len(self.mapping), "Orthologous Groups Tokenization failed!"
+        assert torch.min(padded_orthologous_groups) >= 0, "Orthologous Groups Tokenization failed!"
+        assert padded_orthologous_groups.numel() == self.full_length, "Orthologous Groups Tokenization failed!"
 
-        return padded_global_annotation, global_annotation_beospank.bool()
+        return padded_orthologous_groups, orthologous_groups_beospank.bool()
 
     def corrupt(self, unmasked_data, masks):
         if self.corruption_mode == CorruptionMode.MASK:
@@ -623,7 +623,7 @@ class GlobalAnnotationTokenizer(Tokenizer):
             return torch.where(masks, tensor_of_masks, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_plddt_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            uniform_content = torch.randint(0, self.max_orthologous_groups_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -633,43 +633,122 @@ class GlobalAnnotationTokenizer(Tokenizer):
         return self.reverse_mapping[tok]
 
 
-class PerResidueAnnotationTokenizer(Tokenizer):
+class SemanticDescriptionTokenizer(Tokenizer):
     """
-    A Tokenizer and Padder for per-residue annotation tokens.
-    Handles multiple annotations per residue by creating a fixed-size tensor
-    of shape [full_length, max_annotations_per_residue].
+    A Tokenizer and Padder for semantic description tokens.
+    This class does NOT handle MASK tokens.
     """
-    def __init__(self, full_length, max_annotations_per_residue, generator=None, corruption_mode=CorruptionMode.MASK):
-        # Get per-residue annotation tokens (dynamically loaded vocabulary)
-        per_residue_annotation = {name: value for name, value in PER_RESIDUE_ANNOTATION_TOKENS._members.items()}
-        
-        # Get the highest per-residue annotation token value to avoid conflicts
-        self.max_annotation_value = max(per_residue_annotation.values()) if per_residue_annotation else -1
+    def __init__(self, full_length):
+        # Get semantic description tokens (dynamically loaded vocabulary)
+        semantic_description = {name: value for name, value in SEMANTIC_DESCRIPTION_TOKENS._members.items()}
+
+        # Get the highest semantic description token value to avoid conflicts
+        self.max_semantic_description_value = max(semantic_description.values()) if semantic_description else -1
 
         # Add special tokens with non-conflicting values
-        special = {name: member.value + self.max_annotation_value + 1 
+        special = {name: member.value + self.max_semantic_description_value + 1 
                   for name, member in SPECIAL_TOKENS.__members__.items()}
 
-        self.mapping = {**per_residue_annotation, **special}
+        self.mapping = {**semantic_description, **special}
         self.reverse_mapping = {v: k for k, v in self.mapping.items()}
         self.full_length = full_length
-        self.max_annotations_per_residue = max_annotations_per_residue
+
+        # TODO: once vocabulary.py is object-based, remove this check.
+        assert len(self.mapping) > 0
+
+    def tokenize(self, observation):
+        """
+        Args:
+            observation: List of semantic description labels (or None values), e.g., ['helix_turn_helix', 'arabinose_operon_control_protein']
+        Returns:
+            padded_semantic_description: Tensor of semantic description tokens
+            semantic_description_beospank: Boolean mask for BOS/EOS/PAD/None positions
+        """
+        # Convert semantic description labels to token indices
+        semantic_description_tokens = []
+        for label in observation:
+            if label in self.mapping: semantic_description_tokens.append(self.mapping[label])
+            # else: semantic_description_tokens.append(self.mapping["UNK"])
+            else: pass
+        
+        # Truncate if too long (reserve space for BOS/EOS)
+        semantic_description_tokens = semantic_description_tokens[:self.full_length-2]
+
+        # Add BOS and EOS tokens
+        content = torch.tensor([self.mapping["BOS"], *semantic_description_tokens, self.mapping["EOS"]], dtype=torch.long)
+        content_len = content.numel()
+
+        # Add Padding
+        padded_semantic_description = torch.full((self.full_length,), self.mapping["PAD"], dtype=torch.long)
+        padded_semantic_description[:content_len] = content[:content_len]
+
+        # Create beospank mask: 1s for BOS/EOS/PAD/None, 0s for real content
+        semantic_description_beospank = torch.zeros(self.full_length, dtype=torch.bool)
+        semantic_description_beospank[padded_semantic_description == self.mapping["BOS"]] = 1
+        semantic_description_beospank[padded_semantic_description == self.mapping["EOS"]] = 1
+        semantic_description_beospank[padded_semantic_description == self.mapping["PAD"]] = 1
+        semantic_description_beospank[padded_semantic_description == self.mapping["UNK"]] = 1
+
+        # Sanity checks
+        assert torch.max(padded_semantic_description) < len(self.mapping), "Semantic Description Tokenization failed!"
+        assert torch.min(padded_semantic_description) >= 0, "Semantic Description Tokenization failed!"
+        assert padded_semantic_description.numel() == self.full_length, "Semantic Description Tokenization failed!"
+
+        return padded_semantic_description, semantic_description_beospank.bool()
+
+    def corrupt(self, unmasked_data, masks):
+        if self.corruption_mode == CorruptionMode.MASK:
+            tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+            return torch.where(masks, tensor_of_masks, unmasked_data)
+
+        elif self.corruption_mode == CorruptionMode.UNIFORM:
+            uniform_content = torch.randint(0, self.max_semantic_description_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            return torch.where(masks, uniform_content, unmasked_data)
+        
+        raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
+
+    def print_token(self, tok):
+        if isinstance(tok, torch.Tensor): tok = tok.item()
+        return self.reverse_mapping[tok]
+
+
+class DomainsTokenizer(Tokenizer):
+    """
+    A Tokenizer and Padder for domain tokens.
+    Handles multiple domains per residue by creating a fixed-size tensor
+    of shape [full_length, max_domains_per_residue].
+    """
+    def __init__(self, full_length, max_domains_per_residue, generator=None, corruption_mode=CorruptionMode.MASK):
+        # Get domain annotation tokens (dynamically loaded vocabulary)
+        domains = {name: value for name, value in DOMAINS_TOKENS._members.items()}
+        
+        # Get the highest domain annotation token value to avoid conflicts
+        self.max_domain_value = max(domains.values()) if domains else -1
+
+        # Add special tokens with non-conflicting values
+        special = {name: member.value + self.max_domain_value + 1 
+                  for name, member in SPECIAL_TOKENS.__members__.items()}
+
+        self.mapping = {**domains, **special}
+        self.reverse_mapping = {v: k for k, v in self.mapping.items()}
+        self.full_length = full_length
+        self.max_domains_per_residue = max_domains_per_residue
         self.generator = generator
         self.corruption_mode = corruption_mode
 
         # TODO: once vocabulary.py is object-based, remove this check.
         assert len(self.mapping) > 0
 
-    def _process_residue_annotations(self, annotations):
-        """Convert residue annotations to list of token indices, pad/truncate to max_annotations_per_residue."""        
+    def _process_residue_domains(self, domains):
+        """Convert residue domains to list of token indices, pad/truncate to max_domains_per_residue."""        
         # Convert to token IDs
         tokens = []
-        for term in annotations: 
+        for term in domains: 
             term = term.strip()
             if term in self.mapping: tokens.append(self.mapping[term])
 
-        tokens = tokens[:self.max_annotations_per_residue]
-        p = [self.mapping["PAD"]] * self.max_annotations_per_residue
+        tokens = tokens[:self.max_domains_per_residue]
+        p = [self.mapping["PAD"]] * self.max_domains_per_residue
         p[:len(tokens)] = tokens
 
         return p
@@ -677,52 +756,52 @@ class PerResidueAnnotationTokenizer(Tokenizer):
     def tokenize(self, observation, mask):
         """
         Args:
-            observation: List of annotation lists per residue, e.g., 
-                        [["dimer interface","DNA binding site"], [], ["active site"], ...]
-                        Each element is either None or a list of annotation term strings.
+            observation: List of domain lists per residue, e.g., 
+                        [["Glyco_hydro_10"], [], ["Glyco_hydro_10", "Fer4"], ...]
+                        Each element is either None or a list of domain term strings.
             mask: Boolean mask for MASK positions
         Returns:
-            padded_annotations: Tensor of annotation tokens [full_length, max_annotations_per_residue]
-            annotation_beospank: Boolean mask for BOS/EOS/PAD/UNK annotation tokens [full_length, max_annotations_per_residue]
+            padded_domains: Tensor of domain tokens [full_length, max_domains_per_residue]
+            domain_beospank: Boolean mask for BOS/EOS/PAD/UNK domain tokens [full_length, max_domains_per_residue]
         """
         device = mask.device
         
-        # Convert each residue's annotations to token indices
-        residue_annotation_tokens = []
-        for annot in observation:
-            tokens = self._process_residue_annotations(annot)
-            residue_annotation_tokens.append(tokens)
+        # Convert each residue's domains to token indices
+        residue_domain_tokens = []
+        for domains in observation:
+            tokens = self._process_residue_domains(domains)
+            residue_domain_tokens.append(tokens)
         
         # Truncate if too long (reserve space for BOS/EOS)
-        residue_annotation_tokens = residue_annotation_tokens[:self.full_length-2]
+        residue_domain_tokens = residue_domain_tokens[:self.full_length-2]
 
         # Add BOS and EOS tokens
-        bos_tokens = [self.mapping["BOS"]] * self.max_annotations_per_residue
-        eos_tokens = [self.mapping["EOS"]] * self.max_annotations_per_residue
-        content = torch.tensor([bos_tokens, *residue_annotation_tokens, eos_tokens], dtype=torch.long, device=device)
+        bos_tokens = [self.mapping["BOS"]] * self.max_domains_per_residue
+        eos_tokens = [self.mapping["EOS"]] * self.max_domains_per_residue
+        content = torch.tensor([bos_tokens, *residue_domain_tokens, eos_tokens], dtype=torch.long, device=device)
         content_len = len(content)
 
         # Add Padding
-        padded_annotations = torch.full((self.full_length, self.max_annotations_per_residue), self.mapping["PAD"], dtype=torch.long, device=device)
-        padded_annotations[:content_len] = content[:content_len] # size: [full_length, max_annotations_per_residue]
+        padded_domains = torch.full((self.full_length, self.max_domains_per_residue), self.mapping["PAD"], dtype=torch.long, device=device)
+        padded_domains[:content_len] = content[:content_len] # size: [full_length, max_domains_per_residue]
 
-        # Create beospank mask: 1s for BOS/EOS/PAD/UNK annotation tokens, 0s for real content - size: [full_length, max_annotations_per_residue]
-        annotation_beospank = (padded_annotations == self.mapping["BOS"]) | \
-                              (padded_annotations == self.mapping["EOS"]) | \
-                              (padded_annotations == self.mapping["PAD"]) | \
-                              (padded_annotations == self.mapping["UNK"])
+        # Create beospank mask: 1s for BOS/EOS/PAD/UNK domain tokens, 0s for real content - size: [full_length, max_domains_per_residue]
+        domain_beospank = (padded_domains == self.mapping["BOS"]) | \
+                          (padded_domains == self.mapping["EOS"]) | \
+                          (padded_domains == self.mapping["PAD"]) | \
+                          (padded_domains == self.mapping["UNK"])
         
-        # Expand mask to match annotation dimensions [L] -> [L, K]
-        mask_expanded = mask.unsqueeze(-1).expand(-1, self.max_annotations_per_residue)
-        annotation_masks = mask_expanded & ~annotation_beospank
-        masked_annotations = self.corrupt(padded_annotations, annotation_masks)
+        # Expand mask to match domain dimensions [L] -> [L, K]
+        mask_expanded = mask.unsqueeze(-1).expand(-1, self.max_domains_per_residue)
+        domain_masks = mask_expanded & ~domain_beospank
+        masked_domains = self.corrupt(padded_domains, domain_masks)
 
         # Sanity checks
-        assert torch.max(padded_annotations) < len(self.mapping), "Per-residue annotation Tokenization failed!"
-        assert torch.min(padded_annotations) >= 0, "Per-residue annotation Tokenization failed!"
-        assert padded_annotations.shape == (self.full_length, self.max_annotations_per_residue), "Per-residue annotation padding shape mismatch!"
+        assert torch.max(padded_domains) < len(self.mapping), "Domain annotation Tokenization failed!"
+        assert torch.min(padded_domains) >= 0, "Domain annotation Tokenization failed!"
+        assert padded_domains.shape == (self.full_length, self.max_domains_per_residue), "Domain annotation padding shape mismatch!"
 
-        return padded_annotations, masked_annotations, annotation_beospank.bool(), annotation_masks.bool()
+        return padded_domains, masked_domains, domain_beospank.bool(), domain_masks.bool()
 
     def corrupt(self, unmasked_data, masks):
         if self.corruption_mode == CorruptionMode.MASK:
@@ -730,7 +809,7 @@ class PerResidueAnnotationTokenizer(Tokenizer):
             return torch.where(masks, tensor_of_masks, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_annotation_value + 1, unmasked_data.shape, dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            uniform_content = torch.randint(0, self.max_domain_value + 1, unmasked_data.shape, dtype=torch.long, generator=self.generator).to(unmasked_data.device)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -761,7 +840,7 @@ print_tokenized_sequence(coord.print_token, *coord.tokenize(pd.__getitem__(idx)[
 
 from odyssey.src.model_librarian import load_model_from_checkpoint
 device = torch.device('cpu')
-autoencoder, _, _ = load_model_from_checkpoint("/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt", device)
+autoencoder, _, _ = load_model_from_checkpoint("/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/checkpoint_step_26316.pt", device)
 struct = StructureTokenizer(2048, autoencoder, corruption_mode=mode)
 _, _, _, _, struct_unmasked, struct_masked, struct_beospank, struct_mask = struct.tokenize(pd.__getitem__(idx)[1], mask)
 print_tokenized_sequence(struct.print_token, struct_unmasked, struct_masked, struct_beospank, struct_mask)
@@ -773,15 +852,15 @@ sasa = SASATokenizer(2048, corruption_mode=mode)
 print_tokenized_sequence(sasa.print_token, *sasa.tokenize(pd.__getitem__(idx)[3], mask))
 
 from odyssey.src.vocabulary import *
-_ = load_annotation_tokens("/workspace/demo/Odyssey/odyssey/train/vocab_global_annotations.txt", GLOBAL_ANNOTATION_TOKENS)
-global_annotation = GlobalAnnotationTokenizer(2048)
-data, beospank = global_annotation.tokenize(pd.__getitem__(idx)[4])
-print_tokenized_sequence(global_annotation.print_token, data, data, beospank, torch.zeros_like(mask))
+_ = load_annotation_tokens("/workspace/demo/Odyssey/odyssey/train/vocab_orthologous_groups.txt", ORTHOLOGOUS_GROUPS_TOKENS)
+orthologous_groups = OrthologousGroupsTokenizer(2048)
+data, beospank = orthologous_groups.tokenize(pd.__getitem__(idx)[4])
+print_tokenized_sequence(orthologous_groups.print_token, data, data, beospank, torch.zeros_like(mask))
 
 from odyssey.src.vocabulary import *
-_ = load_annotation_tokens("/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt", PER_RESIDUE_ANNOTATION_TOKENS)
-per_residue = PerResidueAnnotationTokenizer(2048, 4, corruption_mode=mode)
-print_tokenized_sequence(per_residue.print_token, *per_residue.tokenize(pd.__getitem__(idx)[5], mask))
+_ = load_annotation_tokens("/workspace/demo/Odyssey/odyssey/train/vocab_domains.txt", DOMAINS_TOKENS)
+domains = DomainsTokenizer(2048, 4, corruption_mode=mode)
+print_tokenized_sequence(domains.print_token, *domains.tokenize(pd.__getitem__(idx)[5], mask))
 
 plddt = PLDDTTokenizer(2048, corruption_mode=mode)
 print_tokenized_sequence(plddt.print_token, *plddt.tokenize(pd.__getitem__(idx)[6], mask))

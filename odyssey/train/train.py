@@ -93,17 +93,17 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
     for i, (model_cfg, train_cfg) in enumerate(zip(model_cfg_list, train_cfg_list)):
         # Use different masking strategies for stage 1 vs stage 2
         if model_cfg.style == "stage_1":
-            tracks = {'seq': False, 'struct': False, 'coords': True, 'ss8': False, 'sasa': False, 'global_annotation': False, 'per_residue_annotation': False, 'plddt': False}
-            min_unmasked = {'seq': 0, 'coords': 1}
+            tracks = {'seq': False, 'struct': False, 'coords': True, 'ss8': False, 'sasa': False, 'orthologous_groups': False, 'semantic_description': False, 'domains': False, 'plddt': False}
+            min_unmasked = {'seq': 1, 'coords': 1}
         elif model_cfg.style == "stage_2":
-            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': False, 'sasa': False, 'global_annotation': False, 'per_residue_annotation': False, 'plddt': False}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': False, 'sasa': False, 'orthologous_groups': False, 'semantic_description': False, 'domains': False, 'plddt': False}
             min_unmasked = {'seq': 0, 'coords': 0}
         elif model_cfg.style == "mlm":
-            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'global_annotation': True, 'per_residue_annotation': True, 'plddt': True}
-            min_unmasked = {'seq': 0, 'coords': 1}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'orthologous_groups': True, 'semantic_description': True, 'domains': True, 'plddt': True}
+            min_unmasked = {'seq': 1, 'coords': 1}
         elif model_cfg.style == "discrete_diffusion":
-            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'global_annotation': True, 'per_residue_annotation': True, 'plddt': True}
-            min_unmasked = {'seq': 0, 'coords': 1}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'orthologous_groups': True, 'semantic_description': True, 'domains': True, 'plddt': True}
+            min_unmasked = {'seq': 1, 'coords': 1}
 
         tracks_list.append(tracks)
         min_unmasked_list.append(min_unmasked)
@@ -188,7 +188,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         g_val = torch.Generator()
         g_val.manual_seed(data_seed + 5000)
 
-        dataset = ProteinDataset(train_cfg.data_dir, mode=dataset_modes[i], max_length=model_cfg.max_len - 2, max_length_global=model_cfg.max_len_global - 2) # , critical_tracks=tracks_list[i])
+        dataset = ProteinDataset(train_cfg.data_dir, mode=dataset_modes[i], max_length=model_cfg.max_len - 2, max_length_orthologous_groups=model_cfg.max_len_orthologous_groups - 2, max_length_semantic_description=model_cfg.max_len_semantic_description - 2) # , critical_tracks=tracks_list[i])
         val_size = max(1, int(0.2 * len(dataset)))
         train_size = len(dataset) - val_size
 
@@ -255,7 +255,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             step_fn = step_fns[model_idx]
             
             model.train()
-            with tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs} [Model {model_idx+1}: {model_cfg.initials()} Train]", ascii=True, leave=True, ncols=150) as pbar:
+            with tqdm(train_loader, desc=f"Epoch {epoch+1}/{max_epochs} [Model {model_idx+1}: {model_cfg.initials()} Train]", ascii=True, leave=True, ncols=200) as pbar:
                 for batch_data in pbar:
                     steps[model_idx] += 1
                     # Skip empty/None batches

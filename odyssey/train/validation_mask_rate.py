@@ -44,12 +44,12 @@ class CustomSimpleDataLoader(MaskingDataLoader):
             'ss8': train_cfg.mask_config.mask_prob_seq, 
             'sasa': train_cfg.mask_config.mask_prob_seq, 
             'plddt': train_cfg.mask_config.mask_prob_seq, 
-            'per_residue_annotation': train_cfg.mask_config.mask_prob_seq
+            'domains': train_cfg.mask_config.mask_prob_seq
         }
 
     def sample_masks(self, tracks, batch_len):
         masks = {}
-        for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'global_annotation')]:
+        for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'orthologous_groups' and t != 'semantic_description')]:
             # Create masks with fixed probabilities
             mask = torch.rand(batch_len, self.L, device=self.device) < self.simple_mask_prob[track]
             masks[track] = mask.bool()
@@ -108,7 +108,8 @@ def validate(path_to_model_checkpoint_absorb: str,
              path_to_model_checkpoint_uniform: str, 
              path_to_model_checkpoint_simple: str, 
              path_to_model_checkpoint_complex: str,
-             time_steps: List[int]):
+             time_steps: List[int],
+             validation_batch_size: int):
     """Validate four models across different mask rates corresponding to time steps."""
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -174,7 +175,7 @@ def validate(path_to_model_checkpoint_absorb: str,
     data_dir = "/workspace/demo/Odyssey/sample_data/3k.csv"
     
     # Use comprehensive tracks like in generate.py
-    tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'global_annotation': True, 'per_residue_annotation': True, 'plddt': True}
+    tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'orthologous_groups': True, 'semantic_description': True, 'domains': True, 'plddt': True}
     min_unmasked = {'seq': 0, 'coords': 1}
     
     # Use the reference model seed for consistency
@@ -186,7 +187,7 @@ def validate(path_to_model_checkpoint_absorb: str,
     # Create dataset and validation split
     g_val = torch.Generator()
     g_val.manual_seed(data_seed + 5000)
-    val_ds = ProteinDataset(data_dir, mode=dataset_mode, max_length=absorb_model_cfg.max_len - 2, max_length_global=absorb_model_cfg.max_len_global - 2)
+    val_ds = ProteinDataset(data_dir, mode=dataset_mode, max_length=absorb_model_cfg.max_len - 2, max_length_orthologous_groups=absorb_model_cfg.max_len_orthologous_groups - 2, max_length_semantic_description=absorb_model_cfg.max_len_semantic_description - 2)
     
     ###########################################################################
     #  Validation across time steps
@@ -232,7 +233,7 @@ def validate(path_to_model_checkpoint_absorb: str,
                     corruption_mode=CorruptionMode.UNIFORM,
                     autoencoder=autoencoder,
                     min_unmasked=min_unmasked,
-                    batch_size=train_cfg.batch_size,
+                    batch_size=validation_batch_size,
                     shuffle=False,
                     generator=g_val,
                     worker_init_fn=worker_init_fn
@@ -248,7 +249,7 @@ def validate(path_to_model_checkpoint_absorb: str,
                     corruption_mode=CorruptionMode.MASK,
                     autoencoder=autoencoder,
                     min_unmasked=min_unmasked,
-                    batch_size=train_cfg.batch_size,
+                    batch_size=validation_batch_size,
                     shuffle=False,
                     generator=g_val,
                     worker_init_fn=worker_init_fn
@@ -258,7 +259,7 @@ def validate(path_to_model_checkpoint_absorb: str,
             all_metrics_sum = {}
             all_metrics_count = {}
             
-            for batch in tqdm(val_loader, desc=f"Validating {model_name} at timestep {timestep}", leave=False):
+            for batch in tqdm(val_loader, desc=f"Validating {model_name} at timestep {timestep}", leave=True, ncols=100):
                 if batch is None:
                     continue
                 
@@ -386,10 +387,11 @@ def validate(path_to_model_checkpoint_absorb: str,
     return results_df
 
 if __name__ == "__main__":
-    path_to_model_checkpoint_absorb = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/discrete_diffusion_absorb_config/discrete_diffusion_absorb_config_000/checkpoint_step_61200.pt'
-    path_to_model_checkpoint_uniform = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/discrete_diffusion_uniform_config/discrete_diffusion_uniform_config_000/checkpoint_step_61200.pt'
-    path_to_model_checkpoint_simple = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_simple_config/mlm_simple_config_000/checkpoint_step_12240.pt'
-    path_to_model_checkpoint_complex = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_complex_config/mlm_complex_config_000/checkpoint_step_12240.pt'
+    path_to_model_checkpoint_absorb = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/discrete_diffusion_absorb_config/discrete_diffusion_absorb_config_000/checkpoint_step_45924.pt'
+    path_to_model_checkpoint_uniform = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/discrete_diffusion_uniform_config/discrete_diffusion_uniform_config_000/checkpoint_step_45924.pt'
+    path_to_model_checkpoint_simple = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_simple_config/mlm_simple_config_000/checkpoint_step_34443.pt'
+    path_to_model_checkpoint_complex = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_complex_config/mlm_complex_config_000/checkpoint_step_34443.pt'
     time_steps = [4,9,14,19,24,29,34,39,44,49,54,59,64,69,74,79,84,89]
+    validation_batch_size = 4
     validate(path_to_model_checkpoint_absorb, path_to_model_checkpoint_uniform, path_to_model_checkpoint_simple, 
-             path_to_model_checkpoint_complex, time_steps) 
+             path_to_model_checkpoint_complex, time_steps, validation_batch_size) 

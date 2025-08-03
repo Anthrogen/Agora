@@ -3,7 +3,7 @@ import torch
 from dataclasses import dataclass, field
 from typing import List, Optional, Any, Dict, Type
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS, PLDDT_TOKENS
-from odyssey.src.vocabulary import PER_RESIDUE_ANNOTATION_TOKENS, GLOBAL_ANNOTATION_TOKENS, load_annotation_tokens
+from odyssey.src.vocabulary import DOMAINS_TOKENS, ORTHOLOGOUS_GROUPS_TOKENS, SEMANTIC_DESCRIPTION_TOKENS, load_annotation_tokens
 import os
 from copy import deepcopy
 
@@ -295,10 +295,12 @@ class ModelConfig(Config):
     autoencoder_path:                  str = None
     reference_model_seed:              int = None
 
-    vocab_per_residue_path:            str = None
-    vocab_global_path:                 str = None
-    max_annotations_per_residue:       int = None
-    max_len_global:                    int = None
+    vocab_domains_path:                str = None
+    vocab_orthologous_groups_path:     str = None
+    vocab_semantic_description_path:   str = None
+    max_domains_per_residue:           int = None
+    max_len_orthologous_groups:        int = None
+    max_len_semantic_description:      int = None
 
     seq_absorb_token:                  int = SPECIAL_TOKENS.MASK.value + len(SEQUENCE_TOKENS) # Absorbing sequence state tokens (using MASK token index)
     struct_absorb_token:               int = SPECIAL_TOKENS.MASK.value + 4375 # Absorbing structure state tokens (using MASK token index)
@@ -308,8 +310,9 @@ class ModelConfig(Config):
     ss8_vocab:                         int = len(SS8_TOKENS) + len(SPECIAL_TOKENS)  # SS8 tokens + special tokens
     sasa_vocab:                        int = len(SASA_TOKENS) + len(SPECIAL_TOKENS)  # SASA tokens + special tokens
     plddt_vocab:                       int = len(PLDDT_TOKENS) + len(SPECIAL_TOKENS)  # pLDDT tokens + special tokens
-    per_residue_annotation_vocab:      int = None  # per-residue annotation tokens + special tokens (set in post init)
-    global_annotation_vocab:           int = None  # global annotation tokens + special tokens (set in post init)
+    domains_vocab:                     int = None  # domain annotation tokens + special tokens (set in post init)
+    orthologous_groups_vocab:          int = None  # orthologous groups tokens + special tokens (set in post init)
+    semantic_description_vocab:        int = None  # semantic description tokens + special tokens (set in post init)
 
     def initials(self):
         raise NotImplementedError("Subclasses must implement initials")
@@ -327,10 +330,12 @@ class ModelConfig(Config):
 
     def __post_init__(self):
         # Load annotation vocabularies and set sizes
-        self.per_residue_annotation_vocab = load_annotation_tokens(self.vocab_per_residue_path, PER_RESIDUE_ANNOTATION_TOKENS) + len(SPECIAL_TOKENS)
-        self.global_annotation_vocab = load_annotation_tokens(self.vocab_global_path, GLOBAL_ANNOTATION_TOKENS) + len(SPECIAL_TOKENS)
-        assert isinstance(self.max_annotations_per_residue, int) and self.max_annotations_per_residue > 0
-        assert isinstance(self.max_len_global, int) and self.max_len_global > 0
+        self.domains_vocab = load_annotation_tokens(self.vocab_domains_path, DOMAINS_TOKENS) + len(SPECIAL_TOKENS)
+        self.orthologous_groups_vocab = load_annotation_tokens(self.vocab_orthologous_groups_path, ORTHOLOGOUS_GROUPS_TOKENS) + len(SPECIAL_TOKENS)
+        self.semantic_description_vocab = load_annotation_tokens(self.vocab_semantic_description_path, SEMANTIC_DESCRIPTION_TOKENS) + len(SPECIAL_TOKENS)
+        assert isinstance(self.max_domains_per_residue, int) and self.max_domains_per_residue > 0
+        assert isinstance(self.max_len_orthologous_groups, int) and self.max_len_orthologous_groups > 0
+        assert isinstance(self.max_len_semantic_description, int) and self.max_len_semantic_description > 0
 
         # TODO: get rid of
         assert self.seq_vocab > 0
@@ -338,8 +343,9 @@ class ModelConfig(Config):
         assert self.ss8_vocab > 0
         assert self.sasa_vocab > 0
         assert self.plddt_vocab > 0
-        assert self.per_residue_annotation_vocab > 0
-        assert self.global_annotation_vocab > 0
+        assert self.domains_vocab > 0
+        assert self.orthologous_groups_vocab > 0
+        assert self.semantic_description_vocab > 0
 
         assert self.seq_absorb_token is not None
         assert self.struct_absorb_token is not None

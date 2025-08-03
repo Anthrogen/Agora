@@ -46,7 +46,8 @@ def run_test(ckpt):
 
 
 if __name__ == "__main__":
-    run_test("../../checkpoints/fsq/fsq_stage_1_config_SA/fsq_stage_1_config_SA_000/checkpoint_step_1.pt")
+    #run_test("../../checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/checkpoint_step_26316.pt")
 
+    run_test("../../checkpoints/transformer_trunk/mlm_complex_config/mlm_complex_config_000/checkpoint_step_86904.pt")
 
 # THIS TEST WILL FAIL BECAUSE OF THE BATCHNORM IN THE CONV BLOCK

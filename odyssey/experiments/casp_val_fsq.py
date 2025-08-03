@@ -146,8 +146,9 @@ def main():
     # Call post_init after loading configs from checkpoint to set global and local annotation information
     # When deserializing from checkpoint, __post_init__ is not called, so vocab sizes aren't computed
     model_cfg.autoencoder_path = '../../checkpoints/AWS/STAGE_2/checkpoint_step_40000.pt'
-    model_cfg.vocab_per_residue_path = "/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt"
-    model_cfg.vocab_global_path = "/workspace/demo/Odyssey/odyssey/train/vocab_global_annotations.txt"
+    model_cfg.vocab_domains_path = "/workspace/demo/Odyssey/odyssey/train/vocab_domains.txt"
+    model_cfg.vocab_orthologous_groups_path = "/workspace/demo/Odyssey/odyssey/train/vocab_orthologous_groups.txt"
+    model_cfg.vocab_semantic_description_path = "/workspace/demo/Odyssey/odyssey/train/vocab_semantic_descriptions.txt"
     train_cfg.data_dir = "/workspace/casp_data/casp15/jsons"
     train_cfg.checkpoint_dir = "/workspace/demo/Odyssey/checkpoints/fsq"
     train_cfg.mask_cfg = NoMaskConfig()
@@ -183,17 +184,18 @@ def main():
         casp_csv, 
         mode=dataset_mode, 
         max_length=model_cfg.max_len - 2,
-        max_length_global=getattr(model_cfg, 'max_len_global', 512) - 2
+        max_length_orthologous_groups=getattr(model_cfg, 'max_len_orthologous_groups', 512) - 2,
+        max_length_semantic_description=getattr(model_cfg, 'max_len_semantic_description', 128) - 2
     )
     
     print(f"Dataset created with {len(dataset)} entries")
     
     # Configure tracks based on model stage
     if model_cfg.style == "stage_1":
-        tracks = {'seq': False, 'struct': False, 'coords': True, 'ss8': False, 'sasa': False, 'global_annotation': False, 'per_residue_annotation': False, 'plddt': False}
+        tracks = {'seq': False, 'struct': False, 'coords': True, 'ss8': False, 'sasa': False, 'orthologous_groups': False, 'semantic_description': False, 'domains': False, 'plddt': False}
         min_unmasked = {'seq': 0, 'coords': 1}
     elif model_cfg.style == "stage_2":
-        tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': False, 'sasa': False, 'global_annotation': False, 'per_residue_annotation': False, 'plddt': False}
+        tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': False, 'sasa': False, 'orthologous_groups': False, 'semantic_description': False, 'domains': False, 'plddt': False}
         min_unmasked = {'seq': 0, 'coords': 0}
     else:
         raise ValueError(f"Unknown model style: {model_cfg.style}")

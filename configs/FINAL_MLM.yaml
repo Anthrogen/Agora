@@ -10,10 +10,12 @@ model_cfg:
     autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt"
     reference_model_seed: 42
 
-    vocab_per_residue_path: "/workspace/demo/Odyssey/odyssey/train/vocab_per_residue_annotations.txt"
-    vocab_global_path: "/workspace/demo/Odyssey/odyssey/train/vocab_global_annotations.txt"
-    max_annotations_per_residue: 4
-    max_len_global: 512
+    vocab_domains_path: "/workspace/demo/Odyssey/odyssey/train/vocab_domains.txt"
+    vocab_orthologous_groups_path: "/workspace/demo/Odyssey/odyssey/train/vocab_orthologous_groups.txt"
+    vocab_semantic_description_path: "/workspace/demo/Odyssey/odyssey/train/vocab_semantic_descriptions.txt"
+    max_domains_per_residue: 4
+    max_len_orthologous_groups: 512
+    max_len_semantic_description: 128
 
     transformer_cfg:
       transformer_cfg:

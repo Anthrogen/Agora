@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from typing import Tuple
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.tokenizer import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer, SS8Tokenizer, SASATokenizer, PLDDTTokenizer
-from odyssey.src.tokenizer import GlobalAnnotationTokenizer, PerResidueAnnotationTokenizer, CorruptionMode
+from odyssey.src.tokenizer import OrthologousGroupsTokenizer, SemanticDescriptionTokenizer, DomainsTokenizer, CorruptionMode
 import math
 from abc import abstractmethod
 
@@ -44,7 +44,8 @@ def _get_noise_levels(s_min, s_max, T, schedule_type="linear"):
         # Cumulative noise: ∫_0^t σ(s) ds 
         # For linear schedule σ(s) = σ_min + (σ_max - σ_min) * s
         # ∫_0^t σ(s) ds = σ_min * t + 0.5 * (σ_max - σ_min) * t^2
-        cumulative_noise_levels = s_min * normalized_t + 0.5 * (s_max - s_min) * normalized_t**2
+        min_cumulative_noise = -torch.log(torch.tensor(1 - 0.05))  # ≈ 0.051293
+        cumulative_noise_levels = min_cumulative_noise + s_min * normalized_t + 0.5 * (s_max - s_min) * normalized_t**2
         
     elif schedule_type == "inverted_u":
         # Inverted-U schedule: concentrated training time distribution
@@ -144,8 +145,9 @@ class MaskingDataLoader(DataLoader):
 
         self.device = device if device is not None else torch.device("cpu")
         self.L = model_cfg.max_len
-        self.K = model_cfg.max_annotations_per_residue
-        self.G = model_cfg.max_len_global
+        self.K = model_cfg.max_domains_per_residue
+        self.G = model_cfg.max_len_orthologous_groups
+        self.H = model_cfg.max_len_semantic_description
 
         # TODO: get batch size directly from train_cfg.batch_size and apply, if we keep the train_cfg in the constructor argument list.
         # Override collate_fn with our custom one
@@ -162,8 +164,9 @@ class MaskingDataLoader(DataLoader):
         self.structure_tokenizer = StructureTokenizer(self.L, autoencoder, min_unmasked=min_unmasked['coords'], generator=generator, corruption_mode=corruption_mode)
         self.ss8_tokenizer = SS8Tokenizer(self.L, generator=generator, corruption_mode=corruption_mode)
         self.sasa_tokenizer = SASATokenizer(self.L, generator=generator, corruption_mode=corruption_mode)
-        self.global_annotation_tokenizer = GlobalAnnotationTokenizer(self.G)
-        self.per_residue_annotation_tokenizer = PerResidueAnnotationTokenizer(self.L, self.K, generator=generator, corruption_mode=corruption_mode)
+        self.orthologous_groups_tokenizer = OrthologousGroupsTokenizer(self.G)
+        self.semantic_description_tokenizer = SemanticDescriptionTokenizer(self.H)
+        self.domains_tokenizer = DomainsTokenizer(self.L, self.K, generator=generator, corruption_mode=corruption_mode)
         self.plddt_tokenizer = PLDDTTokenizer(self.L, generator=generator, corruption_mode=corruption_mode)
         
         if tracks['struct']:
@@ -184,7 +187,7 @@ class MaskingDataLoader(DataLoader):
         if self.tracks['struct']: masks['struct'] = masks['coords']
 
         batch = MaskedBatch(data, masks, metadata, self.tracks, self.sequence_tokenizer, self.structure_tokenizer, self.coordinates_tokenizer, self.ss8_tokenizer, self.sasa_tokenizer, 
-                              self.global_annotation_tokenizer, self.per_residue_annotation_tokenizer, self.plddt_tokenizer, device=self.device, min_unmasked=self.min_unmasked)
+                              self.orthologous_groups_tokenizer, self.semantic_description_tokenizer, self.domains_tokenizer, self.plddt_tokenizer, device=self.device, min_unmasked=self.min_unmasked)
 
         return batch
     
@@ -199,12 +202,12 @@ class SimpleDataLoader(MaskingDataLoader):
 
         assert isinstance(train_cfg.mask_config, SimpleMaskConfig)
         # Use mask_prob_seq as default for sequence-like tracks, mask_prob_struct for structure-like tracks
-        self.simple_mask_prob = {'seq': train_cfg.mask_config.mask_prob_seq, 'coords': train_cfg.mask_config.mask_prob_struct, 'ss8': train_cfg.mask_config.mask_prob_seq, 'sasa': train_cfg.mask_config.mask_prob_seq, 'plddt': train_cfg.mask_config.mask_prob_seq, 'per_residue_annotation': train_cfg.mask_config.mask_prob_seq}
+        self.simple_mask_prob = {'seq': train_cfg.mask_config.mask_prob_seq, 'coords': train_cfg.mask_config.mask_prob_struct, 'ss8': train_cfg.mask_config.mask_prob_seq, 'sasa': train_cfg.mask_config.mask_prob_seq, 'plddt': train_cfg.mask_config.mask_prob_seq, 'domains': train_cfg.mask_config.mask_prob_seq}
 
     def sample_masks(self, tracks, batch_len):
 
         masks = {}
-        for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'global_annotation')]:
+        for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'orthologous_groups' and t != 'semantic_description')]:
 
             # Create masks with fixed probabilities
             mask = torch.rand(batch_len, self.L, device=self.device) < self.simple_mask_prob[track]
@@ -224,7 +227,8 @@ class ComplexDataLoader(MaskingDataLoader):
         Within each protein, masking is IID Bernoulli.
         """
         masks = {}
-        for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'global_annotation')]:
+        metadata = {}
+        for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'orthologous_groups' and t != 'semantic_description')]:
 
             # Sample mask rates for each protein in batch
             if track == 'seq': probs = _sample_betalinear30(batch_len, device=self.device)
@@ -233,12 +237,14 @@ class ComplexDataLoader(MaskingDataLoader):
             
             # Create masks with per-protein rates
             # Expand rates to [B, L] and sample IID Bernoulli
-            probs = probs.unsqueeze(1).expand(batch_len, self.L)
+            probs_full = probs.unsqueeze(1).expand(batch_len, self.L)
             
-            mask = torch.rand(batch_len, self.L, device=self.device) < probs
+            mask = torch.rand(batch_len, self.L, device=self.device) < probs_full
             masks[track] = mask.bool()
 
-        return masks, None
+            metadata[track] = probs
+
+        return masks, metadata
 
 
 class NoMaskDataLoader(MaskingDataLoader):
@@ -247,7 +253,7 @@ class NoMaskDataLoader(MaskingDataLoader):
     
     def sample_masks(self, tracks, batch_len):
         masks = {}
-        for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'global_annotation')]:
+        for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'orthologous_groups' and t != 'semantic_description')]:
             masks[track] = torch.zeros(batch_len, self.L, device=self.device).bool()
 
         return masks, None
@@ -286,7 +292,7 @@ class DiffusionDataLoader(MaskingDataLoader):
 
         metadata = {'timestep_indices': timestep_indices, 'cumulative_noise': cumulative_noise_level, 'inst_noise': inst_noise_levels}
         masks = {}
-        for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'global_annotation')]:
+        for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'orthologous_groups' and t != 'semantic_description')]:
 
             mask_prob = 1 - torch.exp(-cumulative_noise_level)
             mask_prob_expanded = mask_prob.expand(batch_len, self.L)
@@ -297,8 +303,8 @@ class DiffusionDataLoader(MaskingDataLoader):
 
 
 class MaskedBatch():
-    def __init__(self, data, masks, metadata, tracks, sequence_tokenizer, structure_tokenizer, coordinates_tokenizer, ss8_tokenizer, sasa_tokenizer, global_annotation_tokenizer,
-                  per_residue_annotation_tokenizer, plddt_tokenizer, device=None, min_unmasked={'seq': 0, 'coords': 0}):
+    def __init__(self, data, masks, metadata, tracks, sequence_tokenizer, structure_tokenizer, coordinates_tokenizer, ss8_tokenizer, sasa_tokenizer, orthologous_groups_tokenizer,
+                  semantic_description_tokenizer, domains_tokenizer, plddt_tokenizer, device=None, min_unmasked={'seq': 0, 'coords': 0}):
         
         """Custom collate function that applies discrete diffusion noise."""
         self.device = device if device is not None else torch.device("cpu")
@@ -306,20 +312,21 @@ class MaskedBatch():
         self.min_unmasked = min_unmasked
 
         # Unpack batch from ProteinDataset
-        self.masked_data = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None, 'per_residue_annotation': None, 'plddt': None}
-        self.unmasked_data = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None, 'global_annotation': None, 'per_residue_annotation': None, 'plddt': None}
-        self.beospank = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None, 'global_annotation': None, 'per_residue_annotation': None, 'plddt': None}
+        self.masked_data = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None, 'domains': None, 'plddt': None}
+        self.unmasked_data = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None, 'orthologous_groups': None, 'semantic_description': None, 'domains': None, 'plddt': None}
+        self.beospank = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None, 'orthologous_groups': None, 'semantic_description': None, 'domains': None, 'plddt': None}
         
         self.metadata = metadata if metadata is not None else {}
-        self.masks = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None, 'per_residue_annotation': None, 'plddt': None}
+        self.masks = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None, 'domains': None, 'plddt': None}
         self.masks = masks
 
-        seq_list, coords_list, ss8_list, sasa_list, global_annotation_list, per_residue_annotation_list, plddt_list, _ = zip(*data)
+        seq_list, coords_list, ss8_list, sasa_list, orthologous_groups_list, semantic_description_list, domains_list, plddt_list, _ = zip(*data)
         
         # Stack lengths
         self.B = len(seq_list)
         self.L = sequence_tokenizer.full_length
-        self.G = global_annotation_tokenizer.full_length
+        self.G = orthologous_groups_tokenizer.full_length
+        self.H = semantic_description_tokenizer.full_length
 
         #########################################################################
         # Tokenize sequences, structures, and context-specific data
@@ -375,25 +382,34 @@ class MaskedBatch():
             self.beospank['sasa'] = torch.stack(self.beospank['sasa'], dim=0).to(self.device).bool()
             self.masks['sasa'] = torch.stack(self.masks['sasa'], dim=0).to(self.device).bool()
 
-        # Tokenize global annotation data if enabled
-        if tracks['global_annotation']:
-            global_annotation_data = []
-            for global_annotation in global_annotation_list:
-                global_annotation_data.append(global_annotation_tokenizer.tokenize(global_annotation))
-            self.unmasked_data['global_annotation'], self.beospank['global_annotation'] = zip(*global_annotation_data)
-            self.unmasked_data['global_annotation'] = torch.stack(self.unmasked_data['global_annotation'], dim=0).to(self.device)
-            self.beospank['global_annotation'] = torch.stack(self.beospank['global_annotation'], dim=0).to(self.device).bool()
+        # Tokenize orthologous groups data if enabled
+        if tracks['orthologous_groups']:
+            orthologous_groups_data = []
+            for orthologous_groups in orthologous_groups_list:
+                orthologous_groups_data.append(orthologous_groups_tokenizer.tokenize(orthologous_groups))
+            self.unmasked_data['orthologous_groups'], self.beospank['orthologous_groups'] = zip(*orthologous_groups_data)
+            self.unmasked_data['orthologous_groups'] = torch.stack(self.unmasked_data['orthologous_groups'], dim=0).to(self.device)
+            self.beospank['orthologous_groups'] = torch.stack(self.beospank['orthologous_groups'], dim=0).to(self.device).bool()
 
-        # Tokenize per-residue annotation data if enabled
-        if tracks['per_residue_annotation']:
-            per_residue_annotation_data = []
-            for idx, per_residue_annotation in enumerate(per_residue_annotation_list):
-                per_residue_annotation_data.append(per_residue_annotation_tokenizer.tokenize(per_residue_annotation, masks['per_residue_annotation'][idx]))
-            self.unmasked_data['per_residue_annotation'], self.masked_data['per_residue_annotation'], self.beospank['per_residue_annotation'], self.masks['per_residue_annotation'] = zip(*per_residue_annotation_data)
-            self.unmasked_data['per_residue_annotation'] = torch.stack(self.unmasked_data['per_residue_annotation'], dim=0).to(self.device)
-            self.masked_data['per_residue_annotation'] = torch.stack(self.masked_data['per_residue_annotation'], dim=0).to(self.device)
-            self.beospank['per_residue_annotation'] = torch.stack(self.beospank['per_residue_annotation'], dim=0).to(self.device).bool()
-            self.masks['per_residue_annotation'] = torch.stack(self.masks['per_residue_annotation'], dim=0).to(self.device).bool()
+        # Tokenize semantic description data if enabled
+        if tracks['semantic_description']:
+            semantic_description_data = []
+            for semantic_description in semantic_description_list:
+                semantic_description_data.append(semantic_description_tokenizer.tokenize(semantic_description))
+            self.unmasked_data['semantic_description'], self.beospank['semantic_description'] = zip(*semantic_description_data)
+            self.unmasked_data['semantic_description'] = torch.stack(self.unmasked_data['semantic_description'], dim=0).to(self.device)
+            self.beospank['semantic_description'] = torch.stack(self.beospank['semantic_description'], dim=0).to(self.device).bool()
+
+        # Tokenize domains data if enabled
+        if tracks['domains']:
+            domains_data = []
+            for idx, domains in enumerate(domains_list):
+                domains_data.append(domains_tokenizer.tokenize(domains, masks['domains'][idx]))
+            self.unmasked_data['domains'], self.masked_data['domains'], self.beospank['domains'], self.masks['domains'] = zip(*domains_data)
+            self.unmasked_data['domains'] = torch.stack(self.unmasked_data['domains'], dim=0).to(self.device)
+            self.masked_data['domains'] = torch.stack(self.masked_data['domains'], dim=0).to(self.device)
+            self.beospank['domains'] = torch.stack(self.beospank['domains'], dim=0).to(self.device).bool()
+            self.masks['domains'] = torch.stack(self.masks['domains'], dim=0).to(self.device).bool()
 
         # Tokenize pLDDT data if enabled
         if tracks['plddt']:
@@ -407,14 +423,15 @@ class MaskedBatch():
             self.masks['plddt'] = torch.stack(self.masks['plddt'], dim=0).to(self.device).bool()
 
     def get_masked_data_as_list(self):
-        seq_tokens, struct_tokens, ss8_tokens, sasa_tokens, global_annotation_tokens, per_residue_annotation_tokens, plddt_tokens
+        seq_tokens, struct_tokens, ss8_tokens, sasa_tokens, orthologous_groups_tokens, semantic_description_tokens, domains_tokens, plddt_tokens
 
         x = (self.masked_data['seq'],
              self.masked_data['struct'],
              self.masked_data['ss8'],
              self.masked_data['sasa'],
-             self.masked_data['global_annotation'],
-             self.masked_data['per_residue_annotation'],
+             self.masked_data['orthologous_groups'],
+             self.masked_data['semantic_description'],
+             self.masked_data['domains'],
              self.masked_data['plddt'])
         
         return x

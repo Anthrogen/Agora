@@ -84,9 +84,9 @@ class PLDDT_TOKENS(Enum):
     BIN_30 = 30; BIN_31 = 31; BIN_32 = 32; BIN_33 = 33; BIN_34 = 34; BIN_35 = 35; BIN_36 = 36; BIN_37 = 37; BIN_38 = 38; BIN_39 = 39
     BIN_40 = 40; BIN_41 = 41; BIN_42 = 42; BIN_43 = 43; BIN_44 = 44; BIN_45 = 45; BIN_46 = 46; BIN_47 = 47; BIN_48 = 48; BIN_49 = 49
 
-class PER_RESIDUE_ANNOTATION_TOKENS:
+class DOMAINS_TOKENS:
     """
-    Dynamic vocabulary for per-residue annotation tokens.
+    Dynamic vocabulary for domain tokens.
     This class is populated by load_annotation_tokens() based on frequency thresholds.
     """
     # Class variables to store the vocabulary
@@ -105,9 +105,30 @@ class PER_RESIDUE_ANNOTATION_TOKENS:
         return cls._members
 
 
-class GLOBAL_ANNOTATION_TOKENS:
+class ORTHOLOGOUS_GROUPS_TOKENS:
     """
-    Dynamic vocabulary for global annotation tokens.
+    Dynamic vocabulary for orthologous groups tokens.
+    This class is populated by load_annotation_tokens() based on frequency thresholds.
+    """
+    # Class variables to store the vocabulary
+    _members = {}  # {term_name: value}
+    _value_to_term = {}  # {value: term_name}
+    
+    @classmethod
+    def __len__(cls): return len(cls._members)
+    
+    @classmethod
+    def __iter__(cls): return iter(cls._members.items())
+    
+    @classmethod
+    def __members__(cls):
+        """Return members dict for compatibility with Enum interface."""
+        return cls._members
+
+
+class SEMANTIC_DESCRIPTION_TOKENS:
+    """
+    Dynamic vocabulary for semantic description tokens.
     This class is populated by load_annotation_tokens() based on frequency thresholds.
     """
     # Class variables to store the vocabulary
@@ -132,7 +153,7 @@ def load_annotation_tokens(vocab_file_path, token_class):
     
     Args:
         vocab_file_path (str): Path to the vocabulary text file (one term per line)
-        token_class: Either PER_RESIDUE_ANNOTATION_TOKENS or GLOBAL_ANNOTATION_TOKENS
+        token_class: Either DOMAINS_TOKENS, ORTHOLOGOUS_GROUPS_TOKENS, or SEMANTIC_DESCRIPTION_TOKENS
     
     Returns:
         int: Number of annotation tokens loaded (not including special tokens)

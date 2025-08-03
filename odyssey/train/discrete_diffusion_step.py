@@ -48,7 +48,7 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
     nonbeospank_seq, nonbeospank_struct = ~batch.beospank['seq'], ~batch.beospank['struct']
     coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
     ss8_x_0, sasa_x_0 = batch.masked_data['ss8'], batch.masked_data['sasa']
-    global_annotation_x_0, per_residue_annotation_x_0 = batch.unmasked_data['global_annotation'], batch.masked_data['per_residue_annotation']
+    orthologous_groups_x_0, semantic_description_x_0, domains_x_0 = batch.unmasked_data['orthologous_groups'], batch.unmasked_data['semantic_description'], batch.masked_data['domains']
     plddt_x_0 = batch.masked_data['plddt']
     B, L = seq_x_t.shape
 
@@ -56,8 +56,9 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
     nonbeospank = ~batch.beospank['coords'] & ~batch.beospank['seq']
     nonbeospank_ss8 = ~batch.beospank['ss8']
     nonbeospank_sasa = ~batch.beospank['sasa']
-    nonbeospank_global_annotation = ~batch.beospank['global_annotation']
-    nonbeospank_per_residue_annotation = ~batch.beospank['per_residue_annotation']
+    nonbeospank_orthologous_groups = ~batch.beospank['orthologous_groups']
+    nonbeospank_semantic_description = ~batch.beospank['semantic_description']
+    nonbeospank_domains = ~batch.beospank['domains']
     nonbeospank_plddt = ~batch.beospank['plddt']
     assert content_elements.any(dim=1).all() # Need at least one real residue in each sequence
     
@@ -68,14 +69,25 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
     timesteps = timesteps.float().unsqueeze(-1)
     
     # Prepare inputs
-    inputs = (seq_x_t, struct_x_t, ss8_x_0, sasa_x_0, global_annotation_x_0, per_residue_annotation_x_0, plddt_x_0)
+    inputs = (seq_x_t, struct_x_t, ss8_x_0, sasa_x_0, orthologous_groups_x_0, semantic_description_x_0, domains_x_0, plddt_x_0)
+    model.train(train_mode)
+
+    masked_inputs = ('coords', 'seq', 'struct', 'ss8', 'sasa', 'domains', 'plddt')
+    unmasked_inputs = ('orthologous_groups', 'semantic_description')
+
+    tok1 = {k: batch.masked_data[k] for k in masked_inputs}
+    tok2 = {k: batch.unmasked_data[k] for k in unmasked_inputs}
+    input_tokens = {**tok1, **tok2}
     model.train(train_mode)
     
     with torch.set_grad_enabled(train_mode):
         # Forward pass with time conditioning
         model_type = model.cfg.first_block_cfg.initials()
-        if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, content_elements, nonbeospank, nonbeospank_ss8, nonbeospank_sasa, nonbeospank_global_annotation, nonbeospank_per_residue_annotation, nonbeospank_plddt, timesteps)
-        else: outputs = model(inputs, nonbeospank=nonbeospank, nonbeospank_ss8=nonbeospank_ss8, nonbeospank_sasa=nonbeospank_sasa, nonbeospank_global_annotation=nonbeospank_global_annotation, nonbeospank_per_residue_annotation=nonbeospank_per_residue_annotation, nonbeospank_plddt=nonbeospank_plddt, timesteps=timesteps)
+        # if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, content_elements, nonbeospank, nonbeospank_ss8, nonbeospank_sasa, nonbeospank_orthologous_groups, nonbeospank_semantic_description, nonbeospank_domains, nonbeospank_plddt, timesteps)
+        # else: outputs = model(inputs, nonbeospank=nonbeospank, nonbeospank_ss8=nonbeospank_ss8, nonbeospank_sasa=nonbeospank_sasa, nonbeospank_orthologous_groups=nonbeospank_orthologous_groups, nonbeospank_semantic_description, nonbeospank_domains=nonbeospank_domains, nonbeospank_plddt=nonbeospank_plddt, timesteps=timesteps)
+
+        if model_type in ("GA", "RA"): outputs = model(input_tokens, batch.beospank, coords=coords_x_t, content_elements=content_elements, timesteps=timesteps)
+        else: outputs = model(input_tokens, batch.beospank, timesteps=timesteps)
         seq_logits, struct_logits = outputs
         
         score_entropy_loss_fn = score_entropy_loss_absorb if train_cfg.mask_config.corruption_mode == "absorb" else score_entropy_loss_uniform
@@ -93,7 +105,7 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
             nonbeospank_seq_valid = nonbeospank_seq[valid_seq_mask]
             cumulative_noise_valid, inst_noise_valid = cumulative_noise[valid_seq_mask], inst_noise[valid_seq_mask]
             loss_seq = score_entropy_loss_fn(seq_logits_valid, seq_x_0_valid, seq_x_t_valid, cumulative_noise_valid, inst_noise_valid, model_cfg.seq_absorb_token, valid_mask=nonbeospank_seq_valid)
-        else: loss_seq = torch.tensor(0.0, device=seq_logits.device)
+        else: loss_seq = 0.0 * seq_logits.sum()
         
         if effective_batch_size_struct > 0:
             struct_logits_valid = struct_logits[valid_struct_mask]
@@ -101,7 +113,7 @@ def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Opti
             nonbeospank_struct_valid = nonbeospank_struct[valid_struct_mask]
             cumulative_noise_valid, inst_noise_valid = cumulative_noise[valid_struct_mask], inst_noise[valid_struct_mask]
             loss_struct = score_entropy_loss_fn(struct_logits_valid, struct_x_0_valid, struct_x_t_valid, cumulative_noise_valid, inst_noise_valid, model_cfg.struct_absorb_token, valid_mask=nonbeospank_struct_valid)
-        else: loss_struct = torch.tensor(0.0, device=struct_logits.device)
+        else: loss_struct = 0.0 * struct_logits.sum()
 
         # Compute combined loss
         seq_loss_weight = train_cfg.loss_config.seq_loss_weight * (effective_batch_size_seq / B)
@@ -129,7 +141,7 @@ def generate_discrete_diffusion(model, model_cfg, train_cfg, batch):
     nonbeospank_seq, nonbeospank_struct = ~batch.beospank['seq'], ~batch.beospank['struct']
     coords_x_t, coords_x_0 = batch.masked_data['coords'], batch.unmasked_data['coords']
     ss8_x_0, sasa_x_0 = batch.masked_data['ss8'], batch.masked_data['sasa']
-    global_annotation_x_0, per_residue_annotation_x_0 = batch.unmasked_data['global_annotation'], batch.masked_data['per_residue_annotation']
+    orthologous_groups_x_0, semantic_description_x_0, domains_x_0 = batch.unmasked_data['orthologous_groups'], batch.unmasked_data['semantic_description'], batch.masked_data['domains']
     plddt_x_0 = batch.masked_data['plddt']
     B, L = seq_x_t.shape
     V = {'seq': model_cfg.seq_vocab, 'struct': model_cfg.struct_vocab}
@@ -141,8 +153,9 @@ def generate_discrete_diffusion(model, model_cfg, train_cfg, batch):
     nonbeospank = ~batch.beospank['coords'] & ~batch.beospank['seq']
     nonbeospank_ss8 = ~batch.beospank['ss8']
     nonbeospank_sasa = ~batch.beospank['sasa']
-    nonbeospank_global_annotation = ~batch.beospank['global_annotation']
-    nonbeospank_per_residue_annotation = ~batch.beospank['per_residue_annotation']
+    nonbeospank_orthologous_groups = ~batch.beospank['orthologous_groups']
+    nonbeospank_semantic_description = ~batch.beospank['semantic_description']
+    nonbeospank_domains = ~batch.beospank['domains']
     nonbeospank_plddt = ~batch.beospank['plddt']
     assert content_elements.any(dim=1).all() # Need at least one real residue in each sequence
     
@@ -153,13 +166,13 @@ def generate_discrete_diffusion(model, model_cfg, train_cfg, batch):
     timesteps = timesteps.float().unsqueeze(-1)
     
     # Prepare inputs
-    inputs = (seq_x_t, struct_x_t, ss8_x_0, sasa_x_0, global_annotation_x_0, per_residue_annotation_x_0, plddt_x_0)
+    inputs = (seq_x_t, struct_x_t, ss8_x_0, sasa_x_0, orthologous_groups_x_0, semantic_description_x_0, domains_x_0, plddt_x_0)
     model.eval()
     
     # Forward pass with time conditioning
     model_type = model.cfg.first_block_cfg.initials()
-    if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, content_elements, nonbeospank, nonbeospank_ss8, nonbeospank_sasa, nonbeospank_global_annotation, nonbeospank_per_residue_annotation, nonbeospank_plddt, timesteps)
-    else: outputs = model(inputs, nonbeospank=nonbeospank, nonbeospank_ss8=nonbeospank_ss8, nonbeospank_sasa=nonbeospank_sasa, nonbeospank_global_annotation=nonbeospank_global_annotation, nonbeospank_per_residue_annotation=nonbeospank_per_residue_annotation, nonbeospank_plddt=nonbeospank_plddt, timesteps=timesteps)
+    if model_type in ("GA", "RA"): outputs = model(inputs, coords_x_t, content_elements, nonbeospank, nonbeospank_ss8, nonbeospank_sasa, nonbeospank_orthologous_groups, nonbeospank_semantic_description, nonbeospank_domains, nonbeospank_plddt, timesteps)
+    else: outputs = model(inputs, nonbeospank=nonbeospank, nonbeospank_ss8=nonbeospank_ss8, nonbeospank_sasa=nonbeospank_sasa, nonbeospank_orthologous_groups=nonbeospank_orthologous_groups, nonbeospank_semantic_description=nonbeospank_semantic_description, nonbeospank_domains=nonbeospank_domains, nonbeospank_plddt=nonbeospank_plddt, timesteps=timesteps)
     seq_logits, struct_logits = outputs
 
     s = {'seq': torch.exp(seq_logits), 'struct': torch.exp(struct_logits)}

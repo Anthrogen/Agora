@@ -1,13 +1,13 @@
 # Odyssey Default Configuration File
-# FSQ Stage 2 Training Configuration
+# Transformer Trunk MLM Training Configuration
 
 # =============================================================================
 # Model Configuration
 # =============================================================================
 model_cfg:
-  autoencoder_cfg:  # Options: "autoencoder_cfg", "trunk_cfg"
-    style: "stage_2"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
-    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/checkpoint_step_26316.pt"
+  trunk_cfg:
+    style: "mlm"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
+    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_2_config/fsq_stage_2_config_001/checkpoint_step_26316.pt"
     reference_model_seed: 42
 
     vocab_domains_path: "/workspace/demo/Odyssey/odyssey/train/vocab_domains.txt"
@@ -17,45 +17,11 @@ model_cfg:
     max_len_orthologous_groups: 512
     max_len_semantic_description: 128
 
-    encoder_cfg:
-      encoder_cfg:
-        latent_dim: 32
-        fsq_levels: "7x5x5x5x5"
-        d_model: 512
+    transformer_cfg:
+      transformer_cfg:
+        d_model: 512 # 128
         n_heads: 8
-        n_layers: 36
-        max_len: 2048
-        dropout: 0.1
-        ff_mult: 4
-
-        # First block configuration
-        first_block_cfg:
-          self_consensus_cfg:   # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
-            consensus_num_iterations: 1
-            consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
-            consensus_w: 2
-            consensus_r: 12
-            consensus_edge_hidden_dim: 12
-          # - self_attention_cfg: {}
-          # - geometric_attention_cfg: {}
-          # - reflexive_attention_cfg: {}
-
-        context_cfg:
-          cross_consensus_cfg:  # Options: "cross_attention_cfg", "cross_consensus_cfg"
-            consensus_num_iterations: 1
-            consensus_connectivity_type: "local_window"
-            consensus_w: 2
-            consensus_r: 12
-            consensus_edge_hidden_dim: 12
-          # cross_attention_cfg: {}
-
-    decoder_cfg:
-      decoder_cfg:
-        latent_dim: 32
-        fsq_levels: "7x5x5x5x5"
-        d_model: 512
-        n_heads: 8
-        n_layers: 36
+        n_layers: 12 #3
         max_len: 2048
         dropout: 0.1
         ff_mult: 4
@@ -71,27 +37,27 @@ model_cfg:
 
         # First block configuration
         first_block_cfg:
-          self_consensus_cfg:   # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
+          self_consensus_cfg:  # Options: "self_attention_cfg", "geometric_attention_cfg", "reflexive_attention_cfg", "self_consensus_cfg"
             consensus_num_iterations: 1
             consensus_connectivity_type: "local_window"  # Options: "local_window", "scored_window"
             consensus_w: 2
             consensus_r: 12
             consensus_edge_hidden_dim: 12
-          # - self_attention_cfg: {}
-          # - geometric_attention_cfg: {}
-          # - reflexive_attention_cfg: {}
+          # self_attention_cfg: {}
+          # geometric_attention_cfg: {}
+          # reflexive_attention_cfg: {}
 
 # =============================================================================
 # Training Configuration
 # =============================================================================
 train_cfg:
   training_cfg:
-    batch_size: 4
-    max_epochs: 5
-    checkpoint_freq: 10000
-    max_steps_val: 500
+    batch_size: 2
+    max_epochs: 150
+    checkpoint_freq: null
+    max_steps_val: null
     data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
-    checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/fsq"
+    checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/transformer_trunk"
     jump_start: null
 
     # Optimizer schedule configuration.
@@ -102,7 +68,7 @@ train_cfg:
         num_epochs_decay: 100000
         num_epochs_warmup: 5000
       # flat_scheduler_cfg:
-      #   learning_rate: 0.00005
+      #   learning_rate: 0.00001
       # decay_scheduler_cfg:
       #   base_learning_rate: 0.0002
       #   min_learning_rate: 0.00005
@@ -110,8 +76,14 @@ train_cfg:
     
     # Loss configuration
     loss_config:
-      kabsch_rmsd_loss_cfg: {}  # Options: "cross_entropy_loss_cfg", "kabsch_rmsd_loss_cfg", "score_entropy_loss_cfg"
-
+      cross_entropy_loss_cfg:
+        seq_loss_weight: 1.0
+        struct_loss_weight: 1.0
+        loss_elements: "masked"  # Different loss element strategy
+    
     # Masking configuration
     mask_config:
-      no_mask_cfg: {}
+      # simple_mask_cfg:
+      #   mask_prob_seq: 0.2
+      #   mask_prob_struct: 0.2
+      complex_mask_cfg: {}

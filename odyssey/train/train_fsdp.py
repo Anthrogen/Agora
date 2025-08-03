@@ -329,16 +329,16 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
     for i, (model_cfg, train_cfg) in enumerate(zip(model_cfg_list, train_cfg_list)):
         # Use different masking strategies for stage 1 vs stage 2
         if model_cfg.style == "stage_1":
-            tracks = {'seq': False, 'struct': False, 'coords': True, 'ss8': False, 'sasa': False, 'global_annotation': False, 'per_residue_annotation': False, 'plddt': False}
+            tracks = {'seq': False, 'struct': False, 'coords': True, 'ss8': False, 'sasa': False, 'orthologous_groups': False, 'semantic_description': False, 'domains': False, 'plddt': False}
             min_unmasked = {'seq': 0, 'coords': 1}
         elif model_cfg.style == "stage_2":
-            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': False, 'sasa': False, 'global_annotation': False, 'per_residue_annotation': False, 'plddt': False}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': False, 'sasa': False, 'orthologous_groups': False, 'semantic_description': False, 'domains': False, 'plddt': False}
             min_unmasked = {'seq': 0, 'coords': 0}
         elif model_cfg.style == "mlm":
-            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'global_annotation': True, 'per_residue_annotation': True, 'plddt': True}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'orthologous_groups': True, 'semantic_description': True, 'domains': True, 'plddt': True}
             min_unmasked = {'seq': 0, 'coords': 1}
         elif model_cfg.style == "discrete_diffusion":
-            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'global_annotation': True, 'per_residue_annotation': True, 'plddt': True}
+            tracks = {'seq': True, 'struct': True, 'coords': True, 'ss8': True, 'sasa': True, 'orthologous_groups': True, 'semantic_description': True, 'domains': True, 'plddt': True}
             min_unmasked = {'seq': 0, 'coords': 1}
 
         tracks_list.append(tracks)

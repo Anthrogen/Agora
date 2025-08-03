@@ -52,7 +52,7 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, schedule
     """Perform a single MLM step with train/validation mode."""
     masked_seq, masked_struct, masked_coords = batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords']
     ss8_tokens, sasa_tokens = batch.masked_data['ss8'], batch.masked_data['sasa']
-    global_annotation_tokens, per_residue_annotation_tokens = batch.unmasked_data['global_annotation'], batch.masked_data['per_residue_annotation']
+    orthologous_groups_tokens, semantic_description_tokens, domains_tokens = batch.unmasked_data['orthologous_groups'], batch.unmasked_data['semantic_description'], batch.masked_data['domains']
     plddt_tokens = batch.masked_data['plddt']
     B, L = masked_seq.shape
 
@@ -61,26 +61,25 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, schedule
     nonbeospank = ~batch.beospank['coords'] & ~batch.beospank['seq']
     nonbeospank_ss8 = ~batch.beospank['ss8']
     nonbeospank_sasa = ~batch.beospank['sasa']
-    nonbeospank_global_annotation = ~batch.beospank['global_annotation']
-    nonbeospank_per_residue_annotation = ~batch.beospank['per_residue_annotation']
+    nonbeospank_orthologous_groups = ~batch.beospank['orthologous_groups']
+    nonbeospank_semantic_description = ~batch.beospank['semantic_description']
+    nonbeospank_domains = ~batch.beospank['domains']
     nonbeospank_plddt = ~batch.beospank['plddt']
     assert content_elements.any(dim=1).all()
-    
-    inputs = (masked_seq, masked_struct, ss8_tokens, sasa_tokens, global_annotation_tokens, per_residue_annotation_tokens, plddt_tokens) # Prepare model input
-    nonbeospanks_all = {'nonbeospank': nonbeospank,
-                        'nonbeospank_ss8': nonbeospank_ss8,
-                        'nonbeospank_sasa': nonbeospank_sasa,
-                        'nonbeospank_global_annotation': nonbeospank_global_annotation,
-                        'nonbeospank_per_residue_annotation': nonbeospank_per_residue_annotation,
-                        'nonbeospank_plddt': nonbeospank_plddt}
 
+    masked_inputs = ('coords', 'seq', 'struct', 'ss8', 'sasa', 'domains', 'plddt')
+    unmasked_inputs = ('orthologous_groups', 'semantic_description')
+
+    tok1 = {k: batch.masked_data[k] for k in masked_inputs}
+    tok2 = {k: batch.unmasked_data[k] for k in unmasked_inputs}
+    input_tokens = {**tok1, **tok2}
     model.train(train_mode)
     
     with torch.set_grad_enabled(train_mode):
         # Forward pass
         model_type = model.cfg.first_block_cfg.initials()
-        if model_type in ("GA", "RA"): outputs = model(inputs, masked_coords, content_elements, **nonbeospanks_all)
-        else: outputs = model(inputs, **nonbeospanks_all)
+        if model_type in ("GA", "RA"): outputs = model(input_tokens, batch.beospank, coords=masked_coords, content_elements=content_elements)
+        else: outputs = model(input_tokens, batch.beospank)
         seq_logits, struct_logits = outputs
 
         if train_cfg.loss_config.loss_elements == "masked":
@@ -109,7 +108,8 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, schedule
             loss_seq = cross_entropy_loss(seq_logits_valid, seq_labels_valid, loss_elements_seq_valid)
             seq_acc = calculate_accuracy(seq_logits_valid, seq_labels_valid, loss_elements_seq_valid)
         else:
-            loss_seq = torch.tensor(0.0, device=seq_logits.device)
+            # Create zero loss that maintains gradient connectivity
+            loss_seq = 0.0 * seq_logits.sum()
             seq_acc = torch.tensor(0.0, device=seq_logits.device)
         
         if effective_batch_size_struct > 0:
@@ -119,7 +119,8 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, schedule
             loss_struct = cross_entropy_loss(struct_logits_valid, struct_labels_valid, loss_elements_struct_valid)
             struct_acc = calculate_accuracy(struct_logits_valid, struct_labels_valid, loss_elements_struct_valid)
         else:
-            loss_struct = torch.tensor(0.0, device=struct_logits.device)
+            # Create zero loss that maintains gradient connectivity
+            loss_struct = 0.0 * struct_logits.sum()
             struct_acc = torch.tensor(0.0, device=struct_logits.device)
 
         # Compute combined loss
@@ -176,37 +177,25 @@ def generate_mlm(model, model_cfg, train_cfg, batch, UNMASK_STRATEGY="min_entrop
     B = batch.unmasked_data['seq'].shape[0]
     assert B == 1, "Right now we only generate for batches of one."
     device = batch.unmasked_data['seq'].device
-    # Recall that global_annotation is never maksed.
+    # Recall that orthologous_groups and semantic_description are never masked.
 
     while batch.masks['seq'].any() or batch.masks['struct'].any():
-
         #########################################################
         # Forward pass of batch through the model to get logits.
         #########################################################
-        content_elements_coords = ~batch.beospank['coords'] & ~batch.masks['coords']
+        content_elements = ~batch.beospank['coords'] & ~batch.masks['coords']
+        masked_coords = batch.masked_data['coords']
 
-        data_all = [batch.masked_data['seq'],
-                    batch.masked_data['struct'],
-                    batch.masked_data['ss8'],
-                    batch.masked_data['sasa'],
-                    batch.unmasked_data['global_annotation'],
-                    batch.masked_data['per_residue_annotation'],
-                    batch.masked_data['plddt']]
-
-        nonbeospanks_all = {'nonbeospank': ~batch.beospank['coords'] & ~batch.beospank['seq'],
-                            'nonbeospank_ss8': ~batch.beospank['ss8'],
-                            'nonbeospank_sasa': ~batch.beospank['sasa'],
-                            'nonbeospank_global_annotation': ~batch.beospank['global_annotation'],
-                            'nonbeospank_per_residue_annotation': ~batch.beospank['per_residue_annotation'],
-                            'nonbeospank_plddt': ~batch.beospank['plddt']}
+        masked_inputs = ('coords', 'seq', 'struct', 'ss8', 'sasa', 'domains', 'plddt')
+        unmasked_inputs = ('orthologous_groups', 'semantic_description')
+        
+        tok1 = {k: batch.masked_data[k] for k in masked_inputs}
+        tok2 = {k: batch.unmasked_data[k] for k in unmasked_inputs}
+        input_tokens = {**tok1, **tok2}
 
         # Forward pass
-        if model_cfg.first_block_cfg.initials() in ("GA", "RA"):
-            outputs = model(data_all, batch.masked_data['coords'], content_elements_coords, **nonbeospanks_all)
-        else: 
-            outputs = model(data_all, **nonbeospanks_all)
-
-        # Extract logits
+        if model_cfg.first_block_cfg.initials() in ("GA", "RA"): outputs = model(input_tokens, batch.beospank, coords=masked_coords, content_elements=content_elements)
+        else: outputs = model(input_tokens, batch.beospank)
         seq_logits, struct_logits = outputs
         logits =  {'seq': seq_logits, 'struct': struct_logits}
 

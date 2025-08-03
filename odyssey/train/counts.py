@@ -10,31 +10,44 @@ import csv
 import argparse
 from collections import Counter
 from pathlib import Path
+import re
 
 
-def parse_global_annotation(annotation_str):
-    """
-    Parse global annotation string and extract individual terms.
-    Terms are separated by semicolons.
-    """
+def parse_orthologous_groups(annotation_str):
+    """Parse orthologous groups string and return list of terms."""
     if not annotation_str or annotation_str.strip() == "": return []
     
-    # Split by semicolon and clean each term
-    terms = [term.strip() for term in annotation_str.split(';') if term.strip()]
+    # Split by commas instead of semicolons and strip whitespace
+    terms = [term.strip() for term in annotation_str.split(',') if term.strip()]
     return terms
 
 
-def parse_per_residue_annotation(annotation_dict):
+def parse_semantic_description(description_str):
+    """Parse semantic description string and return list of terms."""
+    if not description_str or description_str.strip() == "": return []
+
+    # Split on punctuation and whitespace, keeping letters and numbers together
+    terms = re.split(r'[^a-zA-Z0-9]+', description_str)
+    terms = [term.strip() for term in terms if term.strip()]
+    return terms
+
+
+def parse_domains_annotation(annotation_list):
     """
-    Parse per-residue annotation dictionary and extract all annotation terms.
+    Parse domains annotation list and extract all annotation terms.
+    The domains field is a list of lists, where each inner list contains
+    domain annotations for that residue position.
     """
     terms = []
-    if not annotation_dict: return terms
+    if not annotation_list: return terms
     
-    # Iterate through all residue positions
-    for position, annotations in annotation_dict.items():
-        if isinstance(annotations, list): terms.extend([term.strip() for term in annotations if term.strip()])
-        elif isinstance(annotations, str): terms.append(annotations.strip())
+    # Iterate through all residue positions (list of lists)
+    for position_annotations in annotation_list:
+        if isinstance(position_annotations, list):
+            # Extract terms from this position's annotations
+            terms.extend([term.strip() for term in position_annotations if term and str(term).strip()])
+        elif position_annotations:  # Handle single annotation (non-list)
+            terms.append(str(position_annotations).strip())
     
     return terms
 
@@ -47,10 +60,11 @@ def process_dataset(csv_file_path):
         csv_file_path: Path to the CSV file containing JSON file paths
     
     Returns:
-        Tuple of (global_terms, per_residue_terms) lists
+        Tuple of (orthologous_groups_terms, semantic_description_terms, domains_terms) lists
     """
-    global_terms = []
-    per_residue_terms = []
+    orthologous_groups_terms = []
+    semantic_description_terms = []
+    domains_terms = []
     
     # Get the directory containing the CSV file to resolve relative paths
     csv_dir = os.path.dirname(csv_file_path)
@@ -78,8 +92,9 @@ def process_dataset(csv_file_path):
             
         try:
             with open(full_path, 'r') as f: data = json.load(f)
-            if 'global_annotation' in data: global_terms.extend(parse_global_annotation(data['global_annotation']))
-            if 'per_residue_annotation' in data: per_residue_terms.extend(parse_per_residue_annotation(data['per_residue_annotation']))
+            if 'orthologous_groups' in data: orthologous_groups_terms.extend(parse_orthologous_groups(data['orthologous_groups']))
+            if 'semantic_description' in data: semantic_description_terms.extend(parse_semantic_description(data['semantic_description']))
+            if 'domains' in data: domains_terms.extend(parse_domains_annotation(data['domains']))
             processed += 1
             if processed % 500 == 0: print(f"Processed {processed}/{len(json_files)} files...")
                 
@@ -88,7 +103,7 @@ def process_dataset(csv_file_path):
             continue
     
     print(f"Successfully processed {processed} files")
-    return global_terms, per_residue_terms
+    return orthologous_groups_terms, semantic_description_terms, domains_terms
 
 
 def filter_and_save_vocabulary(terms, min_frequency, output_file):
@@ -125,8 +140,9 @@ def main():
     """
     parser = argparse.ArgumentParser(description='Extract and filter annotation vocabularies from protein dataset')
     parser.add_argument('csv_file', help='Path to CSV file containing dataset file paths')
-    parser.add_argument('--min_per_residue_freq', type=int, required=True, help='Minimum frequency for per-residue annotations')
-    parser.add_argument('--min_global_freq', type=int, required=True, help='Minimum frequency for global annotations')
+    parser.add_argument('--min_domains_freq', type=int, required=True, help='Minimum frequency for domains')
+    parser.add_argument('--min_orthologous_groups_freq', type=int, required=True, help='Minimum frequency for orthologous groups')
+    parser.add_argument('--min_semantic_description_freq', type=int, required=True, help='Minimum frequency for semantic description')
     parser.add_argument('--output_dir', default='.', help='Directory to save vocabulary files (default: current directory)')
     args = parser.parse_args()
     
@@ -134,28 +150,34 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     print(f"Processing dataset from CSV: {args.csv_file}")
-    print(f"Min per-residue frequency: {args.min_per_residue_freq}")
-    print(f"Min global frequency: {args.min_global_freq}")
+    print(f"Min domains frequency: {args.min_domains_freq}")
+    print(f"Min orthologous groups frequency: {args.min_orthologous_groups_freq}")
+    print(f"Min semantic description frequency: {args.min_semantic_description_freq}")
     
     # Process the dataset
-    global_terms, per_residue_terms = process_dataset(args.csv_file)
+    orthologous_groups_terms, semantic_description_terms, domains_terms = process_dataset(args.csv_file)
     
-    print(f"\nFound {len(global_terms)} total global annotation occurrences")
-    print(f"Found {len(per_residue_terms)} total per-residue annotation occurrences")
+    print(f"\nFound {len(orthologous_groups_terms)} total orthologous groups occurrences")
+    print(f"Found {len(semantic_description_terms)} total semantic description occurrences")
+    print(f"Found {len(domains_terms)} total domains occurrences")
     
     # Filter and save vocabularies
-    if per_residue_terms:
-        per_residue_vocab_file = os.path.join(args.output_dir, 'vocab_per_residue_annotations.txt')
-        per_residue_vocab_size = filter_and_save_vocabulary(per_residue_terms, args.min_per_residue_freq, per_residue_vocab_file)
+    if domains_terms:
+        domains_vocab_file = os.path.join(args.output_dir, 'vocab_domains.txt')
+        domains_vocab_size = filter_and_save_vocabulary(domains_terms, args.min_domains_freq, domains_vocab_file)
     
-    if global_terms:
-        global_vocab_file = os.path.join(args.output_dir, 'vocab_global_annotations.txt')
-        global_vocab_size = filter_and_save_vocabulary(global_terms, args.min_global_freq, global_vocab_file)
+    if orthologous_groups_terms:
+        orthologous_groups_vocab_file = os.path.join(args.output_dir, 'vocab_orthologous_groups.txt')
+        orthologous_groups_vocab_size = filter_and_save_vocabulary(orthologous_groups_terms, args.min_orthologous_groups_freq, orthologous_groups_vocab_file)
+    
+    if semantic_description_terms:
+        semantic_description_vocab_file = os.path.join(args.output_dir, 'vocab_semantic_descriptions.txt')
+        semantic_description_vocab_size = filter_and_save_vocabulary(semantic_description_terms, args.min_semantic_description_freq, semantic_description_vocab_file)
     
     print("\nVocabulary extraction complete!")
 
 
 if __name__ == "__main__":
     # Example usage:
-    # python counts.py ../../sample_data/3k.csv --min_per_residue_freq 3 --min_global_freq 3
+    # python counts.py ../../sample_data/27k.csv --min_domains_freq 100 --min_orthologous_groups_freq 3 --min_semantic_description_freq 3
     main() 

@@ -7,7 +7,7 @@ import pdb
 # --------------------------------------------------------------------------- #
 #  MLM Utilities                                                              #
 # --------------------------------------------------------------------------- #
-def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, loss_elements: torch.Tensor) -> float:
+def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, loss_elements: torch.Tensor, return_all=False) -> float:
     """Calculate accuracy for masked positions only."""
     B, L, V = logits.shape
     content_logits = logits[:,:,:V-len(SPECIAL_TOKENS)]
@@ -22,12 +22,14 @@ def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, loss_elements
     # Just return the unconditioned sample mean.
     # Not everything has to be complicated.
 
-    retval = torch.sum(correct.float()) / num_loss_elements
-    assert not retval.isnan()
+    if not return_all:
+        retval = torch.sum(correct.float()) / num_loss_elements
+        assert not retval.isnan()
+        return retval
+    else:
+        return correct.float()
 
-    return retval
-
-def cross_entropy_loss(logits, labels, loss_elements, reduction='sum'):
+def cross_entropy_loss(logits, labels, loss_elements, reduction='sum', return_all=False):
     """
     Logits is (B,L,V)
     Labels (B,L), each element of which is in [0,V)
@@ -65,10 +67,12 @@ def cross_entropy_loss(logits, labels, loss_elements, reduction='sum'):
     # Clamp this denominator to be one at the minimum.
     per_row_average = per_row_sum / per_row_denom.clamp(min=1.0)
 
-    retval = torch.mean(per_row_average)
-
-    assert not torch.isnan(retval).any()
-    return retval
+    if not return_all:
+        retval = torch.mean(per_row_average)
+        assert not torch.isnan(retval).any()
+        return retval
+    else:
+        return per_row_average
 
 # --------------------------------------------------------------------------- #
 #  Discrete Diffusion Utilities                                               #
