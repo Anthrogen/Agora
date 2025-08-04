@@ -14,8 +14,8 @@ model_cfg:
     vocab_orthologous_groups_path: "/workspace/demo/Odyssey/odyssey/train/vocab_orthologous_groups.txt"
     vocab_semantic_description_path: "/workspace/demo/Odyssey/odyssey/train/vocab_semantic_descriptions.txt"
     max_domains_per_residue: 4
-    max_len_orthologous_groups: 512
-    max_len_semantic_description: 128
+    max_len_orthologous_groups: 32
+    max_len_semantic_description: 512
 
     transformer_cfg:
       transformer_cfg:

@@ -7,21 +7,21 @@
 model_cfg:
   trunk_cfg:
     style: "mlm"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
-    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/model.pt"
+    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/checkpoint_step_44592.pt"
     reference_model_seed: 42
 
     vocab_domains_path: "/workspace/demo/Odyssey/odyssey/train/vocab_domains.txt"
     vocab_orthologous_groups_path: "/workspace/demo/Odyssey/odyssey/train/vocab_orthologous_groups.txt"
     vocab_semantic_description_path: "/workspace/demo/Odyssey/odyssey/train/vocab_semantic_descriptions.txt"
     max_domains_per_residue: 4
-    max_len_orthologous_groups: 512
-    max_len_semantic_description: 128
+    max_len_orthologous_groups: 32
+    max_len_semantic_description: 512
 
     transformer_cfg:
       transformer_cfg:
-        d_model: 1024
+        d_model: 512
         n_heads: 8
-        n_layers: 16
+        n_layers: 36
         max_len: 2048
         dropout: 0.1
         ff_mult: 4
@@ -53,10 +53,10 @@ model_cfg:
 train_cfg:
   training_cfg:
     batch_size: 4
-    max_epochs: 5
+    max_epochs: 150
     checkpoint_freq: 10000
     max_steps_val: 500
-    data_dir: "/workspace/demo/Odyssey/sample_data/3k.csv"
+    data_dir: "/workspace/demo/Odyssey/sample_data/27k.csv"
     checkpoint_dir: "/workspace/demo/Odyssey/checkpoints/transformer_trunk"
     jump_start: null
 
@@ -83,7 +83,7 @@ train_cfg:
     
     # Masking configuration
     mask_config:
-      # simple_mask_cfg:
-      #   mask_prob_seq: 0.2
-      #   mask_prob_struct: 0.2
-      complex_mask_cfg: {}
+      simple_mask_cfg:
+        mask_prob_seq: 0.2
+        mask_prob_struct: 0.2
+      # complex_mask_cfg: {}
