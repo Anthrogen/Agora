@@ -29,7 +29,6 @@ import math
 from types import SimpleNamespace
 from odyssey.src.dataloader import _get_noise_levels
 
-
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from odyssey.src.models.transformer import TransformerTrunk, StandardTransformerBlock
@@ -185,11 +184,7 @@ def generate_discrete_diffusion(model, model_cfg, train_cfg, batch):
         train_cfg.diffusion_cfg.noise_schedule
     )
 
-
-
     # Generate a [L,V] matrix where the i,y-th entry is \delta_{x_t^i}(y)
     one_hot = torch.nn.functional.one_hot(x_t['seq'], num_classes=V['seq'])
 
     pdb.set_trace()
-
-

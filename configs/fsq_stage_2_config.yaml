@@ -8,9 +8,9 @@ model_cfg:
   autoencoder_cfg:  # Options: "autoencoder_cfg", "trunk_cfg"
     style: "stage_2"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
     autoencoder_path:
-      - "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/checkpoint_step_26316.pt"
-      - "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_001/checkpoint_step_26316.pt"
-      - "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_002/checkpoint_step_26316.pt"
+      - "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/checkpoint_step_66888.pt"
+      - "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_001/checkpoint_step_66888.pt"
+      - "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_002/checkpoint_step_66888.pt"
     reference_model_seed: 42
 
     vocab_domains_path: "/workspace/demo/Odyssey/odyssey/train/vocab_domains.txt"

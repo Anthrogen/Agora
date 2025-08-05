@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 from typing import Optional
 from enum import Enum
 import array
+import re
 
 class Chirality(Enum):
     D = 1   # Dextrorotatory amino acid
@@ -85,7 +86,7 @@ class Protein():
         atom_names = data.get("all_atoms", {}).get('atom_names', None)
         sequence = data.get('sequence', None)
         atom_coords = data.get('all_atoms', {}).get('atom_coordinates', None)
-        ss8 = data.get('secondary_structure', None)
+        ss8 = data.get('dssp', None)
         sasa = data.get('sasa', None)
         orthologous_groups = data.get('orthologous_groups', None)
         semantic_description = data.get('semantic_description', None)
@@ -97,12 +98,12 @@ class Protein():
             atom_coords = torch.Tensor(atom_coords)
 
         # Handle secondary structure
-        if ss8 is None: ss8 = [None] * len(sequence) # If entire field is None, create array of None with sequence length
+        if ss8 is None or len(ss8) == 0: ss8 = [None] * len(sequence) # If entire field is None, create array of None with sequence length
         elif isinstance(ss8, list): # assert isinstance(ss8, list) # Replace individual NaN/None elements with None
             ss8[:] = [None if (x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x))) else x for x in ss8]
 
         # Handle sasa
-        if sasa is None: sasa = [None] * len(sequence) # If entire field is None, create array of None with sequence length
+        if sasa is None or len(sasa) == 0: sasa = [None] * len(sequence) # If entire field is None, create array of None with sequence length
         elif isinstance(sasa, list): # Replace individual NaN/None elements with None
             sasa[:] = [None if (x is None or str(x).lower() == 'nan' or (isinstance(x, (int, float)) and np.isnan(x))) else x for x in sasa]
 
@@ -115,7 +116,6 @@ class Protein():
         # Handle semantic description
         if semantic_description is None or semantic_description == "": semantic_description = []
         elif isinstance(semantic_description, str): # Split by whitespace, punctuation and clean up terms
-            import re
             # Split on punctuation and whitespace, keeping letters and numbers together
             terms = re.split(r'[^a-zA-Z0-9]+', semantic_description)
             semantic_description = [term.strip() for term in terms if term.strip()]
