@@ -9,6 +9,25 @@ from torch.utils.data import random_split
 import numpy as np
 import random
 import pdb
+import copy
+
+def minus(dict, dict_):
+    ret = {}
+    for k in dict.keys():
+        ret[k] = dict[k] - dict_[k]
+
+    return ret
+
+def allsame(dict, dict_, except_idxs):
+    for k in dict.keys():
+        t = dict[k][[r for r in range(len(dict[k])) if r not in except_idxs]]
+        t_ = dict_[k][[r for r in range(len(dict_[k])) if r not in except_idxs]]
+
+        if not torch.allclose(t, t_, rtol=1e-3):
+            # print(f"DEBUG: {k} is not all zeros")
+            return False
+    
+    return True
 
 
 def validate_gradients(ckpt):
@@ -23,6 +42,10 @@ def validate_gradients(ckpt):
         raise ValueError(f"Invalid checkpoint path: {ckpt}")
 
     print(model)
+    
+    print(f"DEBUG: Model training mode: {model.training}")
+    model.eval()  # Set to eval mode to disable dropout
+    print(f"DEBUG: Model training mode after eval(): {model.training}")
 
     # Load real data following train.py pattern
     # Set up data loading configuration based on model style
@@ -91,40 +114,69 @@ def validate_gradients(ckpt):
 
     tok1 = {k: batch.masked_data[k] for k in masked_inputs}
     tok2 = {k: batch.unmasked_data[k] for k in unmasked_inputs}
-    input_tokens = {**tok1, **tok2}
+    x = {**tok1, **tok2}
 
-    # pdb.set_trace()
+    beospanks = batch.beospank.copy()
     
-
-    
-    batch.masked_data['seq'].requires_grad = True
     B = batch.masked_data['seq'].shape[0]  # Should be 4
     
     print(f"Using real data batch with shape: {batch.masked_data['seq'].shape}")
     
     # For discrete diffusion models, we need timesteps
-    if model_cfg.style == "discrete_diffusion":
-        timesteps = torch.randint(0, model_cfg.num_timesteps, (B,), device=dvc)
-        outputs = model(input_tokens, batch.beospank, timesteps=timesteps)
-    else:
-        outputs = model(input_tokens, batch.beospank)
+    def fwd_pass(x):
 
-    # Sum outputs across sequence and feature dimensions to get per-batch scalars
-    if isinstance(outputs, dict):
-        # Handle multi-output models
-        y = sum(torch.sum(out, dim=tuple(range(1, out.ndim))) for out in outputs.values())
-    else:
-        y = torch.sum(outputs, dim=tuple(range(1, outputs.ndim)))
+
+        if model_cfg.style == "discrete_diffusion":
+
+            timesteps = torch.randint(0, model_cfg.num_timesteps, (B,), device=dvc)
+            outputs = model(x, beospanks, timesteps=timesteps)
+        else:
+
+            outputs = model(x, beospanks)
+
+        y = {'seq': outputs[0], 'struct': outputs[1]}
+        for k in y.keys():
+            y[k] = torch.sum(y[k], dim=tuple(range(1, y[k].ndim)))
+
+        return y
+
+    y = fwd_pass(x)
+
+
+    # pdb.set_trace()
+
+    for k in x.keys():
+        if k in ('coords', 'domains', 'orthologous_groups', 'semantic_description'):
+            continue 
+
+        x_ = copy.deepcopy(x)
+
+        ptb_row = B-1
+
+        # pdb.set_trace()
+
+        # Toggle one non-BOS token in a way that respects all vocabularies (of nonzero size):
+        if x_[k][ptb_row,1].item() == 0:
+            x_[k][ptb_row,1] = 1
+        else:
+            x_[k][ptb_row,1] = 0
+
+        y_ = fwd_pass(x_)
+
+        problem = not allsame(y, y_, (ptb_row,))
+
+        if problem:
+            return False
+
+        print(f"{k} is good!")
+
+
+    return True
+
+        
+
+
     
-    for i in range(B):
-        scalar_output = y[i]  # Already a scalar after summing
-        (grad,) = torch.autograd.grad(scalar_output, batch.masked_data['seq'], create_graph=True)
-        grad = grad.abs().sum(dim=(1, 2, 3))
-        print(grad.tolist())
-
-        # Now ensure all elements outside of position "i" are zeros:
-        outside_i = grad.sum() - grad[i]
-        # assert torch.allclose(outside_i, torch.zeros_like(outside_i))
 
 
 def run_test(ckpt):
@@ -145,6 +197,6 @@ if __name__ == "__main__":
     #run_test("../../checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/checkpoint_step_26316.pt")
 
     #run_test("../../checkpoints/transformer_trunk/mlm_complex_config/mlm_complex_config_000/checkpoint_step_86904.pt")
-    run_test("../../configs/FINAL_MLM.yaml")
+    run_test("../../configs/tiny_mlm.yaml")
 
 # THIS TEST WILL FAIL BECAUSE OF THE BATCHNORM IN THE CONV BLOCK
