@@ -198,18 +198,22 @@ def generate_discrete_diffusion(corruption_mode, model, model_cfg, train_cfg, ba
     masked_inputs = ('coords', 'seq', 'struct', 'ss8', 'sasa', 'domains', 'plddt')
     unmasked_inputs = ('orthologous_groups', 'semantic_description')
 
-
-    
     model.train(False)
 
     V = {'seq': model_cfg.seq_vocab, 'struct': model_cfg.struct_vocab}
     V_nonspecial = {key: value - len(SPECIAL_TOKENS) for key, value in V.items()}
 
-    def prob_nonspecial(s):
-        s['seq'] = s['seq'][:,:,:V_nonspecial['seq']] # [B, L, \hat{V}]
-        sums = s['seq'].sum(dim=-1).unsqueeze(-1) # [B, L, 1]
+    tracks = ('seq', 'struct')
 
-        s['seq'] = s['seq'] / sums
+    def prob_nonspecial(s):
+
+        for track in tracks:
+            s[track] = s[track][:,:,:V_nonspecial[track]] # [B, L, \hat{V}]
+            sums = s[track].sum(dim=-1).unsqueeze(-1) # [B, L, 1]
+
+            s[track] = s[track] / sums
+
+        return s
 
     def expontentiate_uniform(noise, dim):
         term1 = torch.exp(-noise) * torch.eye(dim, device=device)
@@ -217,7 +221,6 @@ def generate_discrete_diffusion(corruption_mode, model, model_cfg, train_cfg, ba
 
         return term1 + term2
 
-    
     with torch.no_grad():
         # Forward pass with time conditioning
         model_type = model.cfg.first_block_cfg.initials()
@@ -243,21 +246,31 @@ def generate_discrete_diffusion(corruption_mode, model, model_cfg, train_cfg, ba
             seq_logits, struct_logits = outputs
 
             s = {'seq': torch.exp(seq_logits), 'struct': torch.exp(struct_logits)}
-
             s = prob_nonspecial(s)
 
-            generator_matrix_neg = expontentiate_uniform(cumulative_noise_levels[t-1] - cumulative_noise_levels[t], dim=V_nonspecial['seq'])
-            generator_matrix_pos = expontentiate_uniform(cumulative_noise_levels[t] - cumulative_noise_levels[t-1], dim=V_nonspecial['seq'])
+            for track in tracks:
 
-            # factor1 = generator_matrix_neg @ s['seq'] # [V,V] @ [B, L, V] -> [B, L, V]
-            factor1 = torch.einsum('ij,blj->bli', generator_matrix_neg, s['seq']) # [V,V] @ [B, L, V] -> [B, L, V]
-            factor2 = generator_matrix_pos[batch.masked_data['seq']] # [B, L, V]
+                generator_matrix_neg = expontentiate_uniform(cumulative_noise_levels[t-1] - cumulative_noise_levels[t], dim=V_nonspecial[track])
+                generator_matrix_pos = expontentiate_uniform(cumulative_noise_levels[t] - cumulative_noise_levels[t-1], dim=V_nonspecial[track])
 
-            # Element-wise multiplication?
-            product = factor1 * factor2
+                # factor1 = generator_matrix_neg @ s['seq'] # [V,V] @ [B, L, V] -> [B, L, V]
+                factor1 = torch.einsum('ij,blj->bli', generator_matrix_neg, s[track]) # [V,V] @ [B, L, V] -> [B, L, V]
 
-            print(f"Product shape: {product.shape}")
+                # Indices corresponding to BEOSPANK do not matter.  
+                indices = batch.masked_data[track] % V_nonspecial[track]
+                factor2 = generator_matrix_pos[indices] # [B, L, V]
 
-        pdb.set_trace()
+                # Element-wise multiplication?
+                product = factor1 * factor2
+                product = product.squeeze(0)# [L, V]
+
+                samples = torch.multinomial(product, 1, replacement=False).squeeze(-1) # [B, L]
+
+                # Only unmasked positions should be affected.
+                batch.masked_data[track] = torch.where(batch.masks[track], samples, batch.masked_data[track])
+
+        # Only do after all timesteps have passed.
+        for track in tracks:
+            batch.masks[track] = torch.zeros_like(batch.masks[track]).bool()
 
     return batch
