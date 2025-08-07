@@ -196,6 +196,6 @@ class GeometricAttention(nn.Module):
         
         # (9) Zero output for invalid coordinate positions before residual
         if mask is not None:
-            out = out * mask.unsqueeze(-1).float()
+            out = out * mask.unsqueeze(-1).to(out.dtype)
         
         return out

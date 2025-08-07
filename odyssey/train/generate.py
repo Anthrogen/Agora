@@ -30,14 +30,18 @@ from odyssey.train.discrete_diffusion_step import discrete_diffusion_step
 from odyssey.src.configurations import *
 from odyssey.src.config_loader import load_config, load_multi_configs
 from odyssey.src.model_librarian import ensure_identical_parameters_transformers, ensure_identical_parameters_autoencoders, load_model_from_empty, load_model_from_checkpoint, save_model_checkpoint, save_summary_history
+from odyssey.src.tokenizer import CorruptionMode
 
 from odyssey.train.yaml_expander import expand_yaml_to_directory
 from odyssey.train.generate_experiment_map import generate_experiment_map
 from odyssey.train.mlm_step import generate_mlm
+from odyssey.train.discrete_diffusion_step import generate_discrete_diffusion
 from odyssey.src.losses import _kabsch_align
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
+import pdb
+
 
 
 
@@ -207,6 +211,7 @@ def generate(model_checkpoint, callback=None):
     ###########################################################################
     # Load model
     ###########################################################################
+
     transformer, transformer_model_cfg, transformer_train_cfg = load_model_from_checkpoint(model_checkpoint, device)
     autoencoder, autoencoder_model_cfg, autoencoder_train_cfg = load_model_from_checkpoint(transformer_model_cfg.autoencoder_path, device)
 
@@ -284,10 +289,13 @@ def generate(model_checkpoint, callback=None):
             
             if transformer_model_cfg.style == "mlm":
                 batch = generate_mlm(transformer, transformer_model_cfg, transformer_train_cfg, batch) #, NUM_TO_UNMASK=2048)
+
             elif transformer_model_cfg.style == "discrete_diffusion" and transformer_train_cfg.mask_config.corruption_mode == "uniform":
-                raise NotImplementedError("Uniform corruption mode not implemented for generation at this time.")
+                batch = generate_discrete_diffusion(CorruptionMode.UNIFORM, transformer, transformer_model_cfg, transformer_train_cfg, batch)
+
             elif transformer_model_cfg.style == "discrete_diffusion" and transformer_train_cfg.mask_config.corruption_mode == "absorb":
                 raise NotImplementedError("Absorb corruption mode not implemented for generation at this time.")
+
             else: raise NotImplementedError(f"Style {transformer_model_cfg.style} not implemented for generation at this time.")
             
             # Visualize the generated protein
@@ -344,7 +352,8 @@ if __name__ == "__main__":
     """
     Easy way to test:
     python generate.py --checkpoint ../../checkpoints/transformer_trunk/mlm_simple_config/mlm_simple_config_000/checkpoint_step_34443.pt
-    python generate.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_config/discrete_diffusion_config_000/model.pt
+    python generate.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_absorb_config/discrete_diffusion_absorb_config_000/checkpoint_step_55740.pt
+    python generate.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_uniform_config/discrete_diffusion_uniform_config_000/checkpoint_step_45924.pt
     """
     parser = argparse.ArgumentParser(description='Train Odyssey models')
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to fully trained model checkpoint')

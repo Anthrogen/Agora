@@ -228,11 +228,12 @@ class CrossConsensus(nn.Module):
             residual = alphas.unsqueeze(1).unsqueeze(-1) * diff
         
         # Zero out residuals for invalid edges (implements E_masked filtering)
-        if edge_valid is not None: residual = residual * edge_valid.unsqueeze(1).unsqueeze(-1).float()
+        if edge_valid is not None: residual = residual * edge_valid.unsqueeze(1).unsqueeze(-1)
         
         # Accumulate updates at target vertices only (cross-consensus)
         vertex_updates = torch.zeros_like(u)
-        vertex_updates.scatter_add_(2, edge_i.unsqueeze(1).unsqueeze(-1).expand(-1, H, -1, D), residual)
+        # Ensure residual matches vertex_updates dtype for scatter_add_ (fp16 compatibility)
+        vertex_updates.scatter_add_(2, edge_i.unsqueeze(1).unsqueeze(-1).expand(-1, H, -1, D), residual.to(vertex_updates.dtype))
         
         # Cross-consensus update with shared step sizes across heads
         u = u - step_sizes * vertex_updates

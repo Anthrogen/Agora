@@ -59,6 +59,6 @@ class SelfAttention(nn.Module):
         
         # Zero output for invalid positions
         if mask is not None:
-            x = x * mask.unsqueeze(-1).float()
+            x = x * mask.unsqueeze(-1).to(x.dtype)
         
         return x

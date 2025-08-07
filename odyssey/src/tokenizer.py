@@ -797,7 +797,6 @@ class DomainsTokenizer(Tokenizer):
         masked_domains = self.corrupt(padded_domains, domain_masks)
 
         # Sanity checks
-        print(f"DEBUG: torch.max(padded_domains)={torch.max(padded_domains)}, len(self.mapping)={len(self.mapping)}")
         assert torch.max(padded_domains) < len(self.mapping), "Domain annotation Tokenization failed!"
         assert torch.min(padded_domains) >= 0, "Domain annotation Tokenization failed!"
         assert padded_domains.shape == (self.full_length, self.max_domains_per_residue), "Domain annotation padding shape mismatch!"

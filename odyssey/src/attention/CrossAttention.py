@@ -75,6 +75,6 @@ class CrossAttention(nn.Module):
         
         # Zero output for invalid target positions (following SelfAttention pattern)
         if target_mask is not None:
-            x = x * target_mask.unsqueeze(-1).float()
+            x = x * target_mask.unsqueeze(-1).to(x.dtype)
         
         return x

@@ -230,7 +230,7 @@ class SelfConsensus(nn.Module):
             residual = alphas.unsqueeze(1).unsqueeze(-1) * diff
         
         # Zero out residuals for invalid edges (implements E_masked filtering)
-        if edge_valid is not None: residual = residual * edge_valid.unsqueeze(1).unsqueeze(-1).float()
+        if edge_valid is not None: residual = residual * edge_valid.unsqueeze(1).unsqueeze(-1).to(residual.dtype)
         
         # Accumulate updates at vertices
         vertex_updates = torch.zeros_like(u)

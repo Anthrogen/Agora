@@ -1,0 +1,94 @@
+{
+  "os":  "Linux-6.8.0-59-generic-x86_64-with-glibc2.35",
+  "python":  "CPython 3.11.11",
+  "startedAt":  "2025-08-07T01:25:06.415069Z",
+  "args":  [
+    "--config",
+    "/workspace/demo/Odyssey/configs/FINAL_MLM_SMALL_TEST.yaml",
+    "--use-wandb"
+  ],
+  "program":  "/workspace/demo/Odyssey/odyssey/train/train_fsdp.py",
+  "codePath":  "odyssey/train/train_fsdp.py",
+  "codePathLocal":  "train_fsdp.py",
+  "git":  {
+    "remote":  "git@github.com:Anthrogen/Odyssey.git",
+    "commit":  "018d8d45631d6e17c23884c9aa525ba9b0e15367"
+  },
+  "email":  "connor@anthrogen.com",
+  "root":  "/workspace/demo/Odyssey/odyssey/train",
+  "host":  "2109f0831130",
+  "executable":  "/usr/bin/python",
+  "cpu_count":  48,
+  "cpu_count_logical":  96,
+  "gpu":  "NVIDIA A40",
+  "gpu_count":  8,
+  "disk":  {
+    "/":  {
+      "total":  "32212254720",
+      "used":  "772472832"
+    }
+  },
+  "memory":  {
+    "total":  "540644200448"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA A40",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  10752,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-28599de7-d808-c019-d634-b5b99a82fee8"
+    },
+    {
+      "name":  "NVIDIA A40",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  10752,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-906137f1-eb77-768b-432b-637b900b5d32"
+    },
+    {
+      "name":  "NVIDIA A40",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  10752,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-50f0d8b5-692f-8d30-ae82-e480c9dc55ee"
+    },
+    {
+      "name":  "NVIDIA A40",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  10752,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-fa5a4384-ff00-3c59-2b33-1ec7a3be6d3f"
+    },
+    {
+      "name":  "NVIDIA A40",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  10752,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-8fd3a56e-dc57-16a6-4e9c-54a3e924c373"
+    },
+    {
+      "name":  "NVIDIA A40",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  10752,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-f3e25dbb-bf6d-1648-dc78-16adb208872b"
+    },
+    {
+      "name":  "NVIDIA A40",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  10752,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-c97af2ed-4091-a962-7458-423daa16fff9"
+    },
+    {
+      "name":  "NVIDIA A40",
+      "memoryTotal":  "48305799168",
+      "cudaCores":  10752,
+      "architecture":  "Ampere",
+      "uuid":  "GPU-a56765f2-8969-1807-72e1-53bc21a6bf7b"
+    }
+  ],
+  "cudaVersion":  "12.8",
+  "writerId":  "a2a19gkh0voxo9zw7olenfc3ydhxn6qz"
+}

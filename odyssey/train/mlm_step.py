@@ -50,21 +50,11 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, schedule
     assert isinstance(train_cfg.loss_config, CrossEntropyLossConfig)
     assert train_cfg.loss_config.loss_elements == "masked"
     """Perform a single MLM step with train/validation mode."""
-    masked_seq, masked_struct, masked_coords = batch.masked_data['seq'], batch.masked_data['struct'], batch.masked_data['coords']
-    ss8_tokens, sasa_tokens = batch.masked_data['ss8'], batch.masked_data['sasa']
-    orthologous_groups_tokens, semantic_description_tokens, domains_tokens = batch.unmasked_data['orthologous_groups'], batch.unmasked_data['semantic_description'], batch.masked_data['domains']
-    plddt_tokens = batch.masked_data['plddt']
-    B, L = masked_seq.shape
+
+    B, L = batch.masked_data['seq'].shape
 
     # Create mask for GA/RA/SA/SC models and for SS8/SASA
     content_elements = ~batch.masks['coords'] & ~batch.beospank['coords']
-    nonbeospank = ~batch.beospank['coords'] & ~batch.beospank['seq']
-    nonbeospank_ss8 = ~batch.beospank['ss8']
-    nonbeospank_sasa = ~batch.beospank['sasa']
-    nonbeospank_orthologous_groups = ~batch.beospank['orthologous_groups']
-    nonbeospank_semantic_description = ~batch.beospank['semantic_description']
-    nonbeospank_domains = ~batch.beospank['domains']
-    nonbeospank_plddt = ~batch.beospank['plddt']
     assert content_elements.any(dim=1).all()
 
     masked_inputs = ('coords', 'seq', 'struct', 'ss8', 'sasa', 'domains', 'plddt')
@@ -78,7 +68,7 @@ def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, schedule
     with torch.set_grad_enabled(train_mode):
         # Forward pass
         model_type = model.cfg.first_block_cfg.initials()
-        if model_type in ("GA", "RA"): outputs = model(input_tokens, batch.beospank, coords=masked_coords, content_elements=content_elements)
+        if model_type in ("GA", "RA"): outputs = model(input_tokens, batch.beospank, coords=batch.masked_data['coords'], content_elements=content_elements)
         else: outputs = model(input_tokens, batch.beospank)
         seq_logits, struct_logits = outputs
 
@@ -184,7 +174,6 @@ def generate_mlm(model, model_cfg, train_cfg, batch, UNMASK_STRATEGY="min_entrop
         # Forward pass of batch through the model to get logits.
         #########################################################
         content_elements = ~batch.beospank['coords'] & ~batch.masks['coords']
-        masked_coords = batch.masked_data['coords']
 
         masked_inputs = ('coords', 'seq', 'struct', 'ss8', 'sasa', 'domains', 'plddt')
         unmasked_inputs = ('orthologous_groups', 'semantic_description')
@@ -194,7 +183,7 @@ def generate_mlm(model, model_cfg, train_cfg, batch, UNMASK_STRATEGY="min_entrop
         input_tokens = {**tok1, **tok2}
 
         # Forward pass
-        if model_cfg.first_block_cfg.initials() in ("GA", "RA"): outputs = model(input_tokens, batch.beospank, coords=masked_coords, content_elements=content_elements)
+        if model_cfg.first_block_cfg.initials() in ("GA", "RA"): outputs = model(input_tokens, batch.beospank, coords=batch.masked_data['coords'], content_elements=content_elements)
         else: outputs = model(input_tokens, batch.beospank)
         seq_logits, struct_logits = outputs
         logits =  {'seq': seq_logits, 'struct': struct_logits}
@@ -210,7 +199,7 @@ def generate_mlm(model, model_cfg, train_cfg, batch, UNMASK_STRATEGY="min_entrop
             probs = probs[positions_to_unmask, :] # Now [N, V] long
 
             # Next, we need to "chop off" the special tokens as they are not on the menu.
-            nonspecial_elements = torch.ones_like(probs).float()
+            nonspecial_elements = torch.ones_like(probs)  # Remove .float() for fp16 compatibility
             nonspecial_elements[:, -len(SPECIAL_TOKENS):] = 0.0
             probs = probs * nonspecial_elements
 

@@ -203,9 +203,9 @@ class TransformerTrunk(nn.Module):
         # Zero out embeddings for special tokens and sum valid embeddings
         # Count valid tokens per position and compute masked mean (avoid division by zero)
         valid_domains = nonbeospank_domains.unsqueeze(-1)  # [B, L, K, 1] True = valid annotation, False = special token
-        valid_domains_emb = domains_emb * valid_domains.float()  # [B, L, K, d]
+        valid_domains_emb = domains_emb * valid_domains.to(domains_emb.dtype)  # [B, L, K, d] - match dtypes for fp16
         sum_embeddings = valid_domains_emb.sum(dim=2)  # [B, L, d]
-        num_valid = torch.clamp(valid_domains.sum(dim=2).float(), min=1.0)  # [B, L, 1]
+        num_valid = torch.clamp(valid_domains.sum(dim=2).to(domains_emb.dtype), min=1.0)  # [B, L, 1] - match dtypes for fp16
         domains_emb = sum_embeddings / num_valid  # [B, L, d] / [B, L, 1] -> [B, L, d]
 
         h = seq_emb + struct_emb

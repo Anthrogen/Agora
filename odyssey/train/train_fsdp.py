@@ -21,6 +21,7 @@ import signal
 import functools
 import yaml
 from datetime import timedelta
+from torch.distributed.fsdp import MixedPrecision
 
 # FSDP imports
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -388,10 +389,17 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             # Create the wrapping policy that only wraps transformer blocks
             auto_wrap_policy = create_transformer_block_wrap_policy()
             
+            # Configure fp16 mixed precision
+            fp16_policy = MixedPrecision(
+                param_dtype=torch.float16,
+                reduce_dtype=torch.float16,
+                buffer_dtype=torch.float16,
+            )
+            
             # FSDP configuration
             fsdp_config = dict(
                 auto_wrap_policy=auto_wrap_policy,
-                mixed_precision=None,  # Can be enabled if needed
+                mixed_precision=fp16_policy,  # Enable fp16 mixed precision
                 sharding_strategy=ShardingStrategy.FULL_SHARD,
                 cpu_offload=CPUOffload(offload_params=False),
                 backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
@@ -429,10 +437,12 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             
         if rank == 0:
             print(f"  {model_cfg.first_block_cfg.initials()} total parameters: {total_params:,}")
-            print(f"  Using float32 training")
             if is_fsdp:
+                print(f"  Using fp16 mixed precision training")
                 expected_shard_size = total_params // fsdp_world_size
                 print(f"  Expected parameters per rank: ~{expected_shard_size:,} (total/{fsdp_world_size})")
+            else:
+                print(f"  Using float32 training")
         
         ###########################################################################
         # Initializing optimizer and scheduler

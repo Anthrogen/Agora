@@ -95,7 +95,7 @@ class SinusoidalPositionEmbeddings(nn.Module):
         
         half_dim = self.dim // 2
         freqs = torch.exp(-math.log(self.max_period) * torch.arange(half_dim, device=device) / half_dim)
-        args = timesteps[:, None].float() * freqs[None, :]  # [B, half_dim]
+        args = timesteps[:, None].to(freqs.dtype) * freqs[None, :]  # [B, half_dim] - match dtypes for fp16 compatibility
         embeddings = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)  # [B, dim]
         
         # Handle odd dimensions

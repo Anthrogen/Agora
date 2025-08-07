@@ -224,6 +224,6 @@ class ReflexiveAttention(nn.Module):
         
         # (9) Zero output for invalid coordinate positions
         if mask is not None:
-            out = out * valid_frames.unsqueeze(-1).float()
+            out = out * valid_frames.unsqueeze(-1).to(out.dtype)
         
         return out 

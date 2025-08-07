@@ -14,7 +14,8 @@ def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, loss_elements
     predictions = torch.argmax(content_logits, dim=-1)
     correct = (predictions == labels) & loss_elements
 
-    num_loss_elements = torch.sum(loss_elements.float())
+    # Use consistent dtype (no unnecessary .float() conversions for fp16 compatibility)
+    num_loss_elements = torch.sum(loss_elements.to(predictions.dtype))
 
     if num_loss_elements == 0.0:
         return None
@@ -23,11 +24,11 @@ def calculate_accuracy(logits: torch.Tensor, labels: torch.Tensor, loss_elements
     # Not everything has to be complicated.
 
     if not return_all:
-        retval = torch.sum(correct.float()) / num_loss_elements
+        retval = torch.sum(correct.to(predictions.dtype)) / num_loss_elements
         assert not retval.isnan()
         return retval
     else:
-        return correct.float()
+        return correct.to(predictions.dtype)
 
 def cross_entropy_loss(logits, labels, loss_elements, reduction='sum', return_all=False):
     """
@@ -53,12 +54,12 @@ def cross_entropy_loss(logits, labels, loss_elements, reduction='sum', return_al
     # Calculate the pdf over V for each element of (B,L)
     # For Odyssey 1, we shall softmax over only the content tokens of V -- we do not include the special tokens.
     entropies = torch.gather(nlls, dim=2, index=labels.unsqueeze(-1)).squeeze(-1)
-    values = entropies * loss_elements.float()
+    values = entropies * loss_elements.to(entropies.dtype)  # Match dtypes for fp16 compatibility
 
     assert not (values < 0).any()
 
     per_row_sum = values.sum(dim=1)
-    per_row_denom = loss_elements.float().sum(dim=1)
+    per_row_denom = loss_elements.to(entropies.dtype).sum(dim=1)  # Match dtypes for fp16 compatibility
   
     # We need to normalize each row by the number of elements that contribute to the loss within that row.
     # For some rows, this will be zero.  We cannot normalize by zero, but the good news is 
@@ -110,20 +111,20 @@ def score_entropy_loss_absorb(output, x_0, x_t, cumulative_noise_levels, inst_no
     
     # Negative term: ratio * score[x_0] for masked positions, 0 for others
     neg_term = ratio * torch.gather(output, -1, x_0[..., None]).squeeze(-1)  # [B, L]
-    neg_term = neg_term * rel_ind.float()  # Zero out non-masked positions
+    neg_term = neg_term * rel_ind.to(neg_term.dtype)  # Zero out non-masked positions - match dtypes for fp16
     
     # Positive term: sum of exp(score) over all tokens except the mask token
     # Create a one-hot mask to exclude the mask token dimension while maintaining gradients
-    mask_onehot = F.one_hot(torch.tensor(mask_token, device=output.device), num_classes=V).float()  # [V]
+    mask_onehot = F.one_hot(torch.tensor(mask_token, device=output.device), num_classes=V).to(output.dtype)  # [V] - match dtypes for fp16
     exclude_mask = 1.0 - mask_onehot  # [V] - zeros out the mask token position
     
     score_exp = torch.exp(output)  # [B, L, V]
     pos_term = (score_exp * exclude_mask.unsqueeze(0).unsqueeze(0)).sum(dim=-1)  # [B, L]
-    pos_term = pos_term * rel_ind.float()  # Only for masked positions
+    pos_term = pos_term * rel_ind.to(pos_term.dtype)  # Only for masked positions - match dtypes for fp16
     
     # Constant term: ratio * (log(ratio) - 1) for masked positions, 0 for others
     const = ratio * (torch.log(torch.clamp(ratio, min=1e-10)) - 1)  # [B, 1]
-    const = const.expand(-1, L) * rel_ind.float()  # [B, L], only for masked positions
+    const = const.expand(-1, L) * rel_ind.to(const.dtype)  # [B, L], only for masked positions - match dtypes for fp16
     
     # Combine terms: entropy = pos_term - neg_term + const
     entropy = pos_term - neg_term + const  # [B, L]
@@ -132,8 +133,8 @@ def score_entropy_loss_absorb(output, x_0, x_t, cumulative_noise_levels, inst_no
     per_residue = entropy * inst_noise_levels  # [B, L] * [B, 1] -> [B, L]
     
     # Apply mask to per_residue losses and compute average over valid positions only
-    per_residue_masked = per_residue * valid_mask.float()  # [B, L]
-    valid_counts = valid_mask.sum(dim=1).float()  # [B]
+    per_residue_masked = per_residue * valid_mask.to(per_residue.dtype)  # [B, L] - match dtypes for fp16
+    valid_counts = valid_mask.sum(dim=1).to(per_residue.dtype)  # [B] - match dtypes for fp16
     per_protein = per_residue_masked.sum(dim=1) / valid_counts  # (B,)
 
     return per_protein.mean(0)  # scalar
@@ -209,8 +210,8 @@ def score_entropy_loss_uniform(output, x_0, x_t, cumulative_noise_levels, inst_n
     per_residue = entropy * inst_noise_levels  # [B, L] * [B, 1] -> [B, L]
     
     # Apply mask to per_residue losses and compute average over valid positions only
-    per_residue_masked = per_residue * valid_mask.float()  # [B, L]
-    valid_counts = valid_mask.sum(dim=1).float()  # [B]
+    per_residue_masked = per_residue * valid_mask.to(per_residue.dtype)  # [B, L] - match dtypes for fp16  
+    valid_counts = valid_mask.sum(dim=1).to(per_residue.dtype)  # [B] - match dtypes for fp16
     per_protein = per_residue_masked.sum(dim=1) / valid_counts  # (B,)
 
     return per_protein.mean(0)  # scalar

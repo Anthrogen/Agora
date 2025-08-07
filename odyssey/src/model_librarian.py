@@ -199,7 +199,7 @@ def load_model_from_checkpoint(model_path, device, freeze=False):
 
     # Load checkpoint with dynamic path based on model type
     # TODO also, we should be using os.path.join rather than / wherever possible.
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    checkpoint = torch.load(model_path, map_location=device if device is not None else 'cpu', weights_only=False)
     model_cfg = checkpoint['model_config']
     train_cfg = checkpoint['train_config']
 

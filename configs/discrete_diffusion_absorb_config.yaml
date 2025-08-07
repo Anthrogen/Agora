@@ -7,7 +7,7 @@
 model_cfg:
   trunk_cfg:
     style: "discrete_diffusion"  # Options: "stage_1", "stage_2", "mlm", "discrete_diffusion"
-    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_2_config/fsq_stage_2_config_002/checkpoint_step_26316.pt"
+    autoencoder_path: "/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_2_config/fsq_stage_2_config_002/checkpoint_step_27870.pt"
     reference_model_seed: 42
 
     vocab_domains_path: "/workspace/demo/Odyssey/odyssey/train/vocab_domains.txt"

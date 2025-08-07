@@ -21,8 +21,8 @@ class RotaryEmbedding(nn.Module):
         self.max_position_embeddings = max_position_embeddings
         self.base = base
         
-        # Compute the inverse frequencies
-        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float() / self.dim))
+        # Compute the inverse frequencies (use float32 for precision in fp16 training)
+        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2, dtype=torch.float32) / self.dim))
         self.register_buffer("inv_freq", inv_freq)
         
         # Build cached rotations for efficiency
