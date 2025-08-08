@@ -34,13 +34,13 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from odyssey.src.models.transformer import TransformerTrunk, StandardTransformerBlock
 from odyssey.src.models.autoencoder import FSQEncoder
 from odyssey.src.dataset import ProteinDataset
-from odyssey.src.dataloader import DiffusionDataLoader, MaskedBatch
+from odyssey.src.dataloader import DiffusionDataLoader
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import score_entropy_loss_absorb, score_entropy_loss_uniform
 from odyssey.src.configurations import TrunkConfig, TrainingConfig, ScoreEntropyLossConfig
 from odyssey.src.tokenizer import CorruptionMode
 
-def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, scheduler, batch: MaskedBatch, model_cfg: TrunkConfig, train_cfg: TrainingConfig, train_mode: bool = True) -> Dict[str, float]:
+def discrete_diffusion_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, scheduler, batch, model_cfg: TrunkConfig, train_cfg: TrainingConfig, train_mode: bool = True) -> Dict[str, float]:
     assert isinstance(train_cfg.loss_config, ScoreEntropyLossConfig)
     """Perform a single step with discrete diffusion."""
 

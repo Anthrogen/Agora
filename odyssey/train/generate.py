@@ -19,7 +19,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from odyssey.src.models.autoencoder import Autoencoder, StandardTransformerBlock
 from odyssey.src.models.transformer import TransformerTrunk
 from odyssey.src.models.autoencoder import FSQEncoder
-from odyssey.src.dataloader import MaskedBatch, SimpleDataLoader, ComplexDataLoader, DiffusionDataLoader, NoMaskDataLoader, _get_training_dataloader, worker_init_fn
+from odyssey.src.dataloader import SimpleDataLoader, ComplexDataLoader, DiffusionDataLoader, NoMaskDataLoader, _get_training_dataloader, worker_init_fn
 from odyssey.src.dataset import ProteinDataset
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
@@ -42,10 +42,6 @@ from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 import pdb
 
-
-
-
-
 def tokens_to_sequence(seq_tokens, vocab_mapping):
     """Convert sequence tokens back to amino acid sequence."""
     sequence = []
@@ -55,16 +51,14 @@ def tokens_to_sequence(seq_tokens, vocab_mapping):
             aa = list(SEQUENCE_TOKENS)[token.item()].name
             sequence.append(aa)
         elif token.item() == SPECIAL_TOKENS.BOS.value + len(SEQUENCE_TOKENS):
-            sequence.append('[BOS]')
+            sequence.append('BOS')
         elif token.item() == SPECIAL_TOKENS.EOS.value + len(SEQUENCE_TOKENS):
-            sequence.append('[EOS]')
+            sequence.append('EOS')
         elif token.item() == SPECIAL_TOKENS.PAD.value + len(SEQUENCE_TOKENS):
-            sequence.append('[PAD]')
+            sequence.append('PAD')
         else:
-            sequence.append('[UNK]')
-    return ''.join([s for s in sequence if s not in ['[BOS]', '[EOS]', '[PAD]', '[UNK]']])
-
-
+            sequence.append('UNK')
+    return ''.join([s for s in sequence if s not in ['BOS', 'EOS', 'PAD', 'UNK']])
 
 def visualize_structure_comparison(original_coords, reconstructed_coords, generated_coords, 
                                   original_seq, generated_seq):
@@ -355,7 +349,7 @@ if __name__ == "__main__":
     python generate.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_absorb_config/discrete_diffusion_absorb_config_000/checkpoint_step_55740.pt
     python generate.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_uniform_config/discrete_diffusion_uniform_config_000/checkpoint_step_45924.pt
     """
-    parser = argparse.ArgumentParser(description='Train Odyssey models')
+    parser = argparse.ArgumentParser(description='Generate Odyssey models')
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to fully trained model checkpoint')
     args = parser.parse_args()
     

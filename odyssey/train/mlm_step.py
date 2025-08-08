@@ -40,13 +40,13 @@ import pdb
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from odyssey.src.models.transformer import TransformerTrunk, StandardTransformerBlock
 from odyssey.src.models.autoencoder import FSQEncoder
-from odyssey.src.dataloader import _get_training_dataloader, MaskedBatch
+from odyssey.src.dataloader import _get_training_dataloader
 from odyssey.src.dataset import ProteinDataset
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import cross_entropy_loss, calculate_accuracy
 from odyssey.src.configurations import TrunkConfig, TrainingConfig, CrossEntropyLossConfig
 
-def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, scheduler, batch: MaskedBatch, model_cfg: TrunkConfig, train_cfg: TrainingConfig, train_mode: bool = True) -> Dict[str, float]:
+def mlm_step(model: TransformerTrunk, optimizer: torch.optim.Optimizer, scheduler, batch, model_cfg: TrunkConfig, train_cfg: TrainingConfig, train_mode: bool = True) -> Dict[str, float]:
     assert isinstance(train_cfg.loss_config, CrossEntropyLossConfig)
     assert train_cfg.loss_config.loss_elements == "masked"
     """Perform a single MLM step with train/validation mode."""

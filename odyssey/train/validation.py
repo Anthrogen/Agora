@@ -387,10 +387,10 @@ def validate(path_to_model_checkpoint_absorb: str,
     return results_df
 
 if __name__ == "__main__":
-    path_to_model_checkpoint_absorb = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/discrete_diffusion_absorb_config/discrete_diffusion_absorb_config_000/checkpoint_step_45924.pt'
-    path_to_model_checkpoint_uniform = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/discrete_diffusion_uniform_config/discrete_diffusion_uniform_config_000/checkpoint_step_45924.pt'
-    path_to_model_checkpoint_simple = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_simple_config/mlm_simple_config_000/checkpoint_step_34443.pt'
-    path_to_model_checkpoint_complex = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_complex_config/mlm_complex_config_000/checkpoint_step_34443.pt'
+    path_to_model_checkpoint_absorb = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/discrete_diffusion_absorb_config/discrete_diffusion_absorb_config_000/checkpoint_step_89184.pt'
+    path_to_model_checkpoint_uniform = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/discrete_diffusion_uniform_config/discrete_diffusion_uniform_config_000/checkpoint_step_89184.pt'
+    path_to_model_checkpoint_simple = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_simple_config/mlm_simple_config_000/checkpoint_step_89184.pt'
+    path_to_model_checkpoint_complex = f'/workspace/demo/Odyssey/checkpoints/transformer_trunk/mlm_complex_config/mlm_complex_config_000/checkpoint_step_89184.pt'
     time_steps = [4,9,14,19,24,29,34,39,44,49,54,59,64,69,74,79,84,89]
     validation_batch_size = 4
     validate(path_to_model_checkpoint_absorb, path_to_model_checkpoint_uniform, path_to_model_checkpoint_simple, 

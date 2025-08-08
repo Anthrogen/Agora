@@ -8,7 +8,6 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 import torch.distributed as dist
-import torch.multiprocessing as mp
 import numpy as np
 from tqdm import tqdm
 from dataclasses import dataclass, field, asdict, replace
@@ -52,7 +51,7 @@ except ImportError:
 from odyssey.src.models.autoencoder import Autoencoder, StandardTransformerBlock
 from odyssey.src.models.transformer import TransformerTrunk
 from odyssey.src.models.autoencoder import FSQEncoder
-from odyssey.src.dataloader import _get_training_dataloader, worker_init_fn
+from odyssey.src.dataloader import MaskedBatch, SimpleDataLoader, ComplexDataLoader, DiffusionDataLoader, NoMaskDataLoader, _get_training_dataloader, worker_init_fn
 from odyssey.src.dataset import ProteinDataset
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
@@ -210,14 +209,6 @@ def create_decay(base_learning_rate: float, min_learning_rate: float, num_steps_
     return lr_lambda
 
 def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[TrainingConfig], verbose=False, use_wandb=True, wandb_project="odyssey-test-fsq-training", wandb_run_name=None, use_fsdp=True):
-    
-    # Set multiprocessing start method to 'spawn' for CUDA compatibility with workers
-    # This is REQUIRED when using CUDA operations in dataloader workers
-    try:
-        mp.set_start_method('spawn', force=True)
-    except RuntimeError:
-        # Already set, which is fine
-        pass
     
     assert len(model_cfg_list) == 1, "Only one model configuration is supported for training"
     
@@ -508,87 +499,34 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             
             # Calculate optimal number of workers - For H100s with high throughput, we want more workers
             # Rule of thumb: (num_cpus / num_gpus) * 0.75 to leave some headroom
-            import multiprocessing
-            cpu_count = multiprocessing.cpu_count()
-            # Use 2-4 workers per GPU as a baseline for high-throughput GPUs
-            num_workers = min(4, max(2, cpu_count // world_size // 2))
-            
-            # IMPORTANT: When using workers, data must stay on CPU in the dataloader
-            # The MaskedBatch moves data to CUDA, which causes issues in worker processes
-            # For now, we pass 'cpu' device to dataloader and move to CUDA in training loop
-            dataloader_device = torch.device('cpu')  # Keep data on CPU in workers
-            
-            if rank == 0:
-                print(f"  Using {num_workers} workers per dataloader (CPU count: {cpu_count}, GPUs: {world_size})")
-                print(f"  Note: DataLoader will keep data on CPU to avoid CUDA issues in workers")
-                
-            # Use appropriate device based on whether structure tokenization is enabled
-            if tracks_list[i].get('struct', False) and autoencoder is not None:
-                if rank == 0:
-                    print(f"  Using structure tokenization with GPU autoencoder")
-                # Use GPU device for final processing when structure tokenization is enabled
-                loader_device = device
-            else:
-                # Use CPU device to avoid CUDA issues in workers
-                loader_device = dataloader_device
-            
-            # Use _get_training_dataloader which automatically selects the right dataloader class
-            train_loader = _get_training_dataloader(
-                train_ds, model_cfg, train_cfg, tracks_list[i], loader_device,
-                batch_size=train_cfg.batch_size, sampler=train_sampler,
-                shuffle=False, min_unmasked=min_unmasked_list[i],
-                autoencoder=autoencoder, num_workers=num_workers,
-                pin_memory=True, persistent_workers=(num_workers > 0),
-                prefetch_factor=2 if num_workers > 0 else None
-            )
-            val_loader = _get_training_dataloader(
-                val_ds, model_cfg, train_cfg, tracks_list[i], loader_device,
-                batch_size=train_cfg.batch_size, sampler=val_sampler,
-                shuffle=False, min_unmasked=min_unmasked_list[i],
-                autoencoder=autoencoder, num_workers=num_workers,
-                pin_memory=True, persistent_workers=(num_workers > 0),
-                prefetch_factor=2 if num_workers > 0 else None
-            )
+            # Setting to 0 to avoid generator pickling issues
+            num_workers = 0  # int((os.cpu_count() / world_size) * 0.75)  # About 84 workers per GPU
+            train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, tracks_list[i], device, 
+                                                   batch_size=train_cfg.batch_size, sampler=train_sampler, 
+                                                   shuffle=False, generator=g_train,  # shuffle=False when using sampler
+                                                   worker_init_fn=worker_init_fn, min_unmasked=min_unmasked_list[i], 
+                                                   autoencoder=autoencoder, num_workers=num_workers, 
+                                                   pin_memory=True, persistent_workers=False, prefetch_factor=None)
+            val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, tracks_list[i], device, 
+                                                batch_size=train_cfg.batch_size, sampler=val_sampler, 
+                                                shuffle=False, generator=g_val,  # No sampler, all ranks see same data
+                                                worker_init_fn=worker_init_fn, min_unmasked=min_unmasked_list[i], 
+                                                autoencoder=autoencoder, num_workers=num_workers, 
+                                                pin_memory=True, persistent_workers=False, prefetch_factor=None)
         else:
-            # For single GPU, use fewer workers but still enable parallelism
-            import multiprocessing
-            cpu_count = multiprocessing.cpu_count()
-            num_workers = min(4, max(2, cpu_count // 4))
-            
-            # Keep data on CPU in dataloader to avoid CUDA issues in workers
-            dataloader_device = torch.device('cpu')
-            
-            if rank == 0:
-                print(f"  Using {num_workers} workers for single-GPU dataloader")
-                print(f"  Note: DataLoader will keep data on CPU to avoid CUDA issues in workers")
-                
-            # Use appropriate device based on whether structure tokenization is enabled
-            if tracks_list[i].get('struct', False) and autoencoder is not None:
-                if rank == 0:
-                    print(f"  Using structure tokenization with GPU autoencoder")
-                # Use GPU device for final processing when structure tokenization is enabled
-                loader_device = device
-            else:
-                # Use CPU device to avoid CUDA issues in workers
-                loader_device = dataloader_device
-            
-            # Use _get_training_dataloader which automatically selects the right dataloader class
-            train_loader = _get_training_dataloader(
-                train_ds, model_cfg, train_cfg, tracks_list[i], loader_device,
-                batch_size=train_cfg.batch_size, shuffle=True,
-                min_unmasked=min_unmasked_list[i],
-                autoencoder=autoencoder, num_workers=num_workers,
-                pin_memory=True, persistent_workers=(num_workers > 0),
-                prefetch_factor=2 if num_workers > 0 else None
-            )
-            val_loader = _get_training_dataloader(
-                val_ds, model_cfg, train_cfg, tracks_list[i], loader_device,
-                batch_size=train_cfg.batch_size, shuffle=False,
-                min_unmasked=min_unmasked_list[i],
-                autoencoder=autoencoder, num_workers=num_workers,
-                pin_memory=True, persistent_workers=(num_workers > 0),
-                prefetch_factor=2 if num_workers > 0 else None
-            )
+            # For single GPU, use fewer workers
+            # Setting to 0 to avoid generator pickling issues
+            num_workers = 0  # int((os.cpu_count() * 0.5))  # Use half the CPUs for single GPU
+            train_loader = _get_training_dataloader(train_ds, model_cfg, train_cfg, tracks_list[i], device, 
+                                                   batch_size=train_cfg.batch_size, shuffle=True, generator=g_train, 
+                                                   worker_init_fn=worker_init_fn, min_unmasked=min_unmasked_list[i], 
+                                                   autoencoder=autoencoder, num_workers=num_workers, 
+                                                   pin_memory=True, persistent_workers=False, prefetch_factor=None)
+            val_loader = _get_training_dataloader(val_ds, model_cfg, train_cfg, tracks_list[i], device, 
+                                                batch_size=train_cfg.batch_size, shuffle=False, generator=g_val, 
+                                                worker_init_fn=worker_init_fn, min_unmasked=min_unmasked_list[i], 
+                                                autoencoder=autoencoder, num_workers=num_workers, 
+                                                pin_memory=True, persistent_workers=False, prefetch_factor=None)
         
         train_loaders.append(train_loader)
         val_loaders.append(val_loader)
@@ -648,9 +586,6 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                     steps[model_idx] += 1
                     # Skip empty/None batches
                     if batch_data is None: continue
-                    
-                    # Move batch to correct device (from CPU to GPU)
-                    batch_data = batch_data.to(device)
                     
                     # Train single model on batch with bfloat16
                     train_metrics = step_fn(model, optimizer, scheduler, batch_data, model_cfg, train_cfg, train_mode=True)
@@ -737,9 +672,6 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
 
                                 # Skip empty/None batches
                                 if val_batch_data is None: continue
-                                
-                                # Move batch to correct device (from CPU to GPU)
-                                val_batch_data = val_batch_data.to(device)
                                     
                                 # All ranks participate in forward pass (FSDP requirement)
                                 val_metrics = step_fn(model, optimizer, scheduler, val_batch_data, model_cfg, train_cfg, train_mode=False)
@@ -942,7 +874,7 @@ if __name__ == "__main__":
             if (expanded_yaml_dir / "map.md").exists():
                 summary_artifact.add_file(str(expanded_yaml_dir / "map.md"))
                 
-            wandb.log_artifact(summary_artifact)
+            wandb_run.log_artifact(summary_artifact)
             
             # Log final summary metrics
             final_metrics = {}

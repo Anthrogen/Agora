@@ -26,7 +26,7 @@ def unmask(actual_mask, beospank, min_unmasked, generator):
         # Randomly select positions to unmask
         #TODO: use random number generator of the dataloader object.
         if generator is None:
-            print("Warning: No generator provided to MaskedBatch. Using default generator.")
+            print("Warning: No generator provided to batch. Using default generator.")
             perm = torch.randperm(candidate_positions.numel(), device=actual_mask.device)
         else: # Use generator without device parameter to avoid device mismatch
             perm = torch.randperm(candidate_positions.numel(), generator=generator).to(actual_mask.device)
@@ -78,7 +78,11 @@ class SequenceTokenizer(Tokenizer):
         device = mask.device
 
         # Convert characters in the observation to token indices
-        seq_tokens = [self.mapping[char] for char in observation]
+        seq_tokens = []
+        for char in observation: # Handle asterisks by mapping them directly to MASK tokens
+            if char == '*': seq_tokens.append(self.mapping['MASK'])
+            else: seq_tokens.append(self.mapping[char])
+        
         seq_tokens = seq_tokens[:self.full_length-2] # -2 for BOS and EOS
 
         # Add BOS and EOS tokens
@@ -327,10 +331,11 @@ class SS8Tokenizer(Tokenizer):
         """
         device = mask.device
         
-        # Convert SS8 labels to token indices, mapping None to UNK
+        # Convert SS8 labels to token indices, mapping None to UNK and asterisks to MASK
         ss8_tokens = []
         for label in observation:
             if label is None: ss8_tokens.append(self.mapping["UNK"])
+            elif label == '*': ss8_tokens.append(self.mapping["MASK"])
             else: ss8_tokens.append(self.mapping[label])
         
         # Truncate if too long (reserve space for BOS/EOS)
@@ -404,7 +409,8 @@ class SASATokenizer(Tokenizer):
         """Convert continuous SASA value to bin token using optimal quantile-based boundaries."""
         # Optimal bin boundaries based on quantile analysis of 22,185 real SASA values
         # Each bin contains approximately equal numbers of residues (~1,386 each)
-        if value is None: return self.mapping["UNK"]
+        if value is None:  return self.mapping["UNK"]
+        if value == '*': return self.mapping["MASK"]
         idx = bisect_right(self.thresholds, value)
         return self.mapping[f"BIN_{idx}"]
 
@@ -492,6 +498,7 @@ class PLDDTTokenizer(Tokenizer):
     def _bin_plddt_value(self, value):
         """Convert continuous pLDDT value to bin token using uniform intervals."""
         if value is None: return self.mapping["UNK"]
+        if value == '*': return self.mapping["MASK"]
         assert value >= 0
         idx = bisect_right(self.thresholds, value)
         return self.mapping[f"BIN_{idx}"]

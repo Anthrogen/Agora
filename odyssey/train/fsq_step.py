@@ -34,7 +34,7 @@ from types import SimpleNamespace
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from odyssey.src.models.autoencoder import Autoencoder, StandardTransformerBlock
 from odyssey.src.models.autoencoder import FSQEncoder
-from odyssey.src.dataloader import MaskedBatch, SimpleDataLoader, ComplexDataLoader, DiffusionDataLoader, NoMaskDataLoader, _get_training_dataloader
+from odyssey.src.dataloader import SimpleDataLoader, ComplexDataLoader, DiffusionDataLoader, NoMaskDataLoader, _get_training_dataloader
 from odyssey.src.dataset import ProteinDataset, ATOMS
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
@@ -46,7 +46,7 @@ def _token_to_amino_acid(token: int) -> str:
     token_to_aa = {v.value: k for k, v in SEQUENCE_TOKENS.__members__.items()}
     return token_to_aa.get(token, 'X')  # Default to 'X' for unknown tokens
 
-def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, scheduler, batch: MaskedBatch, model_cfg: AutoencoderConfig, train_cfg: TrainingConfig, train_mode=True) -> Dict[str, float]:
+def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, scheduler, batch, model_cfg: AutoencoderConfig, train_cfg: TrainingConfig, train_mode=True) -> Dict[str, float]:
     assert isinstance(train_cfg.loss_config, KabschRMSDLossConfig)
     # Stage 1: Masked coordinate reconstruction
     B, L, H, _ = batch.masked_data['coords'].shape
@@ -104,7 +104,7 @@ def stage_1_step(model: Autoencoder, optimizer: torch.optim.Optimizer, scheduler
         return {'loss': (loss.item(), B), 'rmsd': (rmsd.item(), B)}
 
 
-def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, scheduler, batch: MaskedBatch, model_cfg: AutoencoderConfig, train_cfg: TrainingConfig, train_mode=True) -> Dict[str, float]:
+def stage_2_step(model: Autoencoder, optimizer: torch.optim.Optimizer, scheduler, batch, model_cfg: AutoencoderConfig, train_cfg: TrainingConfig, train_mode=True) -> Dict[str, float]:
     assert isinstance(train_cfg.loss_config, KabschRMSDLossConfig)
     # Stage 2: Full structure reconstruction from frozen encoder
     B, L, H, _ = batch.masked_data['coords'].shape

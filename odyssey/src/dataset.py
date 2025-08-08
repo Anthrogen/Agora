@@ -1,5 +1,5 @@
 import os
-import json
+import json # TODO: swap for faster json library
 import mmap
 import numpy as np
 import torch
@@ -291,6 +291,56 @@ class Protein():
         
         return chirality_vector
 
+    def dump_to_json(self, file_path, original_json_data=None):
+        """
+        Save the protein data to a JSON file.
+        
+        Args:
+            file_path: Path to save the JSON file
+            original_json_data: Optional original JSON data to preserve fields not in the Protein object
+        """
+        # Start with original data if provided, otherwise create new dict
+        if original_json_data is not None:
+            data = original_json_data.copy()
+        else:
+            data = {}
+        
+        # Update sequence
+        data['sequence'] = ''.join(self.seq)
+        
+        # Update all_atoms if coordinates are available
+        if hasattr(self, 'coords') and self.coords is not None:
+            if 'all_atoms' not in data:
+                data['all_atoms'] = {'atom_names': [], 'atom_coordinates': []}
+            
+            atom_coords_list = []
+            atom_names_list = []
+            
+            # Reconstruct atom coordinates for each residue
+            for residue_idx in range(self.len):
+                residue_char = self.seq[residue_idx]
+                if residue_char not in ATOMS:
+                    continue
+                    
+                # Get atoms for this residue type
+                residue_atoms = ATOMS[residue_char]
+                
+                # Add each atom
+                for atom_idx, atom_name in enumerate(residue_atoms):
+                    if atom_idx < self.coords.shape[1]:
+                        coord = self.coords[residue_idx, atom_idx, :].tolist()
+                        # Only add non-zero coordinates
+                        if any(c != 0 for c in coord):
+                            atom_names_list.append(atom_name)
+                            atom_coords_list.append(coord)
+            
+            data['all_atoms']['atom_names'] = atom_names_list
+            data['all_atoms']['atom_coordinates'] = atom_coords_list
+        
+        # Write to file
+        with open(file_path, 'w') as f:
+            json.dump(data, f, indent=2)
+
     
 # JSON at /workspace/cmu_vqvae_data/single_chain_clusters_full.csv
 # See development at tmp_csv_parser.py
@@ -305,6 +355,14 @@ class ProteinDataset(Dataset):
     TOTAL_COLS = 4
     def __init__(self, index_csv_path: str, center: bool = True, mode: str = "backbone", max_length: int = 2048, critical_tracks=None, max_length_orthologous_groups: int = 512, max_length_semantic_description: int = 128, eager: bool = False, verbose: bool = False):
         """
+        ProteinDataset constructor that handles both CSV index files and single JSON files.
+        
+        Args:
+            index_csv_path: Path to either a CSV index file or a single JSON protein file
+            
+        If the path ends with .json, creates a single-protein dataset.
+        If the path ends with .csv, creates a multi-protein dataset from the CSV index.
+        
         Eager: if true, check for malformed files up front. Otherwise, do so on the fly and potentially return None from __getitem__.
         """
         if critical_tracks is None:
@@ -312,11 +370,7 @@ class ProteinDataset(Dataset):
             critical_tracks = {t: True for t in ALL_TRACKS}
 
         self.critical_tracks = critical_tracks
-
-
-        self.index_csv_path = index_csv_path
-        self.index_csv_dir = os.path.dirname(index_csv_path) # all paths expressed in the .csv file are relative to this position.
-
+        
         # Maximum sequence length for padding/truncation
         # Proteins longer than this will be truncated
         self.max_length = max_length
@@ -326,54 +380,84 @@ class ProteinDataset(Dataset):
         self.center = center
         self.verbose = verbose
 
-        # Itearte through the CSV file.
-        # For each row, record the offset (number of bytes from the beginning of the file) of the row on the disk.
-        self.offsets = array.array("Q", [])
-        
-        with open(self.index_csv_path, "rb") as f:
-
-            last_id = None # filter out non-unique entries.
-            for line in f:
-                pos = f.tell() - len(line)
-                line = line.decode("utf-8").rstrip("\r\n").split(",")
-
-                # print(f"Line: {line}")
-
-                if len(line) != self.TOTAL_COLS:
-                    if self.verbose:
-                        print(f"Skipping bad csv line: {line}")
-                    continue
-
-                new_id = line[self.PROTEIN_ID_COL].strip()
-                if self.verbose:
-                    print(f"new_id = {new_id}")
+        # Check file extension to determine dataset type
+        if index_csv_path.endswith('.json'):
+            # Single JSON protein file - create a simple list with one path
+            self.protein_paths = [index_csv_path]
+            self.offsets = array.array("Q", [0])  # Single offset for one protein
+            self.index_csv_path = None
+            self.mm = None  # No memory mapping needed
+            
+            if self.verbose: print(f"Creating single-protein dataset from {index_csv_path}")
                 
+        elif index_csv_path.endswith('.csv'):
+            # CSV index file (original behavior)
+            self.protein_paths = None  # Will be read from CSV via memory mapping
+            self.index_csv_path = index_csv_path
+            self.index_csv_dir = os.path.dirname(index_csv_path) # all paths expressed in the .csv file are relative to this position.
 
-                if last_id is None or last_id != new_id:
-                    self.offsets.append(pos)
-                else:
-                    if self.verbose:
+            # Iterate through the CSV file.
+            # For each row, record the offset (number of bytes from the beginning of the file) of the row on the disk.
+            self.offsets = array.array("Q", [])
+            
+            with open(self.index_csv_path, "rb") as f:
+
+                last_id = None # filter out non-unique entries.
+                for line in f:
+                    pos = f.tell() - len(line)
+                    line = line.decode("utf-8").rstrip("\r\n").split(",")
+
+                    # print(f"Line: {line}")
+
+                    if len(line) != self.TOTAL_COLS:
+                        if self.verbose: print(f"Skipping bad csv line: {line}")
+                        continue
+
+                    new_id = line[self.PROTEIN_ID_COL].strip()
+                    if self.verbose: print(f"new_id = {new_id}")
+
+                    if last_id is None or last_id != new_id: 
+                        self.offsets.append(pos)
+                    elif self.verbose: 
                         print(f"Skipping duplicate entry for {new_id}")
 
-                last_id = new_id
+                    last_id = new_id
 
+            self.offsets.pop(0) # Get rid of header row.
+            assert len(self.offsets) > 0, f"No valid JSON Paths found in {self.index_csv_path}!"
 
-        self.offsets.pop(0) # Get rid of header row.
-        assert len(self.offsets) > 0, f"No valid JSON Paths found in {self.index_csv_path}!"
-
-        # print(f"Full offsets: {self.offsets}")
-        
-        # Create a memory map into the index.csv file.
-        # This virtually "maps" the disk space (large memory storage) file into the memory of the python process.
-        # This allows us to read the contents of the file 
-        #  without re-loading it into memory at each invocation of __getitem__.
-        fd = os.open(self.index_csv_path, os.O_RDONLY)
-        self.mm = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
-        os.close(fd)
-
-        if eager:
-            self.offsets = array.array("Q", [off for idx, off in enumerate(self.offsets) if self.get_protein(idx) is not None])
+            # print(f"Full offsets: {self.offsets}")
             
+            # Create a memory map into the index.csv file.
+            # This virtually "maps" the disk space (large memory storage) file into the memory of the python process.
+            # This allows us to read the contents of the file 
+            #  without re-loading it into memory at each invocation of __getitem__.
+            fd = os.open(self.index_csv_path, os.O_RDONLY)
+            self.mm = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
+            os.close(fd)
+
+            if eager: self.offsets = array.array("Q", [off for idx, off in enumerate(self.offsets) if self.get_protein(idx) is not None])
+        else: raise ValueError(f"Unsupported file type: {index_csv_path}. Expected .csv or .json file.")
+            
+    def __getstate__(self):
+        """Handle pickling by excluding the mmap object."""
+        state = self.__dict__.copy()
+        # Remove the mmap object as it cannot be pickled
+        if 'mm' in state:
+            del state['mm']
+        return state
+    
+    def __setstate__(self, state):
+        """Handle unpickling by recreating the mmap object."""
+        self.__dict__.update(state)
+        # Recreate the mmap object in the new process (only for CSV case)
+        if self.index_csv_path is not None:
+            try:
+                fd = os.open(self.index_csv_path, os.O_RDONLY)
+                self.mm = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
+                os.close(fd)
+            except (OSError, IOError) as e:
+                raise RuntimeError(f"Failed to recreate mmap for {self.index_csv_path} in worker process: {e}")
 
     def __len__(self):
         """Return the total number of protein structures in the dataset"""
@@ -386,23 +470,26 @@ class ProteinDataset(Dataset):
         """
         assert idx >= 0 and idx < len(self.offsets), f"Index {idx} out of bounds for dataset of length {len(self.offsets)}"
 
-        start = self.offsets[idx]
-        end = self.mm.find(b"\n", start)
-        if end == -1:
-            end = len(self.mm)
+        if self.protein_paths is not None:
+            # Single JSON protein case - path is directly available
+            json_path = self.protein_paths[idx]
+        else:
+            # CSV index case - read path from memory-mapped CSV
+            start = self.offsets[idx]
+            end = self.mm.find(b"\n", start)
+            if end == -1:
+                end = len(self.mm)
 
-        rel_path_to_json = (
-            self.mm[start:end]
-            .decode()
-            .split(",")[self.JSON_PATH_COL]
-            .strip()  # remove any whitespace/newline characters
-        )
+            rel_path_to_json = (
+                self.mm[start:end]
+                .decode()
+                .split(",")[self.JSON_PATH_COL]
+                .strip()  # remove any whitespace/newline characters
+            )
 
-        # 1) Load protein structure from JSON file
-        json_path = os.path.join(self.index_csv_dir, rel_path_to_json)
-        # print(json_path)
-        # assert os.path.exists(json_path)
+            json_path = os.path.join(self.index_csv_dir, rel_path_to_json)
 
+        # Load protein (same for both cases)
         try:
             return Protein(json_path, mode=self.mode)
         except (AssertionError, ValueError, json.decoder.JSONDecodeError, PermissionError, OSError, FileNotFoundError) as e:
