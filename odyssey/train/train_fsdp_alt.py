@@ -51,7 +51,7 @@ except ImportError:
 from odyssey.src.models.autoencoder import Autoencoder, StandardTransformerBlock
 from odyssey.src.models.transformer import TransformerTrunk
 from odyssey.src.models.autoencoder import FSQEncoder
-from odyssey.src.dataloader import SimpleDataLoader, ComplexDataLoader, DiffusionDataLoader, NoMaskDataLoader, _get_training_dataloader, worker_init_fn
+from odyssey.src.dataloader_alt import SimpleDataLoader, ComplexDataLoader, DiffusionDataLoader, NoMaskDataLoader, _get_training_dataloader, worker_init_fn
 from odyssey.src.dataset import ProteinDataset
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
@@ -581,7 +581,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             model.train()
             # Only show progress bar on rank 0
             disable_pbar = rank != 0
-            with tqdm(train_loader, desc=f"Epoch {epoch+1} [Model {model_idx+1}: {model_cfg.first_block_cfg.initials()} Train]", ascii=True, leave=True, ncols=150, disable=disable_pbar) as pbar:
+            with tqdm(train_loader, desc=f"Epoch {epoch+1} [Model {model_idx+1}: {model_cfg.first_block_cfg.initials()} Train]", ascii=True, leave=True, ncols=250, disable=disable_pbar) as pbar:
                 for batch_data in pbar:
                     steps[model_idx] += 1
                     # Skip empty/None batches
@@ -612,7 +612,9 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                     
                     # Update progress bar with moving average metrics
                     prefix = model_cfg.first_block_cfg.initials()
-                    pbar.set_postfix({f"{prefix}_{k}": f"{v:.3f}" for k, v in moving_avg_metrics.items()})
+                    postfix = {f"{prefix}_{k}": f"{v:.3f}" for k, v in moving_avg_metrics.items()}
+                    # Print saturation
+                    pbar.set_postfix(postfix)
 
                     # Log batch-level training metrics to wandb (high frequency)
                     if rank == 0 and wandb_run is not None and model_idx == 0:  # Only log first model's batch metrics

@@ -514,7 +514,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             num_workers = min(4, max(2, cpu_count // world_size // 2))
             
             # IMPORTANT: When using workers, data must stay on CPU in the dataloader
-            # The MaskedBatch moves data to CUDA, which causes issues in worker processes
+            # GPU operations in worker processes can cause CUDA context issues
             # For now, we pass 'cpu' device to dataloader and move to CUDA in training loop
             dataloader_device = torch.device('cpu')  # Keep data on CPU in workers
             

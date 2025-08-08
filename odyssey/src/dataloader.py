@@ -14,8 +14,8 @@ from queue import Queue, Empty
 from odyssey.src.configurations import DiffusionMaskConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig
 from odyssey.src.masking_utils import _get_noise_levels, _sample_betalinear30, _sample_cosine, _sample_sqrt
 
-# Import components from data_pipeline for DecoupledDataLoader
-from odyssey.src.data_pipeline import (
+# Import components from pipeline for DecoupledDataLoader
+from odyssey.src.pipeline import (
     RawBatch, RawDataCache, StructureTokenCache,
     raw_collate_fn, CPUTokenizationStage, 
     GPUStructureTokenizationStage, TokenizationPipeline,
@@ -30,7 +30,19 @@ def worker_init_fn(worker_id):
 
 _DEFAULT_MIN_UNMASKED = {'seq': 0, 'coords': 0}
 
-# MaskingDataLoader has been replaced by the decoupled version below
+def _get_training_dataloader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
+    # Determine dataloader type based on mask_config type
+    if isinstance(train_cfg.mask_config, SimpleMaskConfig):
+        return SimpleDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
+    elif isinstance(train_cfg.mask_config, ComplexMaskConfig):
+        return ComplexDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
+    elif isinstance(train_cfg.mask_config, DiffusionMaskConfig):
+        return DiffusionDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
+    elif isinstance(train_cfg.mask_config, NoMaskConfig):
+        return NoMaskDataLoader(dataset, model_cfg, train_cfg, tracks, device, **kwargs)
+    else:
+        raise ValueError(f"Unknown mask config type: {type(train_cfg.mask_config)}. Expected SimpleMaskConfig, ComplexMaskConfig, DiffusionMaskConfig, or NoMaskConfig.")
+
 class DecoupledDataLoader:
     """
     Base class for decoupled dataloaders. It decouples raw data fetching from
@@ -40,10 +52,14 @@ class DecoupledDataLoader:
     
     def __init__(self, dataset, model_cfg, train_cfg, tracks, device,
                  autoencoder=None, batch_size=32, num_workers=4, cache_size=1000,
-                 min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
+                 min_unmasked=_DEFAULT_MIN_UNMASKED, detect_existing_masks=False, **kwargs):
         self.tracks = tracks
         self.device = device
         self.L = model_cfg.max_len
+        self.detect_existing_masks = detect_existing_masks
+        
+        # Extract generator from kwargs if provided (same as dataloader_old.py)
+        generator = kwargs.pop('generator', None)
         
         # Prepare DataLoader kwargs
         dataloader_kwargs = {
@@ -70,13 +86,68 @@ class DecoupledDataLoader:
             model_cfg, train_cfg, tracks,
             autoencoder=autoencoder,
             device=device,
-            min_unmasked=min_unmasked
+            min_unmasked=min_unmasked,
+            generator=generator
         )
         
         self.metadata_queue = Queue(maxsize=100)
         self.running = True
         # Feeder thread is created per epoch in __iter__
         self.feeder_thread = None
+    
+    def _detect_existing_masks_from_raw_batch(self, raw_batch):
+        """Detect pre-existing masks in raw data based on mask notation."""
+        batch_size = len(raw_batch)
+        masks = {}
+        
+        # Initialize all masks to False
+        for track in self.tracks:
+            if self.tracks[track] and track not in ['struct', 'orthologous_groups', 'semantic_description']:
+                masks[track] = torch.zeros(batch_size, self.L, device=torch.device('cpu')).bool()
+        
+        # Detect masks for each sample in batch
+        for i, protein in enumerate(raw_batch):
+            # Sequence: detect '*' 
+            if 'seq' in masks and hasattr(protein, 'seq'):
+                for j, aa in enumerate(protein.seq):
+                    if j < self.L and aa == '*':
+                        masks['seq'][i, j] = True
+            
+            # Coordinates: align coordinate masks with sequence masks
+            # For pre-masked proteins, coordinate masking should follow sequence masking
+            if 'coords' in masks and hasattr(protein, 'coords') and hasattr(protein, 'seq'):
+                # Check each position's coordinates
+                for j in range(len(protein.seq)):
+                    if j < self.L and j < protein.coords.shape[0]:
+                        # Only mask coordinates where sequence is also masked (has '*')
+                        if protein.seq[j] == '*':
+                            masks['coords'][i, j] = True
+            
+            # PLDDT: detect -1
+            if 'plddt' in masks and hasattr(protein, 'plddt'):
+                for j, val in enumerate(protein.plddt):
+                    if j < self.L and val == -1:
+                        masks['plddt'][i, j] = True
+            
+            # SASA: detect -1
+            if 'sasa' in masks and hasattr(protein, 'sasa'):
+                for j, val in enumerate(protein.sasa):
+                    if j < self.L and val == -1:
+                        masks['sasa'][i, j] = True
+            
+            # SS8: detect '*'
+            if 'ss8' in masks and hasattr(protein, 'ss8'):
+                for j, val in enumerate(protein.ss8):
+                    if j < self.L and val == '*':
+                        masks['ss8'][i, j] = True
+                        
+            # Domains: could have '*' but it's multi-dimensional, skip for now
+        
+        # Structure masks follow coordinate masks
+        if self.tracks.get('struct', False) and 'coords' in masks:
+            masks['struct'] = masks['coords'].clone()
+            
+        return masks
     
     def _feeder_loop(self):
         # Assign an epoch_id and target at the start
@@ -88,10 +159,18 @@ class DecoupledDataLoader:
                 break
             if raw_batch is None:
                 continue
-            # Delegate mask generation to subclass
-            masks, metadata = self.sample_masks(self.tracks, len(raw_batch))
-            if self.tracks.get('struct', False):
-                masks['struct'] = masks['coords']
+            
+            # Check if we should detect existing masks
+            if self.detect_existing_masks:
+                # Detect masks from raw data
+                masks = self._detect_existing_masks_from_raw_batch(raw_batch)
+                metadata = None
+            else:
+                # Delegate mask generation to subclass
+                masks, metadata = self.sample_masks(self.tracks, len(raw_batch))
+                if self.tracks['struct']:
+                    masks['struct'] = masks['coords']
+                    
             self.metadata_queue.put(metadata)
             self.pipeline.submit_batch(raw_batch, masks)
         
@@ -119,6 +198,9 @@ class DecoupledDataLoader:
             except Empty:
                 metadata = None
             batch.metadata = metadata if metadata else {}
+            
+
+            
             yield batch
         
         # End epoch in pipeline and ensure feeder dies cleanly
@@ -261,18 +343,4 @@ class DiffusionDataLoader(DecoupledDataLoader):
             masks[track] = desired_masks.bool()
 
         return masks, metadata
-
-
-def _get_training_dataloader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=_DEFAULT_MIN_UNMASKED, **kwargs):
-    # Determine dataloader type based on mask_config type
-    if isinstance(train_cfg.mask_config, SimpleMaskConfig):
-        return SimpleDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
-    elif isinstance(train_cfg.mask_config, ComplexMaskConfig):
-        return ComplexDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
-    elif isinstance(train_cfg.mask_config, DiffusionMaskConfig):
-        return DiffusionDataLoader(dataset, model_cfg, train_cfg, tracks, device, min_unmasked=min_unmasked, **kwargs)
-    elif isinstance(train_cfg.mask_config, NoMaskConfig):
-        return NoMaskDataLoader(dataset, model_cfg, train_cfg, tracks, device, **kwargs)
-    else:
-        raise ValueError(f"Unknown mask config type: {type(train_cfg.mask_config)}. Expected SimpleMaskConfig, ComplexMaskConfig, DiffusionMaskConfig, or NoMaskConfig.")
    

@@ -193,17 +193,14 @@ class StructureTokenCache:
         self.hits = 0
         self.misses = 0
     
-    def _compute_hash(self, coords: torch.Tensor) -> str:
-        """Compute a hash for coordinates tensor."""
+    def _compute_hash(self, coords) -> str:
+        """Compute a hash for the coordinates tensor."""
         # Use first 10 residues for hash (usually stable)
-        # This is faster than hashing the entire structure
         key_coords = coords[:min(10, coords.shape[0])].cpu()
-        
-        # Convert to bytes and hash
         coords_bytes = key_coords.numpy().tobytes()
         return hashlib.md5(coords_bytes).hexdigest()
     
-    def get(self, coords: torch.Tensor) -> Optional[torch.Tensor]:
+    def get(self, coords) -> Optional[torch.Tensor]:
         """
         Retrieve cached tokens for given coordinates.
         Returns cached tokens if found, None otherwise.
@@ -221,7 +218,7 @@ class StructureTokenCache:
                 self.misses += 1
                 return None
     
-    def put(self, coords: torch.Tensor, tokens: torch.Tensor):
+    def put(self, coords, tokens):
         """Store tokens in cache."""
         key = self._compute_hash(coords)
         
@@ -444,11 +441,7 @@ class PartiallyTokenizedBatch:
         self.device = torch.device('cpu')
         self.B = 0  # Batch size
         self.L = 0  # Sequence length
-        
-        # Special: coords are processed but structure tokens are not
-        self.coords_need_structure_tokens = False
-        self.masked_coords_for_structure = None  # Store for later GPU tokenization
-    
+            
     def to(self, device):
         """Move all batch data to the specified device - matching MaskedBatch.to()"""
         # Update device attribute
@@ -462,17 +455,23 @@ class PartiallyTokenizedBatch:
         # Move all data dictionaries to device
         for key in self.masked_data.keys():
             safe_to_device(self.masked_data, key)
+            
+        for key in self.unmasked_data.keys():
             safe_to_device(self.unmasked_data, key)
+            
+        for key in self.beospank.keys():
             safe_to_device(self.beospank, key)
             
         # Move masks to device
         for key in self.masks.keys():
             safe_to_device(self.masks, key)
         
-        # Move special coords if present
-        if self.masked_coords_for_structure is not None:
-            self.masked_coords_for_structure = self.masked_coords_for_structure.to(device)
-            
+        # Move metadata tensors to device (for diffusion loader compatibility)
+        if hasattr(self, 'metadata') and self.metadata:
+            for key, value in self.metadata.items():
+                if isinstance(value, torch.Tensor):
+                    self.metadata[key] = value.to(device)
+                    
         return self
 
 
@@ -481,14 +480,7 @@ class CPUTokenizationStage:
     Handles all CPU-based tokenization operations.
     This can run safely in DataLoader workers.
     """
-    
-    def __init__(self, model_cfg, train_cfg, tracks, device='cpu', min_unmasked=None):
-        from odyssey.src.tokenizer import (
-            SequenceTokenizer, CoordinatesTokenizer, SS8Tokenizer,
-            SASATokenizer, PLDDTTokenizer, OrthologousGroupsTokenizer,
-            SemanticDescriptionTokenizer, DomainsTokenizer, CorruptionMode
-        )
-        
+    def __init__(self, model_cfg, train_cfg, tracks, device='cpu', min_unmasked=None, generator=None):        
         self.device = torch.device(device)
         self.tracks = tracks
         self.L = model_cfg.max_len
@@ -496,8 +488,8 @@ class CPUTokenizationStage:
         self.G = model_cfg.max_len_orthologous_groups
         self.H = model_cfg.max_len_semantic_description
         
-        # Use provided min_unmasked or defaults
-        self.min_unmasked = min_unmasked if min_unmasked else {'seq': 0, 'coords': 0}
+        # min_unmasked is guaranteed to be provided (always has 'seq' and 'coords' keys)
+        self.min_unmasked = min_unmasked
         
         # Determine corruption mode
         if hasattr(train_cfg.mask_config, 'corruption_mode'):
@@ -508,29 +500,15 @@ class CPUTokenizationStage:
         else:
             corruption_mode = CorruptionMode.MASK
         
-        # Initialize CPU tokenizers (no autoencoder!) with proper min_unmasked
-        self.sequence_tokenizer = SequenceTokenizer(
-            self.L, min_unmasked=self.min_unmasked.get('seq', 0), 
-            generator=None, corruption_mode=corruption_mode
-        )
-        self.coordinates_tokenizer = CoordinatesTokenizer(
-            self.L, min_unmasked=self.min_unmasked.get('coords', 0), 
-            generator=None
-        )
-        self.ss8_tokenizer = SS8Tokenizer(
-            self.L, generator=None, corruption_mode=corruption_mode
-        )
-        self.sasa_tokenizer = SASATokenizer(
-            self.L, generator=None, corruption_mode=corruption_mode
-        )
-        self.plddt_tokenizer = PLDDTTokenizer(
-            self.L, generator=None, corruption_mode=corruption_mode
-        )
+        # Initialize CPU tokenizers with proper min_unmasked and generator (same as dataloader_old.py)
+        self.sequence_tokenizer = SequenceTokenizer(self.L, min_unmasked=self.min_unmasked['seq'], generator=generator, corruption_mode=corruption_mode)
+        self.coordinates_tokenizer = CoordinatesTokenizer(self.L, min_unmasked=self.min_unmasked['coords'], generator=generator)
+        self.ss8_tokenizer = SS8Tokenizer(self.L, generator=generator, corruption_mode=corruption_mode)
+        self.sasa_tokenizer = SASATokenizer(self.L, generator=generator, corruption_mode=corruption_mode)
+        self.plddt_tokenizer = PLDDTTokenizer(self.L, generator=generator, corruption_mode=corruption_mode)
         self.orthologous_groups_tokenizer = OrthologousGroupsTokenizer(self.G)
         self.semantic_description_tokenizer = SemanticDescriptionTokenizer(self.H)
-        self.domains_tokenizer = DomainsTokenizer(
-            self.L, self.K, generator=None, corruption_mode=corruption_mode
-        )
+        self.domains_tokenizer = DomainsTokenizer(self.L, self.K, generator=generator, corruption_mode=corruption_mode)
     
     def tokenize_batch(self, raw_batch: RawBatch, masks: Dict) -> PartiallyTokenizedBatch:
         """
@@ -548,10 +526,9 @@ class CPUTokenizationStage:
         result.masks = masks
         result.device = self.device
         result.B = len(raw_batch)
-        result.L = self.L
         
         # Tokenize sequences
-        if self.tracks.get('seq', False):
+        if self.tracks['seq']:
             seq_data = []
             for idx, seq in enumerate(raw_batch.sequences):
                 seq_data.append(self.sequence_tokenizer.tokenize(seq, masks['seq'][idx]))
@@ -562,28 +539,20 @@ class CPUTokenizationStage:
             result.beospank['seq'] = torch.stack(beospank, dim=0).bool()
             result.masks['seq'] = torch.stack(seq_masks, dim=0).bool()
         
-        # Process coordinates (but NOT structure tokens)
-        if self.tracks.get('coords', False) or self.tracks.get('struct', False):
+        # Tokenize coordinates
+        if self.tracks['coords']:
             coords_data = []
             for idx, coords in enumerate(raw_batch.coords):
-                # Only do coordinate padding/masking, not structure tokenization
-                coords_data.append(
-                    self.coordinates_tokenizer.tokenize(coords, masks['coords'][idx])
-                )
+                coords_data.append(self.coordinates_tokenizer.tokenize(coords, masks['coords'][idx]))
             
             padded_coords, masked_coords, coords_beospank, coords_masks = zip(*coords_data)
             result.unmasked_data['coords'] = torch.stack(padded_coords, dim=0)
             result.masked_data['coords'] = torch.stack(masked_coords, dim=0)
             result.beospank['coords'] = torch.stack(coords_beospank, dim=0).bool()
             result.masks['coords'] = torch.stack(coords_masks, dim=0).bool()
-            
-            # Mark that we need structure tokens if requested
-            if self.tracks.get('struct', False):
-                result.coords_need_structure_tokens = True
-                result.masked_coords_for_structure = result.masked_data['coords']
-        
+                    
         # Tokenize SS8
-        if self.tracks.get('ss8', False):
+        if self.tracks['ss8']:
             ss8_data = []
             for idx, ss8 in enumerate(raw_batch.ss8):
                 ss8_data.append(self.ss8_tokenizer.tokenize(ss8, masks['ss8'][idx]))
@@ -595,7 +564,7 @@ class CPUTokenizationStage:
             result.masks['ss8'] = torch.stack(ss8_masks, dim=0).bool()
         
         # Tokenize SASA
-        if self.tracks.get('sasa', False):
+        if self.tracks['sasa']:
             sasa_data = []
             for idx, sasa in enumerate(raw_batch.sasa):
                 sasa_data.append(self.sasa_tokenizer.tokenize(sasa, masks['sasa'][idx]))
@@ -607,7 +576,7 @@ class CPUTokenizationStage:
             result.masks['sasa'] = torch.stack(sasa_masks, dim=0).bool()
         
         # Tokenize pLDDT
-        if self.tracks.get('plddt', False):
+        if self.tracks['plddt']:
             plddt_data = []
             for idx, plddt in enumerate(raw_batch.plddt):
                 plddt_data.append(self.plddt_tokenizer.tokenize(plddt, masks['plddt'][idx]))
@@ -619,7 +588,7 @@ class CPUTokenizationStage:
             result.masks['plddt'] = torch.stack(plddt_masks, dim=0).bool()
         
         # Tokenize orthologous groups
-        if self.tracks.get('orthologous_groups', False):
+        if self.tracks['orthologous_groups']:
             og_data = []
             for og in raw_batch.orthologous_groups:
                 og_data.append(self.orthologous_groups_tokenizer.tokenize(og))
@@ -629,7 +598,7 @@ class CPUTokenizationStage:
             result.beospank['orthologous_groups'] = torch.stack(beospank, dim=0).bool()
         
         # Tokenize semantic descriptions
-        if self.tracks.get('semantic_description', False):
+        if self.tracks['semantic_description']:
             sd_data = []
             for sd in raw_batch.semantic_description:
                 sd_data.append(self.semantic_description_tokenizer.tokenize(sd))
@@ -639,12 +608,10 @@ class CPUTokenizationStage:
             result.beospank['semantic_description'] = torch.stack(beospank, dim=0).bool()
         
         # Tokenize domains
-        if self.tracks.get('domains', False):
+        if self.tracks['domains']:
             domains_data = []
             for idx, domains in enumerate(raw_batch.domains):
-                domains_data.append(
-                    self.domains_tokenizer.tokenize(domains, masks['domains'][idx])
-                )
+                domains_data.append(self.domains_tokenizer.tokenize(domains, masks['domains'][idx]))
             
             unmasked, masked, beospank, domain_masks = zip(*domains_data)
             result.unmasked_data['domains'] = torch.stack(unmasked, dim=0)
@@ -660,109 +627,74 @@ class GPUStructureTokenizationStage:
     Handles GPU-based structure tokenization via autoencoder.
     This must run in the main process on GPU.
     """
-    
-    def __init__(self, autoencoder, device='cuda', cache_size=500):
+    def __init__(self, model_cfg, train_cfg, autoencoder, device='cuda', min_unmasked=None, generator=None):
         self.autoencoder = autoencoder
         self.device = torch.device(device)
-        self.cache = StructureTokenCache(max_size=cache_size)
+        self.cache = StructureTokenCache(max_size=500)
+        self.L = model_cfg.max_len
         
-        # Get autoencoder config for tokenization
+        # Create a reusable StructureTokenizer instance (same pattern as CPU stage)
         if autoencoder is not None:
-            self.fsq_output_max = autoencoder.codebook_size - 1
-            from odyssey.src.vocabulary import SPECIAL_TOKENS
-            self.mapping = {
-                name: member.value + self.fsq_output_max + 1 
-                for name, member in SPECIAL_TOKENS.__members__.items()
-            }
+            # min_unmasked is guaranteed to be provided (always has 'seq' and 'coords' keys)
+            self.min_unmasked = min_unmasked
+            
+            # Determine corruption mode (same logic as CPU stage)
+            if hasattr(train_cfg.mask_config, 'corruption_mode'):
+                if train_cfg.mask_config.corruption_mode == "absorb":
+                    corruption_mode = CorruptionMode.MASK
+                else:
+                    corruption_mode = CorruptionMode.UNIFORM
+            else:
+                corruption_mode = CorruptionMode.MASK
+            
+            # Initialize structure tokenizer with proper configuration and generator (same as dataloader_old.py)
+            self.structure_tokenizer = StructureTokenizer(self.L, autoencoder, min_unmasked=self.min_unmasked['coords'], generator=generator, corruption_mode=corruption_mode)
     
     def tokenize_batch_structures(self, partial_batch: PartiallyTokenizedBatch) -> None:
         """
         Complete structure tokenization for a partially tokenized batch.
-        Modifies the batch in-place.
+        Uses pre-computed coordinate tokenization results for efficiency.
         
         Args:
-            partial_batch: Batch with CPU tokenization complete
+            partial_batch: Batch with CPU tokenization complete (including coords)
         """
-        if not partial_batch.coords_need_structure_tokens:
-            return
-        
+        # Check if structure tokenization is needed
         if self.autoencoder is None:
             raise ValueError("Autoencoder required for structure tokenization")
         
-        B = partial_batch.B
-        masked_coords = partial_batch.masked_coords_for_structure  # [B, L, H, 3]
-        coords_beospank = partial_batch.beospank['coords']  # [B, L]
-        coords_masks = partial_batch.masks['coords']  # [B, L]
+        # Use pre-computed coordinate data with StructureTokenizer
+        struct_data = []
         
-        # Collect structure tokens for the batch
-        struct_tokens_batch = []
-        
-        for b in range(B):
-            coords_b = masked_coords[b]  # [L, H, 3]
-            beospank_b = coords_beospank[b]  # [L]
-            masks_b = coords_masks[b]  # [L]
+        for b in range(partial_batch.B):
+            # Get pre-computed coordinate data from CPU stage and move to GPU
+            padded_coords = partial_batch.unmasked_data['coords'][b].to(self.device)
+            masked_coords = partial_batch.masked_data['coords'][b].to(self.device)
+            coords_beospank = partial_batch.beospank['coords'][b].to(self.device)
+            coords_masks = partial_batch.masks['coords'][b].to(self.device)
             
-            # Check cache first
-            cached_tokens = self.cache.get(coords_b)
+            # Set cache and call structure tokenizer with pre-computed coordinate results
+            self.structure_tokenizer._structure_cache = self.cache
             
-            if cached_tokens is not None:
-                struct_tokens_batch.append(cached_tokens)
-            else:
-                # Tokenize via autoencoder - ONE BY ONE like the working version
-                with torch.no_grad():
-                    # Move to GPU for autoencoder
-                    coords_gpu = coords_b.unsqueeze(0).to(self.device)
-                    beospank_gpu = beospank_b.unsqueeze(0).to(self.device)
-                    masks_gpu = masks_b.unsqueeze(0).to(self.device)
-                    
-                    # Get structure tokens
-                    three_atom = coords_gpu[:, :, :3, :]
-                    four_atom = coords_gpu[:, :, :4, :]
-                    content_elements = (~masks_gpu & ~beospank_gpu)
-                    nonbeospank = ~beospank_gpu
-                    
-                    if self.autoencoder.cfg.first_block_cfg.initials() in ("GA", "RA"):
-                        tokens = self.autoencoder.encode_to_tokens(
-                            three_atom, coords=four_atom,
-                            content_elements=content_elements,
-                            nonbeospank=nonbeospank
-                        )
-                    else:
-                        tokens = self.autoencoder.encode_to_tokens(
-                            three_atom, nonbeospank=nonbeospank
-                        )
-                    
-                    tokens = tokens.squeeze(0).long().squeeze(-1).cpu()
-                    
-                    # Apply special tokens
-                    bos_position = 0
-                    eos_position = beospank_b.numel() - beospank_b.sum() + 1
-                    tokens[beospank_b] = self.mapping['PAD']
-                    tokens[bos_position] = self.mapping['BOS']
-                    tokens[eos_position] = self.mapping['EOS']
-                    
-                    # Cache the result
-                    self.cache.put(coords_b, tokens)
-                    struct_tokens_batch.append(tokens)
-        
-        # Stack and add to batch
-        partial_batch.unmasked_data['struct'] = torch.stack(struct_tokens_batch, dim=0)
-        
-        # Apply masking/corruption to structure tokens
-        masked_struct = []
-        for b in range(B):
-            struct_tokens = partial_batch.unmasked_data['struct'][b]
-            struct_mask = partial_batch.masks['struct'][b] if 'struct' in partial_batch.masks else partial_batch.masks['coords'][b]
+            # Pass all pre-computed coordinate data - no need for separate coords/mask args
+            precomputed_coords = (padded_coords, masked_coords, coords_beospank, coords_masks)
+            full_output = self.structure_tokenizer.tokenize(precomputed_coords=precomputed_coords)
             
-            # Apply masking - set masked positions to MASK token
-            masked_tokens = struct_tokens.clone()
-            masked_tokens[struct_mask] = self.mapping['MASK']
+            # Extract only structure data (indices 4-7)
+            struct_output = (
+                full_output[4].cpu(),  # padded_struct_tokens
+                full_output[5].cpu(),  # masked_struct_tokens
+                full_output[6].cpu(),  # struct_beospank
+                full_output[7].cpu()   # struct_masks
+            )
             
-            masked_struct.append(masked_tokens)
+            struct_data.append(struct_output)
         
-        partial_batch.masked_data['struct'] = torch.stack(masked_struct, dim=0)
-        partial_batch.beospank['struct'] = partial_batch.beospank['coords'].clone()
-        partial_batch.masks['struct'] = partial_batch.masks['coords'].clone()
+        # Store structure results
+        unmasked, masked, beospank, struct_masks = zip(*struct_data)
+        partial_batch.unmasked_data['struct'] = torch.stack(unmasked, dim=0)
+        partial_batch.masked_data['struct'] = torch.stack(masked, dim=0)
+        partial_batch.beospank['struct'] = torch.stack(beospank, dim=0).bool()
+        partial_batch.masks['struct'] = torch.stack(struct_masks, dim=0).bool()
 
 
 class TokenizationPipeline:
@@ -775,9 +707,8 @@ class TokenizationPipeline:
     3. Batches data for efficient GPU tokenization
     4. Produces final MaskedBatch objects ready for training
     """
-    
     def __init__(self, model_cfg, train_cfg, tracks, autoencoder=None, 
-                 device='cuda', cpu_buffer_size=20, gpu_buffer_size=10, min_unmasked=None):
+                 device='cuda', cpu_buffer_size=20, gpu_buffer_size=10, min_unmasked=None, generator=None):
         """
         Args:
             model_cfg: Model configuration
@@ -788,20 +719,16 @@ class TokenizationPipeline:
             cpu_buffer_size: Max batches in CPU tokenization queue
             gpu_buffer_size: Max batches in GPU tokenization queue
         """
-        from queue import Queue
-        
         self.model_cfg = model_cfg
         self.train_cfg = train_cfg
         self.tracks = tracks
         self.device = torch.device(device)
         
-        # Create pipeline stages with min_unmasked
-        self.cpu_stage = CPUTokenizationStage(model_cfg, train_cfg, tracks, device='cpu', min_unmasked=min_unmasked)
+        # Create pipeline stages with min_unmasked and generator
+        self.cpu_stage = CPUTokenizationStage(model_cfg, train_cfg, tracks, device='cpu', min_unmasked=min_unmasked, generator=generator)
         
-        if autoencoder is not None and tracks.get('struct', False):
-            self.gpu_stage = GPUStructureTokenizationStage(
-                autoencoder, device=device, cache_size=500
-            )
+        if autoencoder is not None and tracks['struct']:
+            self.gpu_stage = GPUStructureTokenizationStage(model_cfg, train_cfg, autoencoder, device=device, min_unmasked=min_unmasked, generator=generator)
         else:
             self.gpu_stage = None
         
@@ -879,10 +806,11 @@ class TokenizationPipeline:
                     continue
                 partial_batch = self.cpu_stage.tokenize_batch(raw_batch, masks)
                 # Tag with epoch_id
-                tagged = (self.epoch_id, partial_batch)
                 if self.gpu_stage:
+                    tagged = (self.epoch_id, partial_batch)
                     self.cpu_queue.put(tagged)
                 else:
+                    tagged = (self.epoch_id, partial_batch)
                     self.ready_queue.put(tagged)
                     self.emitted += 1
             except Empty:

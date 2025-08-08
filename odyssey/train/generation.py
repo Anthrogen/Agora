@@ -198,7 +198,7 @@ def visualize_structure_comparison(original_coords, reconstructed_coords, genera
     print("VISUALIZATION COMPLETE")
     print("="*80)
 
-def generate(model_checkpoint, callback=None):
+def generate(model_checkpoint, protein_json_path, callback=None):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -242,44 +242,34 @@ def generate(model_checkpoint, callback=None):
     ###########################################################################
     #  Data Loading 
     ###########################################################################
-    # Set seed for dataset split
+    # Set seed for consistent generation
     data_seed = transformer_model_cfg.reference_model_seed
     torch.manual_seed(data_seed)
     np.random.seed(data_seed)
     random.seed(data_seed)
 
     # Create DataLoaders with fixed seed for consistent masking
-    g_train = torch.Generator()
-    g_train.manual_seed(data_seed)
     g_val = torch.Generator()
     g_val.manual_seed(data_seed + 5000 + 1)
 
-    print("Loading dataset...")
-    dataset = ProteinDataset(transformer_train_cfg.data_dir, mode=dataset_mode, max_length=transformer_model_cfg.max_len - 2, max_length_orthologous_groups=transformer_model_cfg.max_len_orthologous_groups - 2, max_length_semantic_description=transformer_model_cfg.max_len_semantic_description - 2)
-    print("...done.")
-    val_size = max(1, int(0.2 * len(dataset)))
-    train_size = len(dataset) - val_size
+    print(f"Creating protein dataset from JSON: {protein_json_path}")
+    dataset = ProteinDataset(protein_json_path, mode=dataset_mode, max_length=transformer_model_cfg.max_len - 2, max_length_orthologous_groups=transformer_model_cfg.max_len_orthologous_groups - 2, max_length_semantic_description=transformer_model_cfg.max_len_semantic_description - 2)
+    print(f"Dataset size: {len(dataset)}")
 
-    # We use g_val as the generator of the split
-    _, data = random_split(dataset, [train_size, val_size], generator=g_val)
-
-    print(f"Constructed Validation Dataset of size {val_size}")
-    print(data)
-
-    # Do not mask anything.
+    # Use the training dataloader for generation
     GENERATION_BATCH_SIZE = 1
-    # For actual generation we need to use Nonmasking dataloader.
-    # val_loader = NoMaskDataLoader(data, transformer_model_cfg, transformer_train_cfg, tracks, device, batch_size=GENERATION_BATCH_SIZE, shuffle=False, generator=g_val, 
-    #                                     worker_init_fn=worker_init_fn, min_unmasked=min_unmasked, 
-    #                                     autoencoder=autoencoder)
-    val_loader = _get_training_dataloader(data, transformer_model_cfg, transformer_train_cfg, tracks, device, batch_size=GENERATION_BATCH_SIZE, shuffle=False, generator=g_val, 
-                                        worker_init_fn=worker_init_fn, min_unmasked=min_unmasked, autoencoder=autoencoder)
+    val_loader = _get_training_dataloader(dataset, transformer_model_cfg, transformer_train_cfg, tracks, device, 
+                                         batch_size=GENERATION_BATCH_SIZE, shuffle=False, generator=g_val, 
+                                         worker_init_fn=worker_init_fn, min_unmasked=min_unmasked, autoencoder=autoencoder)
 
     transformer.eval()
     with torch.no_grad():
         
         for batch in val_loader:
             if batch is None: continue
+            
+            # Move batch to correct device (from CPU to GPU)
+            batch = batch.to(device)
             
             if transformer_model_cfg.style == "mlm":
                 batch = generate_mlm(transformer, transformer_model_cfg, transformer_train_cfg, batch) #, NUM_TO_UNMASK=2048)
@@ -325,13 +315,16 @@ def generate(model_checkpoint, callback=None):
                     coords = autoencoder.decoder(z_q, coords=four_atom, content_elements=content_elements, nonbeospank=nonbeospank, seq_tokens=batch.masked_data['seq'])
                 else: coords = autoencoder.decoder(z_q, nonbeospank=nonbeospank, seq_tokens=batch.masked_data['seq'])
                 
-                # Get reconstructed coordinates by passing original through autoencoder
+                # Get reconstructed coordinates by passing original unmasked data through full autoencoder
                 with torch.no_grad():
                     three_atom = batch.unmasked_data['coords'][:, :, :3, :]
                     four_atom = batch.unmasked_data['coords'][:, :, :4, :]
+                    
+                    # Pass through full autoencoder with original sequence tokens
                     if model_type in ("GA", "RA"): 
-                        reconstructed_coords, _ = autoencoder(three_atom, four_atom, ~batch.beospank['coords'], ~batch.beospank['coords'])
-                    else: reconstructed_coords, _ = autoencoder(three_atom, nonbeospank=~batch.beospank['coords'])
+                        reconstructed_coords, _ = autoencoder(three_atom, coords=four_atom, content_elements=content_elements, nonbeospank=nonbeospank, seq_tokens=batch.unmasked_data['seq'])
+                    else: 
+                        reconstructed_coords, _ = autoencoder(three_atom, content_elements=content_elements, nonbeospank=nonbeospank, seq_tokens=batch.unmasked_data['seq'])
                 
                 # Visualize the structure comparison
                 generated_coords_np = coords.squeeze(0).cpu().numpy()
@@ -345,13 +338,16 @@ def generate(model_checkpoint, callback=None):
 if __name__ == "__main__":
     """
     Easy way to test:
-    python generate.py --checkpoint ../../checkpoints/transformer_trunk/mlm_simple_config/mlm_simple_config_000/checkpoint_step_34443.pt
-    python generate.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_absorb_config/discrete_diffusion_absorb_config_000/checkpoint_step_55740.pt
-    python generate.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_uniform_config/discrete_diffusion_uniform_config_000/checkpoint_step_45924.pt
+    python generation.py --checkpoint ../../checkpoints/transformer_trunk/mlm_simple_config/mlm_simple_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A0B4DZM7-F1.json
+    python generation.py --checkpoint ../../checkpoints/transformer_trunk/mlm_complex_config/mlm_complex_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A0B4DZM7-F1.json
+    python generation.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_absorb_config/discrete_diffusion_absorb_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A0B4DZM7-F1.json
+    python generation.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_uniform_config/discrete_diffusion_uniform_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A0B4DZM7-F1.json
     """
     parser = argparse.ArgumentParser(description='Generate Odyssey models')
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to fully trained model checkpoint')
+    parser.add_argument('--protein', type=str, required=True, help='Path to protein JSON file')
     args = parser.parse_args()
     
     assert os.path.exists(args.checkpoint), f"Checkpoint {args.checkpoint} does not exist."
-    batch = generate(args.checkpoint)
+    assert os.path.exists(args.protein), f"Protein file {args.protein} does not exist."
+    batch = generate(args.checkpoint, args.protein)

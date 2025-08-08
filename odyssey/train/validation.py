@@ -18,7 +18,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from odyssey.src.models.transformer import TransformerTrunk
 from odyssey.src.models.autoencoder import Autoencoder
 from odyssey.src.dataset import ProteinDataset
-from odyssey.src.dataloader import _get_training_dataloader, MaskedBatch, worker_init_fn, SimpleDataLoader, MaskingDataLoader
+from odyssey.src.dataloader import _get_training_dataloader, worker_init_fn, SimpleDataLoader
 from odyssey.src.dataloader import _get_noise_levels
 from odyssey.src.model_librarian import load_model_from_checkpoint
 from odyssey.src.configurations import *
@@ -28,13 +28,20 @@ from mlm_step import mlm_step
 from discrete_diffusion_step import discrete_diffusion_step
 from fsq_step import stage_1_step, stage_2_step
 
-class CustomSimpleDataLoader(MaskingDataLoader):
+class CustomSimpleDataLoader(SimpleDataLoader):
     """SimpleDataLoader that allows custom corruption mode."""
     def __init__(self, dataset, model_cfg, train_cfg, tracks, device, corruption_mode=CorruptionMode.MASK, autoencoder=None, min_unmasked=None, **kwargs):
         if min_unmasked is None:
             min_unmasked = {'seq': 0, 'coords': 1}
         
-        super(CustomSimpleDataLoader, self).__init__(dataset, corruption_mode, model_cfg, train_cfg, tracks, device, autoencoder=autoencoder, min_unmasked=min_unmasked, **kwargs)
+        # Modify train_cfg to have the desired corruption mode
+        if hasattr(train_cfg.mask_config, 'corruption_mode'):
+            modified_mask_config = replace(train_cfg.mask_config, corruption_mode="absorb" if corruption_mode == CorruptionMode.MASK else "uniform")
+            modified_train_cfg = replace(train_cfg, mask_config=modified_mask_config)
+        else:
+            modified_train_cfg = train_cfg
+            
+        super(CustomSimpleDataLoader, self).__init__(dataset, model_cfg, modified_train_cfg, tracks, device, autoencoder=autoencoder, min_unmasked=min_unmasked, **kwargs)
 
         assert isinstance(train_cfg.mask_config, SimpleMaskConfig)
         # Use mask_prob_seq as default for sequence-like tracks, mask_prob_struct for structure-like tracks
@@ -51,7 +58,7 @@ class CustomSimpleDataLoader(MaskingDataLoader):
         masks = {}
         for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'orthologous_groups' and t != 'semantic_description')]:
             # Create masks with fixed probabilities
-            mask = torch.rand(batch_len, self.L, device=self.device) < self.simple_mask_prob[track]
+            mask = torch.rand(batch_len, self.L, device=torch.device('cpu')) < self.simple_mask_prob[track]
             masks[track] = mask.bool()
 
         return masks, None
@@ -74,13 +81,13 @@ def compute_mask_prob_for_time(t: int, diffusion_cfg: DiffusionMaskConfig) -> fl
     
     return mask_prob.item()
 
-def evaluate_mlm_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, model_cfg: TransformerConfig, train_cfg: TrainingConfig) -> Dict[str, float]:
+def evaluate_mlm_model(model: TransformerTrunk, batch, model_type: str, model_cfg: TransformerConfig, train_cfg: TrainingConfig) -> Dict[str, float]:
     """Evaluate an MLM model using cross-entropy loss on a single batch."""
     with torch.no_grad():
         retval = mlm_step(model, optimizer=None, scheduler=None, batch=batch, model_cfg=model_cfg, train_cfg=train_cfg, train_mode=False)
         return retval
 
-def evaluate_diffusion_model(model: TransformerTrunk, batch: MaskedBatch, model_type: str, timestep: int, model_cfg: TransformerConfig, diffusion_cfg: DiffusionMaskConfig,
+def evaluate_diffusion_model(model: TransformerTrunk, batch, model_type: str, timestep: int, model_cfg: TransformerConfig, diffusion_cfg: DiffusionMaskConfig,
                            train_cfg: TrainingConfig, device: torch.device) -> Dict[str, float]:
     """Evaluate a diffusion model using score entropy loss on a single batch."""
 
@@ -262,6 +269,9 @@ def validate(path_to_model_checkpoint_absorb: str,
             for batch in tqdm(val_loader, desc=f"Validating {model_name} at timestep {timestep}", leave=True, ncols=100):
                 if batch is None:
                     continue
+                
+                # Move batch to correct device (from CPU to GPU)
+                batch = batch.to(device)
                 
                 # Call appropriate evaluation function based on training method
                 if model_name in ['simple', 'complex']:

@@ -261,6 +261,9 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                     # Skip empty/None batches
                     if batch_data is None: continue
                     
+                    # Move batch to correct device (from CPU to GPU)
+                    batch_data = batch_data.to(device)
+                    
                     # Train single model on batch
                     train_metrics = step_fn(model, optimizer, scheduler, batch_data, model_cfg, train_cfg, train_mode=True)
                     
@@ -299,6 +302,9 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
 
                                 # Skip empty/None batches
                                 if val_batch_data is None: continue
+                                
+                                # Move batch to correct device (from CPU to GPU)
+                                val_batch_data = val_batch_data.to(device)
                                     
                                 # Validate single model on batch
                                 val_metrics = step_fn(model, optimizer, scheduler, val_batch_data, model_cfg, train_cfg, train_mode=False)

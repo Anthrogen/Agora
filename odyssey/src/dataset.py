@@ -155,24 +155,40 @@ class Protein():
         for residue_idx in range(len(n_indices) - 1): # -1 because of the phantom N
             start_idx, end_idx = n_indices[residue_idx], n_indices[residue_idx + 1]
 
-            filled = torch.zeros(len(BACKBONE) if not self.mode == "side_chain" else len(ATOMS[sequence[residue_idx]]))
-            if sequence[residue_idx] == "G":
-                filled[ATOM_CB_ENC] = 1 # We'll fill it in later with a phantom CB.
+            if sequence[residue_idx] == '*':
+                # For masked sequence positions, read all coordinates sequentially
+                coord_idx = 0
+                for atom_idx in range(start_idx, end_idx):
+                    atom_name = atom_names[atom_idx]
+                    
+                    # Skip OXT - these are terminal/additional atoms not part of the residue
+                    # Also skip all hydrogen atoms.
+                    if atom_name == "OXT" or atom_name.startswith("H"): continue
+                    
+                    # If we exceed the tensor size, just skip the remaining atoms
+                    if coord_idx < all_coords.shape[1]:
+                        all_coords[residue_idx, coord_idx, :] = atom_coords[atom_idx, :]
+                        coord_idx += 1
+            else:
+                # For unmasked sequence positions, use proper amino acid lookup
+                filled = torch.zeros(len(BACKBONE) if not self.mode == "side_chain" else len(ATOMS[sequence[residue_idx]]))
+                if sequence[residue_idx] == "G":
+                    filled[ATOM_CB_ENC] = 1 # We'll fill it in later with a phantom CB.
 
-            for atom_idx in range(start_idx, end_idx):
-                atom_name = atom_names[atom_idx]
-                
-                # Skip OXT - these are terminal/additional atoms not part of the residue
-                # Also skip all hydrogen atoms.
-                if atom_name == "OXT" or atom_name.startswith("H"): continue
-                
-                if self.mode == "side_chain" or ((not self.mode == "side_chain") and (atom_name in BACKBONE)):
-                    position = ATOMS[sequence[residue_idx]].index(atom_name)
-                    all_coords[residue_idx, position, :] = atom_coords[atom_idx, :]
-                    filled[position] += 1
+                for atom_idx in range(start_idx, end_idx):
+                    atom_name = atom_names[atom_idx]
+                    
+                    # Skip OXT - these are terminal/additional atoms not part of the residue
+                    # Also skip all hydrogen atoms.
+                    if atom_name == "OXT" or atom_name.startswith("H"): continue
+                    
+                    if self.mode == "side_chain" or ((not self.mode == "side_chain") and (atom_name in BACKBONE)):
+                        position = ATOMS[sequence[residue_idx]].index(atom_name)
+                        all_coords[residue_idx, position, :] = atom_coords[atom_idx, :]
+                        filled[position] += 1
 
-            # Check to make sure we have one (and only one) of each atom.
-            assert torch.allclose(filled, torch.ones_like(filled)), f"Residue {residue_idx} has missing or extra atoms."
+                # Check to make sure we have one (and only one) of each atom.
+                assert torch.allclose(filled, torch.ones_like(filled)), f"Residue {residue_idx} has missing or extra atoms."
         
 
         ##########################################################
@@ -308,19 +324,23 @@ class Protein():
         # Update sequence
         data['sequence'] = ''.join(self.seq)
         
-        # Update all_atoms if coordinates are available
+        # Update all_atoms and backbone_coordinates if coordinates are available
         if hasattr(self, 'coords') and self.coords is not None:
             if 'all_atoms' not in data:
                 data['all_atoms'] = {'atom_names': [], 'atom_coordinates': []}
+            if 'backbone_coordinates' not in data:
+                data['backbone_coordinates'] = {'N': [], 'CA': [], 'C': []}
             
             atom_coords_list = []
             atom_names_list = []
+            backbone_n_coords = []
+            backbone_ca_coords = []
+            backbone_c_coords = []
             
             # Reconstruct atom coordinates for each residue
             for residue_idx in range(self.len):
                 residue_char = self.seq[residue_idx]
-                if residue_char not in ATOMS:
-                    continue
+                if residue_char not in ATOMS: continue
                     
                 # Get atoms for this residue type
                 residue_atoms = ATOMS[residue_char]
@@ -333,9 +353,28 @@ class Protein():
                         if any(c != 0 for c in coord):
                             atom_names_list.append(atom_name)
                             atom_coords_list.append(coord)
+                            
+                            # Also update backbone coordinates
+                            if atom_name == 'N':
+                                backbone_n_coords.append(coord)
+                            elif atom_name == 'CA':
+                                backbone_ca_coords.append(coord)
+                            elif atom_name == 'C':
+                                backbone_c_coords.append(coord)
+                
+                # Ensure backbone coordinates are added even if they're zero (to maintain indexing)
+                if len(backbone_n_coords) <= residue_idx:
+                    backbone_n_coords.append(self.coords[residue_idx, 0, :].tolist())  # N is typically at index 0
+                if len(backbone_ca_coords) <= residue_idx:
+                    backbone_ca_coords.append(self.coords[residue_idx, 1, :].tolist())  # CA is typically at index 1
+                if len(backbone_c_coords) <= residue_idx:
+                    backbone_c_coords.append(self.coords[residue_idx, 2, :].tolist())  # C is typically at index 2
             
             data['all_atoms']['atom_names'] = atom_names_list
             data['all_atoms']['atom_coordinates'] = atom_coords_list
+            data['backbone_coordinates']['N'] = backbone_n_coords
+            data['backbone_coordinates']['CA'] = backbone_ca_coords
+            data['backbone_coordinates']['C'] = backbone_c_coords
         
         # Write to file
         with open(file_path, 'w') as f:

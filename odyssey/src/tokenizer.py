@@ -183,7 +183,6 @@ class CoordinatesTokenizer(Tokenizer):
 
         return padded_coords, masked_coords, coords_beospank.bool(), coords_masks.bool() # coords_pad_pos.bool()
 
-
     def print_token(self, tok):
         s = "["
         for row in range(tok.shape[0]):
@@ -215,11 +214,12 @@ class StructureTokenizer(Tokenizer):
 
             self.coordinates_tokenizer = CoordinatesTokenizer(full_length, min_unmasked=min_unmasked, generator=generator)
 
-    def tokenize(self, coords, mask): # coords should be UNTOKENIZED.
+    def tokenize(self, coords=None, mask=None, precomputed_coords=None):
         """
         Args:
-            coords: Tensor of coordinates, shape [M, H, 3]
-            mask: Boolean mask for MASK positions
+            coords: Tensor of coordinates, shape [M, H, 3] OR if precomputed_coords provided, this is masked_coords
+            mask: Boolean mask for MASK positions OR if precomputed_coords provided, this is coords_masks
+            precomputed_coords: Optional tuple (padded_coords, coords_beospank, coords_masks) to skip coordinate tokenization
         Returns:
             padded_coords: Tensor of coordinates, shape [self.full_length, H, 3]
             masked_coords: Tensor of coordinates, shape [self.full_length, H, 3]    
@@ -230,29 +230,61 @@ class StructureTokenizer(Tokenizer):
             struct_beospank: Boolean mask for BOS/EOS/PAD positions
             struct_masks: Boolean mask for MASK positions
         """
-        device = mask.device
         assert self.autoencoder is not None, "Autoencoder is not set!"
         
-        # Pass through coordinates tokenizer to get padded coords and beospank.
-        padded_coords, masked_coords, coords_beospank, coords_masks = self.coordinates_tokenizer.tokenize(coords, mask)
+        if precomputed_coords is not None:
+            # Use pre-computed coordinate tokenization results
+            padded_coords, masked_coords, coords_beospank, coords_masks = precomputed_coords
+        else:
+            # Pass through coordinates tokenizer to get padded coords and beospank.
+            padded_coords, masked_coords, coords_beospank, coords_masks = self.coordinates_tokenizer.tokenize(coords, mask)
+        
+        # Set device from the coordinate tensors
+        device = masked_coords.device
         bos_position = 0
         eos_position = coords_beospank.numel() - coords_beospank.sum() + 1 
 
         with torch.no_grad():
-            # FSQ encoder expects [B, L, 3, 3]; if coords contain 4 atoms use first 3
-            three_atom = masked_coords[:, :3, :]
-            four_atom = masked_coords[:, :4, :]
-            three_atom = three_atom.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
-            four_atom = four_atom.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
-            content_elements = (~coords_masks & ~coords_beospank).unsqueeze(0).to(next(self.autoencoder.parameters()).device)
-            nonbeospank = ~coords_beospank.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
-            
-            # For GA/RA cases, we need to pass the coordinates and mask
-            if self.autoencoder.cfg.first_block_cfg.initials() in ("GA", "RA"):
-                struct_tokens_full = self.autoencoder.encode_to_tokens(three_atom, coords=four_atom, content_elements=content_elements, nonbeospank=nonbeospank)
+            # Check cache first if available
+            if hasattr(self, '_structure_cache') and self._structure_cache is not None:
+                cached_result = self._structure_cache.get(masked_coords)
+                if cached_result is not None:
+                    struct_tokens_full = cached_result.to(masked_coords.device)
+                else:
+                    # Cache miss - compute and cache
+                    # FSQ encoder expects [B, L, 3, 3]; if coords contain 4 atoms use first 3
+                    three_atom = masked_coords[:, :3, :]
+                    four_atom = masked_coords[:, :4, :]
+                    three_atom = three_atom.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                    four_atom = four_atom.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                    content_elements = (~coords_masks & ~coords_beospank).unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                    nonbeospank = ~coords_beospank.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                    
+                    # For GA/RA cases, we need to pass the coordinates and mask
+                    if self.autoencoder.cfg.first_block_cfg.initials() in ("GA", "RA"):
+                        struct_tokens_full = self.autoencoder.encode_to_tokens(three_atom, coords=four_atom, content_elements=content_elements, nonbeospank=nonbeospank)
+                    else:
+                        struct_tokens_full = self.autoencoder.encode_to_tokens(three_atom, nonbeospank=nonbeospank)
+                    struct_tokens_full = struct_tokens_full.squeeze(0).long().squeeze(-1)         # [L] - must be long for embedding
+                    
+                    # Cache the result
+                    self._structure_cache.put(masked_coords, struct_tokens_full)
             else:
-                struct_tokens_full = self.autoencoder.encode_to_tokens(three_atom, nonbeospank=nonbeospank)
-            struct_tokens_full = struct_tokens_full.squeeze(0).long().squeeze(-1)         # [L] - must be long for embedding
+                # No cache - compute directly
+                # FSQ encoder expects [B, L, 3, 3]; if coords contain 4 atoms use first 3
+                three_atom = masked_coords[:, :3, :]
+                four_atom = masked_coords[:, :4, :]
+                three_atom = three_atom.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                four_atom = four_atom.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                content_elements = (~coords_masks & ~coords_beospank).unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                nonbeospank = ~coords_beospank.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                
+                # For GA/RA cases, we need to pass the coordinates and mask
+                if self.autoencoder.cfg.first_block_cfg.initials() in ("GA", "RA"):
+                    struct_tokens_full = self.autoencoder.encode_to_tokens(three_atom, coords=four_atom, content_elements=content_elements, nonbeospank=nonbeospank)
+                else:
+                    struct_tokens_full = self.autoencoder.encode_to_tokens(three_atom, nonbeospank=nonbeospank)
+                struct_tokens_full = struct_tokens_full.squeeze(0).long().squeeze(-1)         # [L] - must be long for embedding
 
         # ------------------------------------------------------------------ #
         # Postprocess FSQ output -- replace BOS, EOS, PAD positions with special tokens
@@ -410,7 +442,7 @@ class SASATokenizer(Tokenizer):
         # Optimal bin boundaries based on quantile analysis of 22,185 real SASA values
         # Each bin contains approximately equal numbers of residues (~1,386 each)
         if value is None:  return self.mapping["UNK"]
-        if value == '*': return self.mapping["MASK"]
+        if value == -1: return self.mapping["MASK"]
         idx = bisect_right(self.thresholds, value)
         return self.mapping[f"BIN_{idx}"]
 
@@ -498,10 +530,11 @@ class PLDDTTokenizer(Tokenizer):
     def _bin_plddt_value(self, value):
         """Convert continuous pLDDT value to bin token using uniform intervals."""
         if value is None: return self.mapping["UNK"]
-        if value == '*': return self.mapping["MASK"]
-        assert value >= 0
-        idx = bisect_right(self.thresholds, value)
-        return self.mapping[f"BIN_{idx}"]
+        if value == -1: return self.mapping["MASK"]
+        if value >= 0:  # Only assert for valid values, not for mask values
+            idx = bisect_right(self.thresholds, value)
+            return self.mapping[f"BIN_{idx}"]
+        return self.mapping["MASK"]  # Fallback for any other invalid values
         
     def tokenize(self, observation, mask):
         """
