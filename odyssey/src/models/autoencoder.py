@@ -266,6 +266,14 @@ class Autoencoder(nn.Module):
         self.quantizer = Quantizer(levels=cfg.encoder_cfg.fsq_levels, dim=cfg.encoder_cfg.fsq_dim, scale=1)
         self.codebook_size = math.prod(cfg.encoder_cfg.fsq_levels)
 
+        self.param_dvc = None
+
+    def get_device(self):
+        if self.param_dvc is None:
+            self.param_dvc = next(self.encoder.input_proj.parameters()).device
+
+        return self.param_dvc
+
     def encode_to_tokens(self, x: torch.Tensor, coords: Optional[torch.Tensor] = None, content_elements: Optional[torch.Tensor] = None, nonbeospank: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Convenience method for tokenization that returns only the indices.

@@ -52,7 +52,7 @@ model_cfg:
 # =============================================================================
 train_cfg:
   training_cfg:
-    batch_size: 2
+    batch_size: 5
     max_epochs: 150
     checkpoint_freq: 10000
     max_steps_val: 500

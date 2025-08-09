@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from odyssey.src.models.autoencoder import Autoencoder
 from odyssey.src.models.transformer import TransformerTrunk
-from odyssey.src.dataloader import NoMaskDataLoader, worker_init_fn
+from odyssey.src.dataloader import ContentBasedDataLoader, worker_init_fn
 from odyssey.src.dataset import ProteinDataset, Protein
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.model_librarian import load_model_from_checkpoint
@@ -228,16 +228,13 @@ def generate_single_protein(protein_json_path: str, model_checkpoint: str, refer
     
     print(f"Dataset size: {len(dataset)}")
 
-    # Use NoMaskDataLoader since asterisks are automatically converted to MASK tokens
+    # Use ContentBasedDataLoader to properly handle existing masks in the protein data
     GENERATION_BATCH_SIZE = 1
-    print("Creating NoMaskDataLoader (asterisks auto-converted to MASK tokens)...")
+    print("Creating ContentBasedDataLoader (masks based on data content: *, [-1,-1,-1], -1, ...")
     
-    # Create a modified train config with NoMaskConfig for production
-    production_train_cfg = replace(transformer_train_cfg, mask_config=NoMaskConfig())
-    
-    val_loader = NoMaskDataLoader(dataset, transformer_model_cfg, production_train_cfg, tracks, device, 
-                                 batch_size=GENERATION_BATCH_SIZE, shuffle=False, generator=g_val, 
-                                 worker_init_fn=worker_init_fn, autoencoder=autoencoder, detect_existing_masks=True)
+    val_loader = ContentBasedDataLoader(dataset, transformer_model_cfg, transformer_train_cfg, tracks, device, 
+                                       batch_size=GENERATION_BATCH_SIZE, shuffle=False, generator=g_val, 
+                                       autoencoder=autoencoder, min_unmasked=min_unmasked, worker_init_fn=worker_init_fn)
 
     ###########################################################################
     # Generation (same as generate.py)
@@ -298,8 +295,8 @@ def generate_single_protein(protein_json_path: str, model_checkpoint: str, refer
             
             # Update sequence and coordinates
             protein.seq = list(generated_sequence)
-            protein.len = len(protein.seq)  # Update length to match new sequence
             protein.coords = generated_coords
+            protein.len = len(protein.seq)  # Update length to match new sequence
             
             # Auto-create output path in gen folder
             protein_dir = os.path.dirname(protein_json_path)

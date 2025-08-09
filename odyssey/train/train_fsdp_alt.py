@@ -224,6 +224,8 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         local_rank = 0
         is_fsdp = False  # Disable FSDP if not distributed
+
+    assert "cuda" in str(device), f"Device {device} is not cuda:0"
     
     # If a user just passes in a single set of configs, listify them.
     if isinstance(model_cfg_list, TransformerConfig) and isinstance(train_cfg_list, TrainingConfig):
@@ -376,6 +378,9 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             autoencoder, autoencoder_model_cfg, _ = load_model_from_checkpoint(model_cfg.autoencoder_path, device)
             autoencoder.encoder.eval(); autoencoder.encoder.requires_grad_(False)
             autoencoder.quantizer.eval(); autoencoder.quantizer.requires_grad_(False)  # Also freeze quantizer
+
+            assert "cuda" in str(autoencoder.get_device()), f"Autoenocder on {autoencoder.get_devcice()}, CUDA required."
+
             if isinstance(model, Autoencoder): 
                 model.encoder = autoencoder.encoder # Update the encoder to match the loaded encoder
                 model.quantizer = autoencoder.quantizer # Update the quantizer to match the loaded quantizer
@@ -613,6 +618,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                     # Update progress bar with moving average metrics
                     prefix = model_cfg.first_block_cfg.initials()
                     postfix = {f"{prefix}_{k}": f"{v:.3f}" for k, v in moving_avg_metrics.items()}
+                    postfix["Sat"] = train_loader.saturation()
                     # Print saturation
                     pbar.set_postfix(postfix)
 

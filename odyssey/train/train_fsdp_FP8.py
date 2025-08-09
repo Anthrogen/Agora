@@ -24,6 +24,16 @@ import yaml
 from datetime import timedelta
 from torch.distributed.fsdp import MixedPrecision
 
+# Add TransformerEngine FP8
+try:
+    from transformer_engine.pytorch import fp8_autocast as te_fp8_autocast
+    from transformer_engine.common.recipe import DelayedScaling
+    import transformer_engine.pytorch as te
+    TE_AVAILABLE = True
+except Exception as _:
+    TE_AVAILABLE = False
+    print("Warning: TransformerEngine not available; FP8 path disabled.")
+
 # FSDP imports
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import (
@@ -75,7 +85,31 @@ from odyssey.src.models.blocks import (
     ConsensusTransformerBlock
 )
 
-from itertools import islice
+# Convert modules to TE equivalents for best FP8 perf
+def convert_model_to_te_fp8_modules(model: nn.Module, verbose: bool = False) -> nn.Module:
+    if not TE_AVAILABLE:
+        return model
+    for name, module in list(model.named_children()):
+        convert_model_to_te_fp8_modules(module, verbose)
+        if isinstance(module, nn.Linear):
+            te_linear = te.Linear(module.in_features, module.out_features, bias=(module.bias is not None))
+            with torch.no_grad():
+                te_linear.weight.copy_(module.weight)
+                if module.bias is not None and te_linear.bias is not None:
+                    te_linear.bias.copy_(module.bias)
+            setattr(model, name, te_linear)
+            if verbose: print(f"Converted nn.Linear -> te.Linear at {name}")
+        elif isinstance(module, nn.LayerNorm):
+            te_ln = te.LayerNorm(module.normalized_shape, eps=module.eps, elementwise_affine=module.elementwise_affine)
+            with torch.no_grad():
+                if module.weight is not None and te_ln.weight is not None:
+                    te_ln.weight.copy_(module.weight)
+                if module.bias is not None and te_ln.bias is not None:
+                    te_ln.bias.copy_(module.bias)
+            setattr(model, name, te_ln)
+            if verbose: print(f"Converted nn.LayerNorm -> te.LayerNorm at {name}")
+    return model
+
 
 def create_transformer_block_wrap_policy():
     """Create FSDP wrapping policy that only wraps transformer blocks.
@@ -382,21 +416,14 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             model_cfg = model_cfg_loaded  # Replace the original model_cfg with the loaded one
             model_cfg_list[i] = model_cfg  # Update the list to persist changes
 
+        # Convert to TransformerEngine modules for FP8 (optional, if TE available)
+        if TE_AVAILABLE:
+            if rank == 0: print("  Converting model modules to TransformerEngine equivalents for FP8...")
+            model = convert_model_to_te_fp8_modules(model, verbose=(rank==0))
+
         autoencoder = None
         if load_fsq_encoder: 
-            # Each rank loads its own copy of the autoencoder on its own GPU
             autoencoder, autoencoder_model_cfg, _ = load_model_from_checkpoint(model_cfg.autoencoder_path, device)
-            
-            # Ensure autoencoder is on the correct device for this rank
-            autoencoder = autoencoder.to(device)
-            
-            # Convert autoencoder to FP16 for faster inference
-            if device.type == 'cuda':
-                autoencoder = autoencoder.half()
-                if rank == 0:
-                    print(f"  Converted autoencoder to FP16 for faster inference")
-                print(f"[Rank {rank}] Autoencoder loaded on {device}")
-            
             autoencoder.encoder.eval(); autoencoder.encoder.requires_grad_(False)
             autoencoder.quantizer.eval(); autoencoder.quantizer.requires_grad_(False)  # Also freeze quantizer
             if isinstance(model, Autoencoder): 
@@ -408,31 +435,29 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
         # Wrap model with FSDP if enabled
         if is_fsdp and is_distributed:
             if rank == 0: print(f"  Wrapping model with FSDP (only transformer blocks)...")
-            
             # Create the wrapping policy that only wraps transformer blocks
             auto_wrap_policy = create_transformer_block_wrap_policy()
-            
-            # Configure fp16 mixed precision
-            fp16_policy = MixedPrecision(
-                param_dtype=torch.float16,
-                reduce_dtype=torch.float16,
-                buffer_dtype=torch.float16,
+            # Configure bf16 mixed precision for params/reduction/buffers (better with FP8 compute)
+            mp_policy = MixedPrecision(
+                param_dtype=torch.bfloat16,
+                reduce_dtype=torch.bfloat16,
+                buffer_dtype=torch.bfloat16,
             )
-            
-            # FSDP configuration
+            # Wrap with classic FSDP API
             fsdp_config = dict(
                 auto_wrap_policy=auto_wrap_policy,
-                mixed_precision=fp16_policy,  # Enable fp16 mixed precision
+                mixed_precision=mp_policy,
                 sharding_strategy=ShardingStrategy.FULL_SHARD,
                 cpu_offload=CPUOffload(offload_params=False),
                 backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
                 device_id=torch.cuda.current_device(),
-                sync_module_states=False,  # Disabled for multi-node training
+                sync_module_states=False,
             )
-            
-            # For stage_2: only wrap decoder (frozen encoder incompatible with FSDP)
-            if model_cfg.style == "stage_2": model.decoder = FSDP(model.decoder, **fsdp_config)
-            else: model = FSDP(model, **fsdp_config)
+            if isinstance(model, Autoencoder) and model_cfg.style == "stage_2":
+                model.decoder = FSDP(model.decoder, **fsdp_config)
+            else:
+                model = FSDP(model, **fsdp_config)
+            # legacy: composable fully_shard path removed for broader compatibility
             
             # Debug: Show which modules were actually wrapped and FSDP's view of world
             if rank == 0:
@@ -553,8 +578,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                 shuffle=False, min_unmasked=min_unmasked_list[i],
                 autoencoder=autoencoder, num_workers=num_workers,
                 pin_memory=True, persistent_workers=(num_workers > 0),
-                prefetch_factor=2 if num_workers > 0 else None,
-                use_fp16=True  # Enable FP16 for autoencoder inference
+                prefetch_factor=2 if num_workers > 0 else None
             )
             val_loader = _get_training_dataloader(
                 val_ds, model_cfg, train_cfg, tracks_list[i], loader_device,
@@ -562,8 +586,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                 shuffle=False, min_unmasked=min_unmasked_list[i],
                 autoencoder=autoencoder, num_workers=num_workers,
                 pin_memory=True, persistent_workers=(num_workers > 0),
-                prefetch_factor=2 if num_workers > 0 else None,
-                use_fp16=True  # Enable FP16 for autoencoder inference
+                prefetch_factor=2 if num_workers > 0 else None
             )
         else:
             # For single GPU, use fewer workers but still enable parallelism
@@ -595,8 +618,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                 min_unmasked=min_unmasked_list[i],
                 autoencoder=autoencoder, num_workers=num_workers,
                 pin_memory=True, persistent_workers=(num_workers > 0),
-                prefetch_factor=2 if num_workers > 0 else None,
-                use_fp16=True  # Enable FP16 for autoencoder inference
+                prefetch_factor=2 if num_workers > 0 else None
             )
             val_loader = _get_training_dataloader(
                 val_ds, model_cfg, train_cfg, tracks_list[i], loader_device,
@@ -604,8 +626,7 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                 min_unmasked=min_unmasked_list[i],
                 autoencoder=autoencoder, num_workers=num_workers,
                 pin_memory=True, persistent_workers=(num_workers > 0),
-                prefetch_factor=2 if num_workers > 0 else None,
-                use_fp16=True  # Enable FP16 for autoencoder inference
+                prefetch_factor=2 if num_workers > 0 else None
             )
         
         train_loaders.append(train_loader)
@@ -661,32 +682,23 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             model.train()
             # Only show progress bar on rank 0
             disable_pbar = rank != 0
-            max_steps_epoch = len(train_loader)
-            itr = iter(train_loader)
-            with tqdm(
-                total=max_steps_epoch,
-                desc=f"Epoch {epoch+1} [Model {model_idx+1}: {model_cfg.first_block_cfg.initials()} Train]",
-                ascii=True,
-                leave=True,
-                ncols=150,
-                disable=disable_pbar,
-            ) as pbar:
-                for _ in range(max_steps_epoch):
-                    try:
-                        batch_data = next(itr)
-                    except StopIteration:
-                        break
+            with tqdm(train_loader, desc=f"Epoch {epoch+1} [Model {model_idx+1}: {model_cfg.first_block_cfg.initials()} Train]", ascii=True, leave=True, ncols=150, disable=disable_pbar) as pbar:
+                for batch_data in pbar:
                     steps[model_idx] += 1
                     # Skip empty/None batches
-                    if batch_data is None:
-                        pbar.update(1)
-                        continue
+                    if batch_data is None: continue
                     
                     # Move batch to correct device (from CPU to GPU)
                     batch_data = batch_data.to(device)
                     
-                    # Train single model on batch with bfloat16
-                    train_metrics = step_fn(model, optimizer, scheduler, batch_data, model_cfg, train_cfg, train_mode=True)
+                    # Train single model on batch (FP8 autocast if available)
+                    if TE_AVAILABLE:
+                        recipe = DelayedScaling()
+                        with te_fp8_autocast(enabled=True, fp8_recipe=recipe):
+                            train_metrics = step_fn(model, optimizer, scheduler, batch_data, model_cfg, train_cfg, train_mode=True)
+                    else:
+                        # legacy: no FP8 path; run as before
+                        train_metrics = step_fn(model, optimizer, scheduler, batch_data, model_cfg, train_cfg, train_mode=True)
                     
                     # Extract single-batch training metrics (no accumulation)
                     epoch_train_metrics = {k: value for k, (value, count) in train_metrics.items()}
@@ -711,17 +723,19 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                     # Update progress bar with moving average metrics
                     prefix = model_cfg.first_block_cfg.initials()
                     pbar.set_postfix({f"{prefix}_{k}": f"{v:.3f}" for k, v in moving_avg_metrics.items()})
-                    pbar.update(1)
 
                     # Log batch-level training metrics to wandb (high frequency)
                     if rank == 0 and wandb_run is not None and model_idx == 0:  # Only log first model's batch metrics
                         batch_log = {"step": steps[model_idx]}  # Using 'step' as step counter (it's actually batch number)
                         batch_log["batch/epoch"] = epoch + 1  # Current epoch (actual epoch)
+                        
                         # Log all training metrics at batch level
                         for metric_name, metric_value in epoch_train_metrics.items():
                             batch_log[f"batch/train_{metric_name}"] = metric_value
+                        
                         # Log learning rate
                         batch_log["batch/learning_rate"] = optimizer.param_groups[0]['lr']
+                        
                         wandb.log(batch_log)
 
                     # Save periodic checkpoints and calculate validation metrics
@@ -773,7 +787,12 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                                 val_batch_data = val_batch_data.to(device)
                                     
                                 # All ranks participate in forward pass (FSDP requirement)
-                                val_metrics = step_fn(model, optimizer, scheduler, val_batch_data, model_cfg, train_cfg, train_mode=False)
+                                if TE_AVAILABLE:
+                                    recipe = DelayedScaling()
+                                    with te_fp8_autocast(enabled=True, fp8_recipe=recipe):
+                                        val_metrics = step_fn(model, optimizer, scheduler, val_batch_data, model_cfg, train_cfg, train_mode=False)
+                                else:
+                                    val_metrics = step_fn(model, optimizer, scheduler, val_batch_data, model_cfg, train_cfg, train_mode=False)
                                 
                                 # Only rank 0 accumulates metrics to avoid duplicate counting
                                 if rank == 0:
@@ -830,18 +849,6 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                         # CRITICAL: Synchronize all ranks after validation phase
                         # This ensures all ranks stay at the same step count
                         if is_distributed: dist.barrier()
-            
-            # Print final epoch stats for selected rank
-            if rank == 5 or (rank == 0 and world_size <= 5):
-                print(f"[Rank {rank}][Training] Epoch {epoch+1} complete - Total steps: {steps[model_idx]}")
-            
-            # Explicitly close the iterator to trigger generator cleanup between epochs
-            try:
-                close_fn = getattr(itr, 'close', None)
-                if callable(close_fn):
-                    close_fn()
-            except Exception:
-                pass
     
     # Clean up dataloaders to terminate persistent workers
     if rank == 0: print("\nCleaning up dataloader workers...")

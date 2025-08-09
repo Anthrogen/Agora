@@ -4,10 +4,13 @@ import random
 from torch.utils.data import DataLoader
 from typing import Tuple
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from odyssey.src.tokenizer import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer, SS8Tokenizer, SASATokenizer, PLDDTTokenizer
-from odyssey.src.tokenizer import OrthologousGroupsTokenizer, SemanticDescriptionTokenizer, DomainsTokenizer, CorruptionMode
+from odyssey.src.tokenizer_alt import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer, SS8Tokenizer, SASATokenizer, PLDDTTokenizer, OrthologousGroupsTokenizer, SemanticDescriptionTokenizer, DomainsTokenizer, CorruptionMode
 import math
 from abc import abstractmethod
+from queue import Queue, Empty
+from threading import Thread, Event
+import threading
+import time
 
 from odyssey.src.configurations import DiffusionMaskConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig
 
@@ -149,9 +152,8 @@ class MaskingDataLoader(DataLoader):
         self.G = model_cfg.max_len_orthologous_groups
         self.H = model_cfg.max_len_semantic_description
 
-        # TODO: get batch size directly from train_cfg.batch_size and apply, if we keep the train_cfg in the constructor argument list.
-        # Override collate_fn with our custom one
-        kwargs['collate_fn'] = self._mask_collate
+        # Set custom collate_fn that just returns raw data without stacking
+        kwargs['collate_fn'] = lambda batch: batch
         
         # Extract generator from kwargs if provided
         generator = kwargs.pop('generator', None)
@@ -175,21 +177,229 @@ class MaskingDataLoader(DataLoader):
         self.propagate_coords_mask = propagate_coords_mask
         self.tracks = tracks
         self.min_unmasked = min_unmasked
+        self.corruption_mode = corruption_mode
 
-    def _mask_collate(self, data):
-        data = [item for item in data if item is not None]
-        if len(data)==0: return None # Return None if all items were filtered out
+        # Thread control
+        self._stop_event = Event()
+        self._iterator_started = False
+        
+        # Queues for the pipeline
+        queue_size = 100
+        self.input_queue = Queue(maxsize=queue_size)
+        self.middle_queue = Queue(maxsize=queue_size)
+        self.output_queue = Queue(maxsize=queue_size)
 
-        batch_len = len(data)
+        # Worker threads
+        self.input_threads = []
+        self.middle_threads = []
+        self.output_threads = []
+        
+        # Counter for total elements retrieved from output queue
+        self._total_got_count = 0
 
-        masks, metadata = self.sample_masks(self.tracks, batch_len)
+    def _start_workers(self):
+        """Start worker threads if not already started."""
+        if not self._iterator_started:
+            self._iterator_started = True
+            self._stop_event.clear()
+            
+            # Configuration for number of threads
+            num_input_threads = 2
+            num_middle_threads = 1
+            num_output_threads = 3
+            
+            # Create input worker threads
+            for i in range(num_input_threads):
+                input_thread = Thread(target=self._input_worker, daemon=True, name=f"input_worker_{i}")
+                self.input_threads.append(input_thread)
+                input_thread.start()
+            
+            # Create middle worker threads
+            for i in range(num_middle_threads):
+                middle_thread = Thread(target=self._middle_worker, daemon=True, name=f"middle_worker_{i}")
+                self.middle_threads.append(middle_thread)
+                middle_thread.start()
+            
+            # Create output worker threads
+            for i in range(num_output_threads):
+                output_thread = Thread(target=self._output_worker, daemon=True, name=f"output_worker_{i}")
+                self.output_threads.append(output_thread)
+                output_thread.start()
+    
+    def _input_worker(self):
+        """Worker that constructs MaskedBatch objects and puts them in input_queue."""
+        try:
+            base_iter = super().__iter__()
+            while not self._stop_event.is_set():
+                try:
+                    # Get next batch from base DataLoader
+                    data = next(base_iter)
+                    
+                    # Filter out None items
+                    data = [item for item in data if item is not None]
+                    if len(data) == 0:
+                        continue
+                    
+                    batch_len = len(data)
+                    masks, metadata = self.sample_masks(self.tracks, batch_len)
+                    
+                    if self.tracks['struct']:
+                        masks['struct'] = masks['coords']
+                    
+                    # Create MaskedBatch without calling cpu_tok/gpu_tok
+                    batch = MaskedBatch(
+                        data, masks, metadata, self.tracks,
+                        self.sequence_tokenizer, self.structure_tokenizer,
+                        self.coordinates_tokenizer, self.ss8_tokenizer,
+                        self.sasa_tokenizer, self.orthologous_groups_tokenizer,
+                        self.semantic_description_tokenizer, self.domains_tokenizer,
+                        self.plddt_tokenizer, device=self.device,
+                        min_unmasked=self.min_unmasked
+                    )
+                    
+                    # Put in input queue
+                    self.input_queue.put(batch, timeout=10.0)
+                    
+                except StopIteration:
+                    break
+                except Exception as e:
+                    if not self._stop_event.is_set():
+                        # print(f"Error in input worker: {e.print_exc()}")
+                        self.stop_workers()
+                        raise e
+                    break
+        finally:
+            # Signal end of input
+            try:
+                self.input_queue.put(None, timeout=10.0)
+            except:
+                pass
+    
+    def _middle_worker(self):
+        """Worker that calls cpu_tok() on batches and moves them to middle_queue."""
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    batch = self.input_queue.get(timeout=10.0)
+                    if batch is None:  # End of input signal
+                        break
+                    
+                    # Call cpu_tok()
+                    batch.cpu_tok()
+                    
+                    # Put in middle queue
+                    self.middle_queue.put(batch, timeout=10.0)
+                    
+                except Empty:
+                    continue
+                except Exception as e:
+                    if not self._stop_event.is_set():
+                        # print(f"Error in middle worker: {e.print_exc()}")
+                        self.stop_workers()
+                        raise e
+                    break
+        finally:
+            # Signal end of middle processing
+            try:
+                self.middle_queue.put(None, timeout=10.0)
+            except:
+                pass
+    
+    def _output_worker(self):
+        """Worker that calls gpu_tok() on batches and moves them to output_queue."""
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    batch = self.middle_queue.get(timeout=10.0)
+                    if batch is None:  # End of middle processing signal
+                        break
+                    
+                    # Call gpu_tok()
+                    batch.gpu_tok()
+                    
+                    # Put in output queue
+                    self.output_queue.put(batch, timeout=10.0)
+                    
+                except Empty:
+                    continue
+                except Exception as e:
+                    if not self._stop_event.is_set():
+                        # print(f"Error in output worker: {e.print_exc()}")
+                        self.stop_workers()
+                        raise e
+                    break
+        finally:
+            # Signal end of output processing
+            try:
+                self.output_queue.put(None, timeout=10.0)
+            except:
+                pass
+    
+    def __iter__(self):
+        """Return iterator that yields from output_queue."""
+        self._start_workers()
+        return self
+    
+    def __next__(self):
+        """Get next batch from output_queue."""
+        if not self._iterator_started:
+            raise StopIteration
+        
+        try:
+            batch = self.output_queue.get(timeout=10.0)
+            if batch is None:  # End of processing signal
+                raise StopIteration
+            self._total_got_count += 1
+            return batch
+        except Empty:
+            raise StopIteration
+    
+    def stop_workers(self):
+        """Stop all worker threads safely."""
+        self._stop_event.set()
+        
+        # Wait for threads to finish with timeout
+        all_threads = self.input_threads + self.middle_threads + self.output_threads
+        for thread in all_threads:
+            if thread and thread.is_alive():
+                thread.join(timeout=2.0)
+        
+        # Clear thread lists
+        self.input_threads = []
+        self.middle_threads = []
+        self.output_threads = []
+        
+        # Clear queues
+        for queue in [self.input_queue, self.middle_queue, self.output_queue]:
+            while True:
+                try:
+                    queue.get_nowait()
+                except Empty:
+                    break
+        
+        self._iterator_started = False
+    
+    def __del__(self):
+        """Cleanup when dataloader is destroyed."""
+        try:
+            self.stop_workers()
+        except:
+            pass
+    
+    def saturation(self):
+        """Return queue sizes and total number of elements retrieved from output_queue.
+        
+        Returns:
+            tuple: (input_queue_size, middle_queue_size, output_queue_size, total_got_count)
+        """
+        # return (
+        #     self.input_queue.qsize(),
+        #     self.middle_queue.qsize(),
+        #     self.output_queue.qsize(),
+        #     self._total_got_count
+        # )
 
-        if self.tracks['struct']: masks['struct'] = masks['coords']
-
-        batch = MaskedBatch(data, masks, metadata, self.tracks, self.sequence_tokenizer, self.structure_tokenizer, self.coordinates_tokenizer, self.ss8_tokenizer, self.sasa_tokenizer, 
-                              self.orthologous_groups_tokenizer, self.semantic_description_tokenizer, self.domains_tokenizer, self.plddt_tokenizer, device=self.device, min_unmasked=self.min_unmasked)
-
-        return batch
+        return f"In {self.input_queue.qsize()}, Middle {self.middle_queue.qsize()}, Out {self.output_queue.qsize()}, Total Passes {self._total_got_count}"
     
     @abstractmethod
     def sample_masks(self, tracks, batch_len):
@@ -210,7 +420,7 @@ class SimpleDataLoader(MaskingDataLoader):
         for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'orthologous_groups' and t != 'semantic_description')]:
 
             # Create masks with fixed probabilities
-            mask = torch.rand(batch_len, self.L, device=self.device) < self.simple_mask_prob[track]
+            mask = torch.rand(batch_len, self.L) < self.simple_mask_prob[track]
             masks[track] = mask.bool()
 
         return masks, None
@@ -231,15 +441,15 @@ class ComplexDataLoader(MaskingDataLoader):
         for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'orthologous_groups' and t != 'semantic_description')]:
 
             # Sample mask rates for each protein in batch
-            if track == 'seq': probs = _sample_betalinear30(batch_len, device=self.device)
-            elif track == 'coords': probs = _sample_cosine(batch_len, device=self.device)
-            else: probs = _sample_sqrt(batch_len, device=self.device)
+            if track == 'seq': probs = _sample_betalinear30(batch_len)
+            elif track == 'coords': probs = _sample_cosine(batch_len)
+            else: probs = _sample_sqrt(batch_len)
             
             # Create masks with per-protein rates
             # Expand rates to [B, L] and sample IID Bernoulli
             probs_full = probs.unsqueeze(1).expand(batch_len, self.L)
             
-            mask = torch.rand(batch_len, self.L, device=self.device) < probs_full
+            mask = torch.rand(batch_len, self.L) < probs_full
             masks[track] = mask.bool()
 
             metadata[track] = probs
@@ -254,7 +464,7 @@ class NoMaskDataLoader(MaskingDataLoader):
     def sample_masks(self, tracks, batch_len):
         masks = {}
         for track in [t for t in tracks if (tracks[t] and t != 'struct' and t != 'orthologous_groups' and t != 'semantic_description')]:
-            masks[track] = torch.zeros(batch_len, self.L, device=self.device).bool()
+            masks[track] = torch.zeros(batch_len, self.L).bool()
 
         return masks, None
 
@@ -285,7 +495,7 @@ class DiffusionDataLoader(MaskingDataLoader):
 
     def sample_masks(self, tracks, batch_len):
         # Sample timestep indices uniformly from [0, T-1]
-        timestep_indices = torch.randint(0, self.diffusion_cfg.num_timesteps, (batch_len,), device=self.device)
+        timestep_indices = torch.randint(0, self.diffusion_cfg.num_timesteps, (batch_len,))
         # Get corresponding noise levels
         cumulative_noise_level = self.cumulative_noise_levels[timestep_indices].unsqueeze(1)  # [B, 1]
         inst_noise_levels = self.inst_noise_levels[timestep_indices].unsqueeze(1)
@@ -296,7 +506,7 @@ class DiffusionDataLoader(MaskingDataLoader):
 
             mask_prob = 1 - torch.exp(-cumulative_noise_level)
             mask_prob_expanded = mask_prob.expand(batch_len, self.L)
-            desired_masks = torch.rand(batch_len, self.L, device=self.device) < mask_prob_expanded
+            desired_masks = torch.rand(batch_len, self.L) < mask_prob_expanded
             masks[track] = desired_masks.bool()
 
         return masks, metadata
@@ -308,11 +518,11 @@ class MaskedBatch():
         
         """Custom collate function that applies discrete diffusion noise."""
         # self.device = device if device is not None else torch.device("cpu")
-        self.tracks = tracks
         self.min_unmasked = min_unmasked
 
         self.tracks = tracks
         self.data = data
+        self.device = device
 
         # Unpack batch from ProteinDataset
         self.masked_data = {'seq': None, 'struct': None, 'coords': None, 'ss8': None, 'sasa': None, 'domains': None, 'plddt': None}
@@ -336,8 +546,7 @@ class MaskedBatch():
         #########################################################################
         # Tokenize sequences, structures, and context-specific data
         #########################################################################
-        self.cpu_tok()
-        self.gpu_tok()
+
 
     def cpu_tok(self):
 
@@ -380,7 +589,8 @@ class MaskedBatch():
         if self.tracks['coords'] and not self.tracks['struct']:
             coords_data = []
             for idx, coords in enumerate(self.coords_list):
-                coords_data.append(self.coordinates_tokenizer.tokenize(coords.to(self.device), self.masks['coords'][idx]))
+                # Don't move coords to device yet - let tokenizer handle it
+                coords_data.append(self.coordinates_tokenizer.tokenize(coords, self.masks['coords'][idx]))
             
             # Unpack the 4-tuple returned by tokenize_from_coords
             coords_results = list(zip(*coords_data))
@@ -452,17 +662,17 @@ class MaskedBatch():
             self.masks['plddt'] = torch.stack(self.masks['plddt'], dim=0).bool()
 
     def gpu_tok(self):
-
-        gpu = self.structure_tokenizer.autoencoder.encoder.device        
-
-        self.coords_list = self.coords_list.to(gpu)
-
+        gpu = self.structure_tokenizer.autoencoder.get_device()
+       
         if self.tracks['struct']:
             coords_data = []
             for idx, coords in enumerate(self.coords_list):
+                # Let tokenizer handle device placement - coords still have variable length here
                 coords_data.append(self.structure_tokenizer.tokenize(coords, self.masks['coords'][idx]))
+
             
-            # Unpack the 4-tuple returned by tokenize_from_coords
+            
+            # Unpack the 8-tuple returned by StructureTokenizer
             coords_results = list(zip(*coords_data))
             self.unmasked_data['coords'] = torch.stack(coords_results[0], dim=0).to(gpu)
             self.masked_data['coords'] = torch.stack(coords_results[1], dim=0).to(gpu)
@@ -473,3 +683,20 @@ class MaskedBatch():
             self.masked_data['struct'] = torch.stack(coords_results[5], dim=0).to(gpu)
             self.beospank['struct'] = torch.stack(coords_results[6], dim=0).to(gpu).bool()
             self.masks['struct'] = torch.stack(coords_results[7], dim=0).to(gpu).bool()
+
+        self.to_device()
+
+    def to_device(self):
+        device = self.device
+        
+        def dict_to_device(d, device):
+            for k in d.keys():
+                d[k] = d[k].to(device)
+
+        
+        dict_to_device(self.unmasked_data, device)
+        dict_to_device(self.masked_data, device)
+        dict_to_device(self.beospank, device)
+        dict_to_device(self.masks, device)
+
+        return self

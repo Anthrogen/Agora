@@ -1,5 +1,5 @@
 import os
-import json # TODO: swap for faster json library
+import orjson # TODO: swap for faster json library
 import mmap
 import numpy as np
 import torch
@@ -80,7 +80,9 @@ class Protein():
         self.mode = mode
 
         assert os.path.exists(file_path)
-        data = json.load(open(file_path))
+        # data = json.load(open(file_path))
+        with open(file_path, 'rb') as f:
+            data = orjson.loads(f.read())
 
         # This dataloader assumes that each amino acid begins with an "N".
         atom_names = data.get("all_atoms", {}).get('atom_names', None)
@@ -228,7 +230,6 @@ class Protein():
 
         Returns: (Cb - N, Cb - C, N - C) for each residue.
         """
-
         assert self.mode != "backbone", "Bond angles are not available for backbone mode."
         # Extract coordinates for N, CA, C, and CB atoms
         coords_N = self.coords[:, ATOM_N_ENC, :]   # (L, 3)
@@ -271,7 +272,6 @@ class Protein():
         """
         Returns and L-dimensional vector of chirality for each residue.
         """
-
         assert self.mode != "backbone", "Chirality is not available for backbone mode."
         
         # Extract coordinates for N, CA, C, and CB atoms
@@ -342,7 +342,7 @@ class Protein():
                 residue_char = self.seq[residue_idx]
                 if residue_char not in ATOMS: continue
                     
-                # Get atoms for this residue type
+                # Get atoms for this residue typee
                 residue_atoms = ATOMS[residue_char]
                 
                 # Add each atom
@@ -377,8 +377,9 @@ class Protein():
             data['backbone_coordinates']['C'] = backbone_c_coords
         
         # Write to file
-        with open(file_path, 'w') as f:
-            json.dump(data, f, indent=2)
+        with open(file_path, 'wb') as f:
+            # json.dump(data, f, indent=2)
+            f.write(orjson.dumps(data, option=orjson.OPT_INDENT_2))
 
     
 # JSON at /workspace/cmu_vqvae_data/single_chain_clusters_full.csv
@@ -388,7 +389,6 @@ class ProteinDataset(Dataset):
     Test me in shell:
     ProteinDataset("/workspace/demo/Odyssey/sample_data/tiny_set.csv")
     """
-
     PROTEIN_ID_COL = 1
     JSON_PATH_COL = 2 # Within the index.csv file, this is the colun (0-indexed) that points ot member Json Path 
     TOTAL_COLS = 4
@@ -531,7 +531,7 @@ class ProteinDataset(Dataset):
         # Load protein (same for both cases)
         try:
             return Protein(json_path, mode=self.mode)
-        except (AssertionError, ValueError, json.decoder.JSONDecodeError, PermissionError, OSError, FileNotFoundError) as e:
+        except (AssertionError, ValueError, orjson.JSONDecodeError, PermissionError, OSError, FileNotFoundError) as e:
             if self.verbose:
                 print(f"Warning: encountered malformed file {json_path}: {e}")
             return None
@@ -558,8 +558,8 @@ class ProteinDataset(Dataset):
             backbone_coords = coords[:, :3, :]  # [L, 3, 3] - only N, CA, C
             centroid = backbone_coords.reshape(-1, 3).mean(dim=0)  # Average position of backbone atoms
             
-            # Only center non-zero atoms (real atoms), leave missing atoms as zeros
-            non_zero_mask = (coords != 0.0).any(dim=-1)  # [L, H] - True for real atoms
-            coords = torch.where(non_zero_mask.unsqueeze(-1), coords - centroid, coords)
+            # Only center positive atoms (real atoms), leave missing atoms (zeros and [-1,-1,-1]) unchanged
+            positive_mask = (coords > 0.0).any(dim=-1)  # [L, H] - True for real atoms with positive coordinates
+            coords = torch.where(positive_mask.unsqueeze(-1), coords - centroid, coords)
 
         return seq, coords, ss8, sasa, orthologous_groups, semantic_description, domains, plddt, l

@@ -28,9 +28,8 @@ def unmask(actual_mask, beospank, min_unmasked, generator):
         if generator is None:
             print("Warning: No generator provided to batch. Using default generator.")
             perm = torch.randperm(candidate_positions.numel(), device=actual_mask.device)
-        else:
-            perm = torch.randperm(candidate_positions.numel(), device=actual_mask.device, generator=generator)
-            # legacy: perm = torch.randperm(candidate_positions.numel(), generator=generator).to(actual_mask.device)
+        else: # Use generator without device parameter to avoid device mismatch
+            perm = torch.randperm(candidate_positions.numel(), generator=generator).to(actual_mask.device)
             
         # Unmask these positions
         positions_to_unmask = candidate_positions[perm[:num_to_unmask]]
@@ -64,8 +63,6 @@ class SequenceTokenizer(Tokenizer):
         self.generator = generator
         self.min_unmasked = min_unmasked
         self.corruption_mode = corruption_mode
-        # cache mask tensors per-device to avoid repeated allocations
-        self._mask_cache = {}
 
     def tokenize(self, observation, mask):
         """
@@ -93,8 +90,8 @@ class SequenceTokenizer(Tokenizer):
         content_len = content.numel()
 
         # Add Padding
-        padded_seq_tokens = torch.full((self.full_length,), self.mapping["PAD"], dtype=torch.long, device=device)
-        padded_seq_tokens[:content_len] = content[:content_len]
+        padding_seq_tokens = torch.full((self.full_length,), self.mapping["PAD"], dtype=torch.long, device=device)
+        padding_seq_tokens[:content_len] = content[:content_len]
 
         # Create sequence beospank mask: 1s for BOS/EOS/PAD/UNK, 0s for real content
         seq_beospank = torch.ones(self.full_length, dtype=torch.bool, device=device)
@@ -102,33 +99,27 @@ class SequenceTokenizer(Tokenizer):
             seq_beospank[1:1+len(seq_tokens)] = 0  # Mark real content as 0, keep BOS/EOS/PAD as 1
             
         # Also mark UNK tokens as 1s
-        seq_beospank[padded_seq_tokens == self.mapping["UNK"]] = 1
-        # seq_pad_pos = (padded_seq_tokens == self.mapping["PAD"])
+        seq_beospank[padding_seq_tokens == self.mapping["UNK"]] = 1
+        # seq_pad_pos = (padding_seq_tokens == self.mapping["PAD"])
 
         seq_masks = mask & ~seq_beospank
         seq_masks = unmask(seq_masks, seq_beospank, self.min_unmasked, self.generator)
-        masked_seq_tokens = self.corrupt(padded_seq_tokens, seq_masks)
+        masked_seq_tokens = self.corrupt(padding_seq_tokens, seq_masks)
         
         # Sanity checks – ensure indices are within vocabulary bounds.
-        assert torch.max(padded_seq_tokens) < len(self.mapping), "Sequence Tokenization failed!"
-        assert torch.min(padded_seq_tokens) >= 0, "Sequence Tokenization failed!"
-        assert padded_seq_tokens.numel() == self.full_length, "Sequence Tokenization failed!"
+        assert torch.max(padding_seq_tokens) < len(self.mapping), "Sequence Tokenization failed!"
+        assert torch.min(padding_seq_tokens) >= 0, "Sequence Tokenization failed!"
+        assert padding_seq_tokens.numel() == self.full_length, "Sequence Tokenization failed!"
 
-        return padded_seq_tokens, masked_seq_tokens, seq_beospank.bool(), seq_masks.bool() # seq_pad_pos.bool()
+        return padding_seq_tokens, masked_seq_tokens, seq_beospank.bool(), seq_masks.bool() # seq_pad_pos.bool()
 
     def corrupt(self, unmasked_data, masks):
         if self.corruption_mode == CorruptionMode.MASK:
-            cache_key = str(unmasked_data.device)
-            mask_tensor = self._mask_cache.get(cache_key)
-            if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-                self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-            return torch.where(masks, mask_tensor, unmasked_data)
+            tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+            return torch.where(masks, tensor_of_masks, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_seq_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_seq_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            uniform_content = torch.randint(0, self.max_seq_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -158,26 +149,36 @@ class CoordinatesTokenizer(Tokenizer):
             coords_beospank: Boolean mask for BOS/EOS/PAD positions
             coords_masks: Boolean mask for MASK positions
         """
-        device = mask.device
+        device = coords.device
         dtype = coords.dtype
         M, H = coords.shape[0], coords.shape[1]
+
+        mask = mask.to(device) # TODO: this is inefficient for some cases where mask is on CUDA, now coming back to CPU, then going back to CUDA for forward pass.
+
         coords = coords[:self.full_length-2]       # reserve space for BOS & EOS
-        actual_content_len = coords.shape[0]
 
-        # Preallocate output and fill slices instead of multiple concatenations
+        # Add BOS and EOS tokens
+        bos_coord = torch.zeros((1, H, 3), dtype=dtype, device=device)  # BOS token
+        eos_coord = torch.zeros((1, H, 3), dtype=dtype, device=device)  # EOS token
+        content_coords = torch.cat([bos_coord, coords, eos_coord], dim=0)  # [C, H, 3]
+        content_len = content_coords.shape[0]
+
+        # Add Padding
+        pad_coords = torch.zeros((self.full_length - content_len, H, 3), dtype=dtype, device=device)
+        padded_coords = torch.cat([content_coords, pad_coords], dim=0)  # [self.full_length, H, 3]
+
         # Create coordinates beospank mask: 1s for BOS/EOS/PAD, 0s for real content
-        padded_coords = torch.zeros((self.full_length, H, 3), dtype=dtype, device=device)
         coords_beospank = torch.ones(self.full_length, dtype=torch.bool, device=device)
-        if actual_content_len > 0: # Only if there's actual coordinate content
-            padded_coords[1:1+actual_content_len] = coords
+        actual_content_len = coords.shape[0]  # Length before BOS/EOS were added
+        if actual_content_len > 0:  # Only if there's actual coordinate content
             coords_beospank[1:1+actual_content_len] = 0  # Mark real content as 0, keep BOS/EOS/PAD as 1
+        # coords_pad_pos = torch.zeros_like(coords_beospank, dtype=torch.bool)
+        # coords_pad_pos[actual_content_len+2:] = True
 
-        # No UNK for coords
+        # No UNK for coords.
         coords_masks = mask & ~coords_beospank
         coords_masks = unmask(coords_masks, coords_beospank, self.min_unmasked, self.generator)
-        masked_coords = padded_coords.clone()
-        masked_coords.masked_fill_(coords_masks.unsqueeze(1).unsqueeze(2), 0)
-        # legacy: masked_coords = padded_coords.clone() * (~coords_masks).long().unsqueeze(1).unsqueeze(2).expand_as(padded_coords) 
+        masked_coords = padded_coords.clone() * (~coords_masks).long().unsqueeze(1).unsqueeze(2).expand_as(padded_coords) 
 
         # Sanity Checks
         assert padded_coords.shape == (self.full_length, H, 3), "Structure padding length mismatch!"
@@ -186,8 +187,11 @@ class CoordinatesTokenizer(Tokenizer):
 
     def print_token(self, tok):
         s = "["
-        for row in range(tok.shape[0]): s += f"{tok[row].tolist()}\n"
+        for row in range(tok.shape[0]):
+            s += f"{tok[row].tolist()}\n"
+
         if s[-1] == '\n': s = s[:-1]
+
         s += ']\n'
         return s
 
@@ -211,133 +215,128 @@ class StructureTokenizer(Tokenizer):
             self.reverse_mapping.update({i: i for i in range(self.fsq_output_max)})
 
             self.coordinates_tokenizer = CoordinatesTokenizer(full_length, min_unmasked=min_unmasked, generator=generator)
-            # cache mask tensors per-device to avoid repeated allocations
-            self._mask_cache = {}
-    
-    def tokenize_batch(self, precomputed_coords_list):
+
+    def tokenize(self, coords=None, mask=None, precomputed_coords=None):
         """
-        Batch version of tokenize() - processes multiple proteins through autoencoder at once.
-        Maintains exact same logic as single tokenize() but batched for efficiency.
-        
         Args:
-            precomputed_coords_list: List of tuples (padded_coords, masked_coords, coords_beospank, coords_masks)
-        
+            coords: Tensor of coordinates, shape [M, H, 3] OR if precomputed_coords provided, this is masked_coords
+            mask: Boolean mask for MASK positions OR if precomputed_coords provided, this is coords_masks
+            precomputed_coords: Optional tuple (padded_coords, coords_beospank, coords_masks) to skip coordinate tokenization
         Returns:
-            List of results, each matching single tokenize() output format
+            padded_coords: Tensor of coordinates, shape [self.full_length, H, 3]
+            masked_coords: Tensor of coordinates, shape [self.full_length, H, 3]    
+            coords_beospank: Boolean mask for BOS/EOS/PAD positions
+            coords_masks: Boolean mask for MASK positions
+            padded_struct_tokens: Tensor of structure tokens, shape [self.full_length]
+            masked_struct_tokens: Tensor of structure tokens, shape [self.full_length]
+            struct_beospank: Boolean mask for BOS/EOS/PAD positions
+            struct_masks: Boolean mask for MASK positions
         """
         assert self.autoencoder is not None, "Autoencoder is not set!"
+
+        device = self.autoencoder.get_device()
         
-        if not precomputed_coords_list: return []
         
-        # Setup (same as single version)
-        ae_device = next(self.autoencoder.parameters()).device
-        ae_dtype = next(self.autoencoder.parameters()).dtype
-        initials = self.autoencoder.cfg.first_block_cfg.initials()
-        use_coords = initials in ("GA", "RA")
-        use_cuda = (ae_device.type == 'cuda')
+        if precomputed_coords is not None:
+            # Use pre-computed coordinate tokenization results
+            padded_coords, masked_coords, coords_beospank, coords_masks = precomputed_coords
+        else:
+            # Pass through coordinates tokenizer to get padded coords and beospank.
+
+            padded_coords, masked_coords, coords_beospank, coords_masks = self.coordinates_tokenizer.tokenize(coords, mask)
+
+        padded_coords = padded_coords.to(device)
+        masked_coords = masked_coords.to(device)
+        coords_beospank = coords_beospank.to(device)
+        coords_masks = coords_masks.to(device)
         
-        # Prepare batch inputs
-        batch_padded_coords = []
-        batch_masked_coords = []
-        batch_coords_beospank = []
-        batch_coords_masks = []
-        batch_bos_positions = []
-        batch_eos_positions = []
-        
-        for padded_coords, masked_coords, coords_beospank, coords_masks in precomputed_coords_list:
-            batch_padded_coords.append(padded_coords)
-            batch_masked_coords.append(masked_coords)
-            batch_coords_beospank.append(coords_beospank)
-            batch_coords_masks.append(coords_masks)
-            
-            # Calculate positions (same as single version)
-            bos_position = 0
-            eos_position = int((coords_beospank.numel() - coords_beospank.sum()).item()) + 1
-            batch_bos_positions.append(bos_position)
-            batch_eos_positions.append(eos_position)
-        
-        # Batch autoencoder inference
-        with torch.inference_mode():
-            # Stack instead of unsqueeze(0) - using masked_coords as trained
-            three_atom = torch.stack([masked[:, :3, :] for masked in batch_masked_coords], dim=0)
-            if use_cuda and three_atom.device.type == 'cpu': three_atom = three_atom.pin_memory()
-            three_atom = three_atom.to(device=ae_device, dtype=ae_dtype, non_blocking=use_cuda)
-            
-            nonbeospank = torch.stack([~beospank for beospank in batch_coords_beospank], dim=0)
-            if use_cuda and nonbeospank.device.type == 'cpu': nonbeospank = nonbeospank.pin_memory()
-            nonbeospank = nonbeospank.to(ae_device, non_blocking=use_cuda)
-            
-            if use_coords:
-                four_atom = torch.stack([masked[:, :4, :] for masked in batch_masked_coords], dim=0)
-                if use_cuda and four_atom.device.type == 'cpu': four_atom = four_atom.pin_memory()
-                four_atom = four_atom.to(device=ae_device, dtype=ae_dtype, non_blocking=use_cuda)
+        # Set device from the coordinate tensors
+        bos_position = 0
+        eos_position = coords_beospank.numel() - coords_beospank.sum() + 1 
+
+        with torch.no_grad():
+            # Check cache first if available
+            if hasattr(self, '_structure_cache') and self._structure_cache is not None:
+                cached_result = self._structure_cache.get(masked_coords)
+                if cached_result is not None:
+                    struct_tokens_full = cached_result.to(masked_coords.device)
+                else:
+                    # Cache miss - compute and cache
+                    # FSQ encoder expects [B, L, 3, 3]; if coords contain 4 atoms use first 3
+                    three_atom = masked_coords[:, :3, :]
+                    four_atom = masked_coords[:, :4, :]
+                    three_atom = three_atom.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                    four_atom = four_atom.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                    content_elements = (~coords_masks & ~coords_beospank).unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                    nonbeospank = ~coords_beospank.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                    
+                    # For GA/RA cases, we need to pass the coordinates and mask
+                    if self.autoencoder.cfg.first_block_cfg.initials() in ("GA", "RA"):
+                        struct_tokens_full = self.autoencoder.encode_to_tokens(three_atom, coords=four_atom, content_elements=content_elements, nonbeospank=nonbeospank)
+                    else:
+                        struct_tokens_full = self.autoencoder.encode_to_tokens(three_atom, nonbeospank=nonbeospank)
+                    struct_tokens_full = struct_tokens_full.squeeze(0).long().squeeze(-1)         # [L] - must be long for embedding
+                    
+                    # Cache the result
+                    self._structure_cache.put(masked_coords, struct_tokens_full)
+            else:
+                # No cache - compute directly
+                # FSQ encoder expects [B, L, 3, 3]; if coords contain 4 atoms use first 3
+                three_atom = masked_coords[:, :3, :]
+                four_atom = masked_coords[:, :4, :]
+                three_atom = three_atom.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                four_atom = four_atom.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                content_elements = (~coords_masks & ~coords_beospank).unsqueeze(0).to(next(self.autoencoder.parameters()).device)
+                nonbeospank = ~coords_beospank.unsqueeze(0).to(next(self.autoencoder.parameters()).device)
                 
-                content_elements = torch.stack([(~masks & ~beospank) for masks, beospank in zip(batch_coords_masks, batch_coords_beospank)], dim=0)
-                if use_cuda and content_elements.device.type == 'cpu': content_elements = content_elements.pin_memory()
-                content_elements = content_elements.to(ae_device, non_blocking=use_cuda)
-                
-                struct_tokens_full_batch = self.autoencoder.encode_to_tokens(three_atom, coords=four_atom, content_elements=content_elements, nonbeospank=nonbeospank)
-            
-            else: struct_tokens_full_batch = self.autoencoder.encode_to_tokens(three_atom, nonbeospank=nonbeospank)
-            
-            # Don't squeeze(0) since we have batch dimension, just squeeze last dim
-            struct_tokens_full_batch = struct_tokens_full_batch.long().squeeze(-1)  # [B, L]
+                # For GA/RA cases, we need to pass the coordinates and mask
+                if self.autoencoder.cfg.first_block_cfg.initials() in ("GA", "RA"):
+                    struct_tokens_full = self.autoencoder.encode_to_tokens(three_atom, coords=four_atom, content_elements=content_elements, nonbeospank=nonbeospank)
+                else:
+                    struct_tokens_full = self.autoencoder.encode_to_tokens(three_atom, nonbeospank=nonbeospank)
+                struct_tokens_full = struct_tokens_full.squeeze(0).long().squeeze(-1)         # [L] - must be long for embedding
+
+        # ------------------------------------------------------------------ #
+        # Postprocess FSQ output -- replace BOS, EOS, PAD positions with special tokens
+        # ------------------------------------------------------------------ #
+        padded_struct_tokens = struct_tokens_full.clone()
+        assert padded_struct_tokens.shape[0] == self.full_length, "Structure padding length mismatch!"
+
+        # Apply BOS, EOS, and PAD tokens to structure tokens, copying from corresponding special tokens of the coords.
+        padded_struct_tokens[coords_beospank] = self.mapping['PAD']
+        padded_struct_tokens[bos_position] = self.mapping['BOS']
+        padded_struct_tokens[eos_position] = self.mapping['EOS']
         
-        # Process each result (same logic as single version)
-        results = []
-        for b in range(len(precomputed_coords_list)):
-            struct_tokens_full = struct_tokens_full_batch[b]
-            padded_coords = batch_padded_coords[b]
-            masked_coords = batch_masked_coords[b]
-            coords_beospank = batch_coords_beospank[b]
-            coords_masks = batch_coords_masks[b]
-            bos_position = batch_bos_positions[b]
-            eos_position = batch_eos_positions[b]
-            
-            # Post-process FSQ output (exact same as single version)
-            padded_struct_tokens = struct_tokens_full.clone()
-            assert padded_struct_tokens.shape[0] == self.full_length, "Structure padding length mismatch!"
-            
-            # Apply BOS, EOS, and PAD tokens
-            padded_struct_tokens[coords_beospank] = self.mapping['PAD']
-            padded_struct_tokens[bos_position] = self.mapping['BOS']
-            padded_struct_tokens[eos_position] = self.mapping['EOS']
-            
-            # Create beospank mask
-            struct_beospank = coords_beospank.clone()
-            struct_masks = coords_masks.clone()
-            
-            # Apply corruption
-            masked_struct_tokens = self.corrupt(padded_struct_tokens, struct_masks)
-            
-            # Sanity checks (same as single version)
-            assert torch.max(padded_struct_tokens) < self.fsq_output_max + 1 + len(self.mapping), \
-                f"Structure Tokenization failed! Max token = {torch.max(padded_struct_tokens)}"
-            assert torch.min(padded_struct_tokens) >= 0, \
-                f"Structure Tokenization failed! Min token = {torch.min(padded_struct_tokens)}"
-            assert padded_coords.shape[0] == self.full_length, "Structure padding length mismatch!"
-            
-            # Return exact same format as single tokenize()
-            results.append((
-                padded_coords, masked_coords, coords_beospank.bool(), coords_masks.bool(),
-                padded_struct_tokens, masked_struct_tokens, struct_beospank.bool(), struct_masks.bool()
-            ))
+        # Create beospank mask: 1s for BOS/EOS/PAD, 0s for real content
+        struct_beospank = coords_beospank.clone()
+        # struct_pad_pos = coords_pad_pos.clone()
         
-        return results
+        struct_masks = coords_masks.clone()
+        masked_struct_tokens = self.corrupt(padded_struct_tokens, coords_masks)
+
+        # print(f"padded_struct_tokens: {padded_struct_tokens[:40]}")
+        # print(f"masked_struct_tokens: {masked_struct_tokens[:40]}")
+        # print(f"coords_masks: {coords_masks[:40]}")
+        # print(f"coords_beospank: {coords_beospank[:40]}")
+        # print(f"struct_masks: {struct_masks[:40]}")
+        # print(f"struct_beospank: {struct_beospank[:40]}")
+
+        # ------------------------------------------------------------------ #
+        # Sanity checks                                                    #
+        # ------------------------------------------------------------------ #
+        assert torch.max(padded_struct_tokens) < self.fsq_output_max + 1 + len(self.mapping), f"Structure Tokenization failed! Max token = {torch.max(padded_struct_tokens)}"
+        assert torch.min(padded_struct_tokens) >= 0, f"Structure Tokenization failed! Min token = {torch.min(padded_struct_tokens)}"
+        assert padded_coords.shape[0] == self.full_length, "Structure padding length mismatch!"
+
+        return padded_coords, masked_coords, coords_beospank.bool(), coords_masks.bool(), padded_struct_tokens, masked_struct_tokens, struct_beospank.bool(), struct_masks.bool() # coords_pad_pos.bool(), struct_pad_pos.bool()
 
     def corrupt(self, unmasked_data, masks):
         if self.corruption_mode == CorruptionMode.MASK:
-            cache_key = str(unmasked_data.device)
-            mask_tensor = self._mask_cache.get(cache_key)
-            if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-                self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-            return torch.where(masks, mask_tensor, unmasked_data)
+            tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+            return torch.where(masks, tensor_of_masks, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.fsq_output_max + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.fsq_output_max + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            uniform_content = torch.randint(0, self.fsq_output_max + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -367,8 +366,6 @@ class SS8Tokenizer(Tokenizer):
         self.full_length = full_length
         self.generator = generator
         self.corruption_mode = corruption_mode
-        # cache mask tensors per-device to avoid repeated allocations
-        self._mask_cache = {}
 
     def tokenize(self, observation, mask):
         """
@@ -421,17 +418,11 @@ class SS8Tokenizer(Tokenizer):
 
     def corrupt(self, unmasked_data, masks):
         if self.corruption_mode == CorruptionMode.MASK:
-            cache_key = str(unmasked_data.device)
-            mask_tensor = self._mask_cache.get(cache_key)
-            if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-                self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-            return torch.where(masks, mask_tensor, unmasked_data)
+            tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+            return torch.where(masks, tensor_of_masks, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_ss8_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_ss8_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            uniform_content = torch.randint(0, self.max_ss8_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -462,8 +453,6 @@ class SASATokenizer(Tokenizer):
         self.full_length = full_length
         self.generator = generator
         self.corruption_mode = corruption_mode
-        # cache mask tensors per-device to avoid repeated allocations
-        self._mask_cache = {}
 
     def _bin_sasa_value(self, value):
         """Convert continuous SASA value to bin token using optimal quantile-based boundaries."""
@@ -519,17 +508,11 @@ class SASATokenizer(Tokenizer):
 
     def corrupt(self, unmasked_data, masks):
         if self.corruption_mode == CorruptionMode.MASK:
-            cache_key = str(unmasked_data.device)
-            mask_tensor = self._mask_cache.get(cache_key)
-            if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-                self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-            return torch.where(masks, mask_tensor, unmasked_data)
+            tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+            return torch.where(masks, tensor_of_masks, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_sasa_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_sasa_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            uniform_content = torch.randint(0, self.max_sasa_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -560,8 +543,6 @@ class PLDDTTokenizer(Tokenizer):
         self.generator = generator
         self.corruption_mode = corruption_mode
         self.thresholds = tuple((i+1)/50 for i in range(49))
-        # cache mask tensors per-device to avoid repeated allocations
-        self._mask_cache = {}
 
     def _bin_plddt_value(self, value):
         """Convert continuous pLDDT value to bin token using uniform intervals."""
@@ -617,17 +598,11 @@ class PLDDTTokenizer(Tokenizer):
 
     def corrupt(self, unmasked_data, masks):
         if self.corruption_mode == CorruptionMode.MASK:
-            cache_key = str(unmasked_data.device)
-            mask_tensor = self._mask_cache.get(cache_key)
-            if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-                self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-            return torch.where(masks, mask_tensor, unmasked_data)
+            tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+            return torch.where(masks, tensor_of_masks, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_plddt_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_plddt_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            uniform_content = torch.randint(0, self.max_plddt_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -658,8 +633,6 @@ class OrthologousGroupsTokenizer(Tokenizer):
 
         # TODO: once vocabulary.py is object-based, remove this check.
         assert len(self.mapping) > 0
-        # cache mask tensors per-device to avoid repeated allocations (for API parity)
-        self._mask_cache = {}
 
     def tokenize(self, observation):
         """
@@ -703,18 +676,11 @@ class OrthologousGroupsTokenizer(Tokenizer):
 
     def corrupt(self, unmasked_data, masks):
         if self.corruption_mode == CorruptionMode.MASK:
-            # cache_key unused here since we don't mask OG tokens during training, but keep parity
-            cache_key = str(unmasked_data.device)
-            mask_tensor = self._mask_cache.get(cache_key)
-            if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-                self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-            return torch.where(masks, mask_tensor, unmasked_data)
+            tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+            return torch.where(masks, tensor_of_masks, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_orthologous_groups_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_orthologous_groups_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            uniform_content = torch.randint(0, self.max_orthologous_groups_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -746,8 +712,6 @@ class SemanticDescriptionTokenizer(Tokenizer):
 
         # TODO: once vocabulary.py is object-based, remove this check.
         assert len(self.mapping) > 0
-        # cache mask tensors per-device to avoid repeated allocations (API parity)
-        self._mask_cache = {}
 
     def tokenize(self, observation):
         """
@@ -791,17 +755,11 @@ class SemanticDescriptionTokenizer(Tokenizer):
 
     def corrupt(self, unmasked_data, masks):
         if self.corruption_mode == CorruptionMode.MASK:
-            cache_key = str(unmasked_data.device)
-            mask_tensor = self._mask_cache.get(cache_key)
-            if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-                self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-            return torch.where(masks, mask_tensor, unmasked_data)
+            tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+            return torch.where(masks, tensor_of_masks, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_semantic_description_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_semantic_description_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            uniform_content = torch.randint(0, self.max_semantic_description_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -822,7 +780,7 @@ class DomainsTokenizer(Tokenizer):
         domains = {name: value for name, value in DOMAINS_TOKENS._members.items()}
         
         # Get the highest domain annotation token value to avoid conflicts
-        self.max_domain_value = max(domains.values()) if domains else -1
+        self.max_domain_value = max(domains.values()) if domains else - 1
 
         # Add special tokens with non-conflicting values
         special = {name: member.value + self.max_domain_value + 1 
@@ -834,8 +792,9 @@ class DomainsTokenizer(Tokenizer):
         self.max_domains_per_residue = max_domains_per_residue
         self.generator = generator
         self.corruption_mode = corruption_mode
-        # cache mask tensors per-device (and shape) to avoid repeated allocations
-        self._mask_cache = {}
+
+        # TODO: once vocabulary.py is object-based, remove this check.
+        assert len(self.mapping) > 0
 
     def _process_residue_domains(self, domains):
         """Convert residue domains to list of token indices, pad/truncate to max_domains_per_residue."""        
@@ -903,17 +862,11 @@ class DomainsTokenizer(Tokenizer):
 
     def corrupt(self, unmasked_data, masks):
         if self.corruption_mode == CorruptionMode.MASK:
-            cache_key = (str(unmasked_data.device), tuple(unmasked_data.shape))
-            mask_tensor = self._mask_cache.get(cache_key)
-            if mask_tensor is None:
-                mask_tensor = torch.full_like(unmasked_data, self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-                self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full_like(unmasked_data, self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
-            return torch.where(masks, mask_tensor, unmasked_data)
+            tensor_of_masks = torch.full_like(unmasked_data, self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+            return torch.where(masks, tensor_of_masks, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_domain_value + 1, unmasked_data.shape, dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_domain_value + 1, unmasked_data.shape, dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            uniform_content = torch.randint(0, self.max_domain_value + 1, unmasked_data.shape, dtype=torch.long, generator=self.generator).to(unmasked_data.device)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
