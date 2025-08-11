@@ -143,6 +143,14 @@ class DecoupledDataLoader:
         self.pipeline.end_submission()
     
     def __iter__(self):
+        # Clean up any existing threads before starting new ones
+        if hasattr(self, 'feeder_thread') and self.feeder_thread and self.feeder_thread.is_alive():
+            self.running = False
+            self.feeder_thread.join(timeout=2.0)
+        
+        # Reset running flag
+        self.running = True
+        
         # Start epoch in pipeline (resets queues, toggles active)
         self.pipeline.start_epoch()
         # Print initial cache saturation
@@ -170,6 +178,12 @@ class DecoupledDataLoader:
                             if wait_iterations >= max_wait_iterations:
                                 print(f"[WARNING] Epoch ending: submitted={self.pipeline.submitted_final}, emitted={self.pipeline.emitted}, forcing exit")
                                 break
+                    else:
+                        # Feeder is still running but no batch available
+                        wait_iterations += 1
+                        if wait_iterations >= max_wait_iterations * 2:
+                            print(f"[ERROR] Dataloader deadlock detected: feeder_alive={self.feeder_thread.is_alive()}, submitted={self.pipeline.submitted}, emitted={self.pipeline.emitted}")
+                            break
                     continue
                 
                 # Reset wait counter since we got a batch
@@ -190,11 +204,20 @@ class DecoupledDataLoader:
             # End epoch in pipeline and ensure feeder dies cleanly
             self._print_cache_saturation(tag="epoch_end")
             self._print_data_flow_stats()  # Final stats at epoch end
+            
+            # Mark as not running to stop threads
+            self.running = False
+            
             try: self.pipeline.end_epoch()
             except Exception: pass
             if self.feeder_thread and self.feeder_thread.is_alive():
                 try: self.feeder_thread.join(timeout=2.0)
                 except Exception: pass
+            
+            # Shutdown the pipeline threads properly
+            self.pipeline.shutdown()
+            # Shutdown the cached loader
+            self.cached_loader.shutdown()
     
     def __len__(self):
         return len(self.cached_loader)

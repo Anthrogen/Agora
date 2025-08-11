@@ -297,6 +297,10 @@ class CachedDataLoader:
                 # Try to add to cache, wait if full
                 while self.running and not self.cache.add_batch(batch, timeout=0.1): time.sleep(0.01)
         except AssertionError: return # PyTorch DataLoader is shutting down; exit quietly
+        except AttributeError as e:
+            # This happens when _iterator is deleted while we're using it - expected during shutdown
+            if '_iterator' in str(e): return
+            print(f"Prefetch thread attribute error: {e}")
         except RuntimeError as e:
             # Some shutdown paths raise RuntimeError; treat as graceful exit
             if 'shutdown' in str(e).lower(): return
@@ -308,7 +312,13 @@ class CachedDataLoader:
         # Restart cache and prefetch thread for a new epoch
         if self.prefetch_thread and self.prefetch_thread.is_alive():
             self.running = False
-            self.prefetch_thread.join(timeout=2.0)
+            self.prefetch_thread.join(timeout=5.0)  # Increase timeout
+            
+            # Force kill if still alive
+            if self.prefetch_thread.is_alive():
+                print(f"Warning: Prefetch thread did not terminate cleanly")
+        
+        
         # Recreate cache and prefetch thread
         self.cache = RawDataCache(max_size=self.cache.max_size, max_batches=self.cache.max_batches)
         self.running = True
@@ -416,7 +426,7 @@ class CPUTokenizationStage:
         self.semantic_description_tokenizer = SemanticDescriptionTokenizer(self.H)
         self.domains_tokenizer = DomainsTokenizer(self.L, self.K, generator=generator, corruption_mode=corruption_mode)
     
-    def tokenize_batch(self, raw_batch: RawBatch, masks: Dict) -> PartiallyTokenizedBatch:
+    def tokenize_batch_cpu(self, raw_batch: RawBatch, masks: Dict) -> PartiallyTokenizedBatch:
         """
         Perform all CPU tokenization on a raw batch.
         
@@ -548,7 +558,7 @@ class GPUStructureTokenizationStage:
             # Initialize structure tokenizer with proper configuration and generator (same as dataloader_old.py)
             self.structure_tokenizer = StructureTokenizer(self.L, self.autoencoder, min_unmasked=self.min_unmasked['coords'], generator=generator, corruption_mode=corruption_mode)
     
-    def tokenize_batch_structures(self, partial_batch: PartiallyTokenizedBatch) -> None:
+    def tokenize_batch_gpu(self, partial_batch: PartiallyTokenizedBatch) -> None:
         """
         Complete structure tokenization for a partially tokenized batch.
         Uses pre-computed coordinate tokenization results for efficiency.
@@ -674,6 +684,17 @@ class TokenizationPipeline:
     
     def start_epoch(self):
         """Mark start of an epoch and ensure queues are empty."""
+        # If threads are dead, restart them
+        if not self.cpu_thread.is_alive():
+            self.running = True
+            self.cpu_thread = Thread(target=self._cpu_worker, daemon=True)
+            self.cpu_thread.start()
+        
+        if self.gpu_thread and not self.gpu_thread.is_alive():
+            self.running = True
+            self.gpu_thread = Thread(target=self._gpu_worker, daemon=True)
+            self.gpu_thread.start()
+        
         self._drain_all_queues()
         self.epoch_active = True
         # do not reset counters here; feeder sets them via begin_submission
@@ -710,7 +731,7 @@ class TokenizationPipeline:
                 if not (self.epoch_active and (self.submission_open or self.submitted > 0)): continue
                     
                 self.cpu_batches_received += 1
-                partial_batch = self.cpu_stage.tokenize_batch(raw_batch, masks)
+                partial_batch = self.cpu_stage.tokenize_batch_cpu(raw_batch, masks)
                 
                 # Tag with epoch_id
                 if self.gpu_stage:
@@ -766,14 +787,14 @@ class TokenizationPipeline:
         if len(batches) == 1:
             # Single batch - process normally
             batch = batches[0]
-            self.gpu_stage.tokenize_batch_structures(batch)
+            self.gpu_stage.tokenize_batch_gpu(batch)
             self.ready_queue.put((self.epoch_id, batch))
             self.emitted += 1
         else:
             # Multiple batches - can process together for better GPU utilization
             # Process each batch (they're already accumulated for efficiency)
             for batch in batches:
-                self.gpu_stage.tokenize_batch_structures(batch)
+                self.gpu_stage.tokenize_batch_gpu(batch)
                 self.ready_queue.put((self.epoch_id, batch))
                 self.emitted += 1
     
@@ -793,5 +814,8 @@ class TokenizationPipeline:
     def shutdown(self):
         """Shutdown the pipeline."""
         self.running = False
+        self.epoch_active = False
+        # Drain queues to unblock threads
+        self._drain_all_queues()
         if self.cpu_thread.is_alive(): self.cpu_thread.join(timeout=2.0)
         if self.gpu_thread and self.gpu_thread.is_alive(): self.gpu_thread.join(timeout=2.0)

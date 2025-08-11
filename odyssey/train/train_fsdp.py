@@ -759,7 +759,17 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                         if is_distributed: dist.barrier()
                         model.eval()
                         val_metrics_sum = {}; val_metrics_count = {}
-                        val_loader = val_loaders[model_idx] # Get the val_loader for this model
+                        
+                        # Create a fresh validation dataloader each time to avoid reuse issues
+                        val_loader = _get_training_dataloader(
+                            val_ds, model_cfg, train_cfg, tracks_list[model_idx], loader_device,
+                            batch_size=train_cfg.batch_size, sampler=val_sampler,
+                            shuffle=False, min_unmasked=min_unmasked_list[model_idx],
+                            autoencoder=autoencoder, num_workers=num_workers,
+                            pin_memory=True, persistent_workers=False,  # Don't persist workers for validation
+                            prefetch_factor=2 if num_workers > 0 else None,
+                            use_fp16=True
+                        )
                         
                         # All ranks must iterate together for FSDP synchronization
                         with torch.no_grad():
@@ -788,7 +798,12 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
                         # Only rank 0 calculates averages and reports metrics
                         if rank == 0:
                             # Calculate validation averages
-                            epoch_val_metrics = {k: val_metrics_sum[k] / val_metrics_count[k] for k in val_metrics_sum.keys()}
+                            if val_metrics_sum:
+                                epoch_val_metrics = {k: val_metrics_sum[k] / val_metrics_count[k] for k in val_metrics_sum.keys()}
+                            else:
+                                # No validation metrics collected - validation dataloader is hanging
+                                print(f"[WARNING] No validation metrics collected - validation dataloader may be hanging")
+                                epoch_val_metrics = {}
                             
                             # During validation, we don't need to reduce training metrics
                             # Just use the last training metrics from this rank
