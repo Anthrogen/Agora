@@ -22,7 +22,10 @@ import signal
 import functools
 import yaml
 from datetime import timedelta
+import time
+import multiprocessing
 from torch.distributed.fsdp import MixedPrecision
+import traceback
 
 # FSDP imports
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -125,7 +128,6 @@ def setup_distributed():
             print(f"[Rank {rank}] Successfully initialized process group!")
         except Exception as e:
             print(f"[Rank {rank}] ERROR in dist.init_process_group: {e}")
-            import traceback
             traceback.print_exc()
             raise
         
@@ -522,7 +524,6 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             
             # Calculate optimal number of workers - For H100s with high throughput, we want more workers
             # Rule of thumb: (num_cpus / num_gpus) * 0.75 to leave some headroom
-            import multiprocessing
             cpu_count = multiprocessing.cpu_count()
             # Use 2-4 workers per GPU as a baseline for high-throughput GPUs
             num_workers = min(4, max(2, cpu_count // world_size // 2))
@@ -567,9 +568,12 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             )
         else:
             # For single GPU, use fewer workers but still enable parallelism
-            import multiprocessing
+            train_sampler = None
+            val_sampler = None  # No distributed sampling for single GPU
+            
             cpu_count = multiprocessing.cpu_count()
-            num_workers = min(4, max(2, cpu_count // 4))
+            # Temporarily disable workers to avoid deadlock issues with generator serialization
+            num_workers = 0  # min(4, max(2, cpu_count // 4))
             
             # Keep data on CPU in dataloader to avoid CUDA issues in workers
             dataloader_device = torch.device('cpu')
@@ -959,7 +963,6 @@ if __name__ == "__main__":
     if is_distributed:
         # Process group will be initialized in train function
         # Just ensure all processes wait for rank 0 to finish generating configs
-        import time
         if rank != 0:
             # Give rank 0 time to generate configs
             time.sleep(5)

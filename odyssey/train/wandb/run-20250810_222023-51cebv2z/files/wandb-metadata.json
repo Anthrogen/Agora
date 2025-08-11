@@ -1,0 +1,52 @@
+{
+  "os": "Linux-6.8.0-52-generic-x86_64-with-glibc2.35",
+  "python": "CPython 3.11.11",
+  "startedAt": "2025-08-10T22:20:23.342224Z",
+  "args": [
+    "--config",
+    "/workspace/demo/Odyssey/configs/FINAL_MLM_SMALL_TEST.yaml",
+    "--use-wandb"
+  ],
+  "program": "/workspace/demo/Odyssey/odyssey/train/train_fsdp.py",
+  "codePath": "odyssey/train/train_fsdp.py",
+  "codePathLocal": "train_fsdp.py",
+  "git": {
+    "remote": "git@github.com:Anthrogen/Odyssey.git",
+    "commit": "56818907f8073366eac299fbe6daee2e317457db"
+  },
+  "email": "connor@anthrogen.com",
+  "root": "/workspace/demo/Odyssey/odyssey/train",
+  "host": "9134447b27f1",
+  "executable": "/usr/bin/python",
+  "cpu_count": 112,
+  "cpu_count_logical": 224,
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "gpu_count": 2,
+  "disk": {
+    "/": {
+      "total": "32212254720",
+      "used": "527548416"
+    }
+  },
+  "memory": {
+    "total": "2164115525632"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA H100 80GB HBM3",
+      "memoryTotal": "85520809984",
+      "cudaCores": 16896,
+      "architecture": "Hopper",
+      "uuid": "GPU-71e0d1cf-b56a-bda0-a654-03ef284d079c"
+    },
+    {
+      "name": "NVIDIA H100 80GB HBM3",
+      "memoryTotal": "85520809984",
+      "cudaCores": 16896,
+      "architecture": "Hopper",
+      "uuid": "GPU-5ef748f3-e251-e4c8-6354-74439e10f761"
+    }
+  ],
+  "cudaVersion": "12.8",
+  "writerId": "vx9mi5m21c3han47slcvf5fmgw3byyoy"
+}

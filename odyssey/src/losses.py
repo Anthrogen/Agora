@@ -214,7 +214,287 @@ def score_entropy_loss_uniform(output, x_0, x_t, cumulative_noise_levels, inst_n
     valid_counts = valid_mask.sum(dim=1).to(per_residue.dtype)  # [B] - match dtypes for fp16
     per_protein = per_residue_masked.sum(dim=1) / valid_counts  # (B,)
 
-    return per_protein.mean(0)  # scalar
+    retval = per_protein.mean(0)  # scalar
+    
+    # NaN debugging - check if the return value contains NaN
+    if retval.isnan().any() or retval.isinf().any():
+        import os
+        from datetime import datetime
+        
+        # Prepare debugging output
+        debug_output = []
+        debug_output.append("\n" + "="*80)
+        debug_output.append("NaN/Inf DETECTED in score_entropy_loss_uniform!")
+        debug_output.append("="*80)
+        
+        # Also print to console
+        print("\n" + "="*80)
+        print("NaN/Inf DETECTED in score_entropy_loss_uniform!")
+        print("="*80)
+        
+        # Input shapes and types
+        debug_output.append("\n--- INPUT INFORMATION ---")
+        debug_output.append(f"output shape: {output.shape}, dtype: {output.dtype}")
+        debug_output.append(f"x_0 shape: {x_0.shape}, dtype: {x_0.dtype}")
+        debug_output.append(f"x_t shape: {x_t.shape}, dtype: {x_t.dtype}")
+        debug_output.append(f"cumulative_noise_levels shape: {cumulative_noise_levels.shape}, dtype: {cumulative_noise_levels.dtype}")
+        debug_output.append(f"inst_noise_levels shape: {inst_noise_levels.shape}, dtype: {inst_noise_levels.dtype}")
+        debug_output.append(f"valid_mask shape: {valid_mask.shape}, dtype: {valid_mask.dtype}")
+        debug_output.append(f"mask_token: {mask_token}")
+        debug_output.append(f"V (vocabulary size): {V}")
+        
+        print("\n--- INPUT INFORMATION ---")
+        print(f"output shape: {output.shape}, dtype: {output.dtype}")
+        print(f"x_0 shape: {x_0.shape}, dtype: {x_0.dtype}")
+        print(f"x_t shape: {x_t.shape}, dtype: {x_t.dtype}")
+        print(f"cumulative_noise_levels shape: {cumulative_noise_levels.shape}, dtype: {cumulative_noise_levels.dtype}")
+        print(f"inst_noise_levels shape: {inst_noise_levels.shape}, dtype: {inst_noise_levels.dtype}")
+        print(f"valid_mask shape: {valid_mask.shape}, dtype: {valid_mask.dtype}")
+        print(f"mask_token: {mask_token}")
+        print(f"V (vocabulary size): {V}")
+        
+        # Full input tensors
+        debug_output.append("\n--- FULL INPUT TENSORS ---")
+        debug_output.append(f"x_0:\n{x_0}")
+        debug_output.append(f"\nx_t:\n{x_t}")
+        debug_output.append(f"\ncumulative_noise_levels:\n{cumulative_noise_levels}")
+        debug_output.append(f"\ninst_noise_levels:\n{inst_noise_levels}")
+        debug_output.append(f"\nvalid_mask:\n{valid_mask}")
+        
+        print("\n--- FULL INPUT TENSORS ---")
+        print(f"x_0:\n{x_0}")
+        print(f"\nx_t:\n{x_t}")
+        print(f"\ncumulative_noise_levels:\n{cumulative_noise_levels}")
+        print(f"\ninst_noise_levels:\n{inst_noise_levels}")
+        print(f"\nvalid_mask:\n{valid_mask}")
+        
+        # Check for NaN/Inf in inputs
+        debug_output.append("\n--- INPUT NaN/Inf CHECKS ---")
+        debug_output.append(f"output has NaN: {output.isnan().any()}, has Inf: {output.isinf().any()}")
+        debug_output.append(f"x_0 has NaN: {x_0.isnan().any()}, has Inf: {x_0.isinf().any()}")
+        debug_output.append(f"x_t has NaN: {x_t.isnan().any()}, has Inf: {x_t.isinf().any()}")
+        debug_output.append(f"cumulative_noise_levels has NaN: {cumulative_noise_levels.isnan().any()}, has Inf: {cumulative_noise_levels.isinf().any()}")
+        debug_output.append(f"inst_noise_levels has NaN: {inst_noise_levels.isnan().any()}, has Inf: {inst_noise_levels.isinf().any()}")
+        
+        print("\n--- INPUT NaN/Inf CHECKS ---")
+        print(f"output has NaN: {output.isnan().any()}, has Inf: {output.isinf().any()}")
+        print(f"x_0 has NaN: {x_0.isnan().any()}, has Inf: {x_0.isinf().any()}")
+        print(f"x_t has NaN: {x_t.isnan().any()}, has Inf: {x_t.isinf().any()}")
+        print(f"cumulative_noise_levels has NaN: {cumulative_noise_levels.isnan().any()}, has Inf: {cumulative_noise_levels.isinf().any()}")
+        print(f"inst_noise_levels has NaN: {inst_noise_levels.isnan().any()}, has Inf: {inst_noise_levels.isinf().any()}")
+        
+        # Output statistics
+        debug_output.append("\n--- OUTPUT STATISTICS ---")
+        debug_output.append(f"output min: {output.min()}, max: {output.max()}, mean: {output.mean()}")
+        if output.isnan().any():
+            debug_output.append(f"Number of NaN values in output: {output.isnan().sum()}")
+            debug_output.append(f"NaN locations in output: {torch.where(output.isnan())}")
+        
+        print("\n--- OUTPUT STATISTICS ---")
+        print(f"output min: {output.min()}, max: {output.max()}, mean: {output.mean()}")
+        if output.isnan().any():
+            print(f"Number of NaN values in output: {output.isnan().sum()}")
+            print(f"NaN locations in output: {torch.where(output.isnan())}")
+        
+        # Intermediate values
+        debug_output.append("\n--- INTERMEDIATE VALUES ---")
+        debug_output.append(f"\nesigm1:\n{esigm1}")
+        debug_output.append(f"esigm1 has NaN: {esigm1.isnan().any()}, has Inf: {esigm1.isinf().any()}")
+        
+        debug_output.append(f"\nratio:\n{ratio}")
+        debug_output.append(f"ratio has NaN: {ratio.isnan().any()}, has Inf: {ratio.isinf().any()}")
+        
+        debug_output.append(f"\nsexp (exp(output)) min: {sexp.min()}, max: {sexp.max()}, mean: {sexp.mean()}")
+        debug_output.append(f"sexp has NaN: {sexp.isnan().any()}, has Inf: {sexp.isinf().any()}")
+        
+        debug_output.append(f"\npos_term:\n{pos_term}")
+        debug_output.append(f"pos_term has NaN: {pos_term.isnan().any()}, has Inf: {pos_term.isinf().any()}")
+        
+        debug_output.append(f"\nscore_mean:\n{score_mean}")
+        debug_output.append(f"score_xt:\n{score_xt}")
+        debug_output.append(f"score_x0:\n{score_x0}")
+        
+        debug_output.append(f"\nneg_term_base:\n{neg_term_base}")
+        debug_output.append(f"neg_term_unchanged:\n{neg_term_unchanged}")
+        debug_output.append(f"neg_term_changed:\n{neg_term_changed}")
+        debug_output.append(f"neg_term:\n{neg_term}")
+        debug_output.append(f"neg_term has NaN: {neg_term.isnan().any()}, has Inf: {neg_term.isinf().any()}")
+        
+        debug_output.append(f"\nunchanged_positions:\n{unchanged_positions}")
+        debug_output.append(f"Number of unchanged positions: {unchanged_positions.sum()}")
+        
+        debug_output.append(f"\nratio_squeezed:\n{ratio_squeezed}")
+        debug_output.append(f"const_unchanged:\n{const_unchanged}")
+        debug_output.append(f"const_changed:\n{const_changed}")
+        debug_output.append(f"const:\n{const}")
+        debug_output.append(f"const has NaN: {const.isnan().any()}, has Inf: {const.isinf().any()}")
+        
+        debug_output.append(f"\nentropy:\n{entropy}")
+        debug_output.append(f"entropy has NaN: {entropy.isnan().any()}, has Inf: {entropy.isinf().any()}")
+        
+        debug_output.append(f"\nper_residue:\n{per_residue}")
+        debug_output.append(f"per_residue has NaN: {per_residue.isnan().any()}, has Inf: {per_residue.isinf().any()}")
+        
+        debug_output.append(f"\nper_residue_masked:\n{per_residue_masked}")
+        debug_output.append(f"valid_counts:\n{valid_counts}")
+        debug_output.append(f"per_protein:\n{per_protein}")
+        debug_output.append(f"per_protein has NaN: {per_protein.isnan().any()}, has Inf: {per_protein.isinf().any()}")
+        
+        debug_output.append(f"\nretval: {retval}")
+        
+        print("\n--- INTERMEDIATE VALUES ---")
+        print(f"\nesigm1:\n{esigm1}")
+        print(f"esigm1 has NaN: {esigm1.isnan().any()}, has Inf: {esigm1.isinf().any()}")
+        
+        print(f"\nratio:\n{ratio}")
+        print(f"ratio has NaN: {ratio.isnan().any()}, has Inf: {ratio.isinf().any()}")
+        
+        print(f"\nsexp (exp(output)) min: {sexp.min()}, max: {sexp.max()}, mean: {sexp.mean()}")
+        print(f"sexp has NaN: {sexp.isnan().any()}, has Inf: {sexp.isinf().any()}")
+        
+        print(f"\npos_term:\n{pos_term}")
+        print(f"pos_term has NaN: {pos_term.isnan().any()}, has Inf: {pos_term.isinf().any()}")
+        
+        print(f"\nscore_mean:\n{score_mean}")
+        print(f"score_xt:\n{score_xt}")
+        print(f"score_x0:\n{score_x0}")
+        
+        print(f"\nneg_term_base:\n{neg_term_base}")
+        print(f"neg_term_unchanged:\n{neg_term_unchanged}")
+        print(f"neg_term_changed:\n{neg_term_changed}")
+        print(f"neg_term:\n{neg_term}")
+        print(f"neg_term has NaN: {neg_term.isnan().any()}, has Inf: {neg_term.isinf().any()}")
+        
+        print(f"\nunchanged_positions:\n{unchanged_positions}")
+        print(f"Number of unchanged positions: {unchanged_positions.sum()}")
+        
+        print(f"\nratio_squeezed:\n{ratio_squeezed}")
+        print(f"const_unchanged:\n{const_unchanged}")
+        print(f"const_changed:\n{const_changed}")
+        print(f"const:\n{const}")
+        print(f"const has NaN: {const.isnan().any()}, has Inf: {const.isinf().any()}")
+        
+        print(f"\nentropy:\n{entropy}")
+        print(f"entropy has NaN: {entropy.isnan().any()}, has Inf: {entropy.isinf().any()}")
+        
+        print(f"\nper_residue:\n{per_residue}")
+        print(f"per_residue has NaN: {per_residue.isnan().any()}, has Inf: {per_residue.isinf().any()}")
+        
+        print(f"\nper_residue_masked:\n{per_residue_masked}")
+        print(f"valid_counts:\n{valid_counts}")
+        print(f"per_protein:\n{per_protein}")
+        print(f"per_protein has NaN: {per_protein.isnan().any()}, has Inf: {per_protein.isinf().any()}")
+        
+        print(f"\nretval: {retval}")
+        
+        # Additional diagnostics
+        debug_output.append("\n--- ADDITIONAL DIAGNOSTICS ---")
+        
+        # Check for division by zero
+        if (valid_counts == 0).any():
+            debug_output.append(f"WARNING: valid_counts contains zeros at indices: {torch.where(valid_counts == 0)}")
+        
+        # Check extreme values in exp operation
+        debug_output.append(f"\nExtreme values in output that might cause exp overflow:")
+        debug_output.append(f"output values > 80: {(output > 80).sum().item()} locations")
+        if (output > 80).any():
+            debug_output.append(f"Max output value: {output.max()}")
+            debug_output.append(f"Locations of extreme values: {torch.where(output > 80)}")
+        
+        # Check for numerical issues in log operations
+        debug_output.append(f"\nratio_squeezed values close to 0 (might cause log issues):")
+        debug_output.append(f"ratio_squeezed < 1e-10: {(ratio_squeezed < 1e-10).sum().item()} locations")
+        
+        # Check gather operations
+        debug_output.append(f"\nx_0 min: {x_0.min()}, max: {x_0.max()}")
+        debug_output.append(f"x_t min: {x_t.min()}, max: {x_t.max()}")
+        debug_output.append(f"Are all indices valid for vocabulary size {V}? x_0: {(x_0 >= 0).all() and (x_0 < V).all()}, x_t: {(x_t >= 0).all() and (x_t < V).all()}")
+        
+        debug_output.append("\n" + "="*80)
+        debug_output.append("END OF NaN DEBUGGING OUTPUT")
+        debug_output.append("="*80 + "\n")
+        
+        print("\n--- ADDITIONAL DIAGNOSTICS ---")
+        
+        # Check for division by zero
+        if (valid_counts == 0).any():
+            print(f"WARNING: valid_counts contains zeros at indices: {torch.where(valid_counts == 0)}")
+        
+        # Check extreme values in exp operation
+        print(f"\nExtreme values in output that might cause exp overflow:")
+        print(f"output values > 80: {(output > 80).sum().item()} locations")
+        if (output > 80).any():
+            print(f"Max output value: {output.max()}")
+            print(f"Locations of extreme values: {torch.where(output > 80)}")
+        
+        # Check for numerical issues in log operations
+        print(f"\nratio_squeezed values close to 0 (might cause log issues):")
+        print(f"ratio_squeezed < 1e-10: {(ratio_squeezed < 1e-10).sum().item()} locations")
+        
+        # Check gather operations
+        print(f"\nx_0 min: {x_0.min()}, max: {x_0.max()}")
+        print(f"x_t min: {x_t.min()}, max: {x_t.max()}")
+        print(f"Are all indices valid for vocabulary size {V}? x_0: {(x_0 >= 0).all() and (x_0 < V).all()}, x_t: {(x_t >= 0).all() and (x_t < V).all()}")
+        
+        print("\n" + "="*80)
+        print("END OF NaN DEBUGGING OUTPUT")
+        print("="*80 + "\n")
+        
+        # Add detailed tensor values to debug output
+        debug_output.append("\n" + "="*80)
+        debug_output.append("DETAILED TENSOR VALUES")
+        debug_output.append("="*80)
+        
+        debug_output.append(f"\n--- FULL OUTPUT TENSOR ---")
+        debug_output.append(f"output:\n{output}")
+        
+        debug_output.append(f"\n--- ALL INTERMEDIATE TENSORS ---")
+        debug_output.append(f"\nesigm1 (full tensor):\n{esigm1}")
+        debug_output.append(f"\nratio (full tensor):\n{ratio}")
+        debug_output.append(f"\nsexp (exp(output)) - showing min/max/mean due to size:")
+        debug_output.append(f"sexp min: {sexp.min()}, max: {sexp.max()}, mean: {sexp.mean()}")
+        debug_output.append(f"sexp shape: {sexp.shape}")
+        debug_output.append(f"sexp (first 5x5 elements if large):\n{sexp.flatten()[:25] if sexp.numel() > 25 else sexp}")
+        
+        debug_output.append(f"\npos_term (full tensor):\n{pos_term}")
+        debug_output.append(f"\nscore_mean (full tensor):\n{score_mean}")
+        debug_output.append(f"\nscore_xt (full tensor):\n{score_xt}")
+        debug_output.append(f"\nscore_x0 (full tensor):\n{score_x0}")
+        debug_output.append(f"\nneg_term_base (full tensor):\n{neg_term_base}")
+        debug_output.append(f"\nneg_term_unchanged (full tensor):\n{neg_term_unchanged}")
+        debug_output.append(f"\nneg_term_changed (full tensor):\n{neg_term_changed}")
+        debug_output.append(f"\nneg_term (full tensor):\n{neg_term}")
+        debug_output.append(f"\nratio_squeezed (full tensor):\n{ratio_squeezed}")
+        debug_output.append(f"\nconst_unchanged (full tensor):\n{const_unchanged}")
+        debug_output.append(f"\nconst_changed (full tensor):\n{const_changed}")
+        debug_output.append(f"\nconst (full tensor):\n{const}")
+        debug_output.append(f"\nentropy (full tensor):\n{entropy}")
+        debug_output.append(f"\nper_residue (full tensor):\n{per_residue}")
+        debug_output.append(f"\nper_residue_masked (full tensor):\n{per_residue_masked}")
+        debug_output.append(f"\nvalid_counts (full tensor):\n{valid_counts}")
+        debug_output.append(f"\nper_protein (full tensor):\n{per_protein}")
+        
+        debug_output.append(f"\n--- TENSOR STATISTICS ---")
+        debug_output.append(f"esigm1 - min: {esigm1.min()}, max: {esigm1.max()}, mean: {esigm1.mean()}")
+        debug_output.append(f"ratio - min: {ratio.min()}, max: {ratio.max()}, mean: {ratio.mean()}")
+        debug_output.append(f"pos_term - min: {pos_term.min()}, max: {pos_term.max()}, mean: {pos_term.mean()}")
+        debug_output.append(f"neg_term - min: {neg_term.min()}, max: {neg_term.max()}, mean: {neg_term.mean()}")
+        debug_output.append(f"const - min: {const.min()}, max: {const.max()}, mean: {const.mean()}")
+        debug_output.append(f"entropy - min: {entropy.min()}, max: {entropy.max()}, mean: {entropy.mean()}")
+        debug_output.append(f"per_residue - min: {per_residue.min()}, max: {per_residue.max()}, mean: {per_residue.mean()}")
+        debug_output.append(f"per_protein - min: {per_protein.min()}, max: {per_protein.max()}, mean: {per_protein.mean()}")
+        
+        # Save to text file
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        debug_filename = os.path.join(current_dir, f"nan_debug_{timestamp}.txt")
+        
+        with open(debug_filename, 'w') as f:
+            f.write('\n'.join(debug_output))
+        
+        print(f"Debug output saved to: {debug_filename}")
+    
+    return retval
 
 # --------------------------------------------------------------------------- #
 #  FSQ Utilities                                                              #

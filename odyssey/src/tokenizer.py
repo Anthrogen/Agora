@@ -121,14 +121,14 @@ class SequenceTokenizer(Tokenizer):
             cache_key = str(unmasked_data.device)
             mask_tensor = self._mask_cache.get(cache_key)
             if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+                # CPU tokenizer: data on CPU
+                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long)
                 self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
             return torch.where(masks, mask_tensor, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_seq_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_seq_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            # CPU tokenizer: generator and data are both on CPU
+            uniform_content = torch.randint(0, self.max_seq_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -332,12 +332,11 @@ class StructureTokenizer(Tokenizer):
             if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
                 mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
                 self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
             return torch.where(masks, mask_tensor, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.fsq_output_max + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.fsq_output_max + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            # GPU tokenizer: create with CPU generator, then transfer to GPU device
+            uniform_content = torch.randint(0, self.fsq_output_max + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -424,14 +423,14 @@ class SS8Tokenizer(Tokenizer):
             cache_key = str(unmasked_data.device)
             mask_tensor = self._mask_cache.get(cache_key)
             if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+                # CPU tokenizer: data on CPU
+                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long)
                 self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
             return torch.where(masks, mask_tensor, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_ss8_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_ss8_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            # CPU tokenizer: generator and data are both on CPU
+            uniform_content = torch.randint(0, self.max_ss8_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -522,14 +521,14 @@ class SASATokenizer(Tokenizer):
             cache_key = str(unmasked_data.device)
             mask_tensor = self._mask_cache.get(cache_key)
             if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+                # CPU tokenizer: data on CPU
+                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long)
                 self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
             return torch.where(masks, mask_tensor, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_sasa_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_sasa_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            # CPU tokenizer: generator and data are both on CPU
+            uniform_content = torch.randint(0, self.max_sasa_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -620,14 +619,14 @@ class PLDDTTokenizer(Tokenizer):
             cache_key = str(unmasked_data.device)
             mask_tensor = self._mask_cache.get(cache_key)
             if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+                # CPU tokenizer: data on CPU
+                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long)
                 self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
             return torch.where(masks, mask_tensor, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_plddt_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_plddt_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            # CPU tokenizer: generator and data are both on CPU
+            uniform_content = torch.randint(0, self.max_plddt_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -707,14 +706,14 @@ class OrthologousGroupsTokenizer(Tokenizer):
             cache_key = str(unmasked_data.device)
             mask_tensor = self._mask_cache.get(cache_key)
             if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+                # CPU tokenizer: data on CPU
+                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long)
                 self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
             return torch.where(masks, mask_tensor, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_orthologous_groups_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_orthologous_groups_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            # CPU tokenizer: generator and data are both on CPU
+            uniform_content = torch.randint(0, self.max_orthologous_groups_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -794,14 +793,14 @@ class SemanticDescriptionTokenizer(Tokenizer):
             cache_key = str(unmasked_data.device)
             mask_tensor = self._mask_cache.get(cache_key)
             if mask_tensor is None or mask_tensor.shape != unmasked_data.shape:
-                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+                # CPU tokenizer: data on CPU
+                mask_tensor = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long)
                 self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full((self.full_length,), self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
             return torch.where(masks, mask_tensor, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_semantic_description_value + 1, (unmasked_data.shape[0],), dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_semantic_description_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            # CPU tokenizer: generator and data are both on CPU
+            uniform_content = torch.randint(0, self.max_semantic_description_value + 1, (unmasked_data.shape[0],), dtype=torch.long, generator=self.generator)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
@@ -906,14 +905,14 @@ class DomainsTokenizer(Tokenizer):
             cache_key = (str(unmasked_data.device), tuple(unmasked_data.shape))
             mask_tensor = self._mask_cache.get(cache_key)
             if mask_tensor is None:
-                mask_tensor = torch.full_like(unmasked_data, self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
+                # CPU tokenizer: data on CPU
+                mask_tensor = torch.full_like(unmasked_data, self.mapping["MASK"], dtype=torch.long)
                 self._mask_cache[cache_key] = mask_tensor
-            # legacy: tensor_of_masks = torch.full_like(unmasked_data, self.mapping["MASK"], dtype=torch.long, device=unmasked_data.device)
             return torch.where(masks, mask_tensor, unmasked_data)
 
         elif self.corruption_mode == CorruptionMode.UNIFORM:
-            uniform_content = torch.randint(0, self.max_domain_value + 1, unmasked_data.shape, dtype=torch.long, device=unmasked_data.device, generator=self.generator)
-            # legacy: uniform_content = torch.randint(0, self.max_domain_value + 1, unmasked_data.shape, dtype=torch.long, generator=self.generator).to(unmasked_data.device)
+            # CPU tokenizer: generator and data are both on CPU
+            uniform_content = torch.randint(0, self.max_domain_value + 1, unmasked_data.shape, dtype=torch.long, generator=self.generator)
             return torch.where(masks, uniform_content, unmasked_data)
         
         raise ValueError(f"Unknown corruption mode: {self.corruption_mode}")
