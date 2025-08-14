@@ -3,9 +3,9 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "odyssey"
+name = "agora"
 version = "0.1.0"
-description = "Odyssey - Protein Structure Modeling"
+description = "Agora - Protein Model Deployment"
 authors = [{ name="Sean Moushegian", email="sean@anthrogen.com" }, {name="Shyam Venkatasubramanian", email="shyam@anthrogen.com"}, {name="Connor Lee", email="connor@anthrogen.com"}]
 requires-python = ">=3.8"
 dependencies = [
@@ -30,4 +30,4 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["odyssey*"]
+include = ["agora*"]

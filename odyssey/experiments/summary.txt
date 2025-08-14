@@ -1,4 +1,0 @@
-Checkpoint: ../../checkpoints/AWS/STAGE_2/checkpoint_step_40000.pt
-Evaluation Type: Stage 2 (All Heavy Atoms)
-loss: 0.8881 (34 structures)
-rmsd: 1.6228 (34 structures)

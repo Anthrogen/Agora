@@ -3,10 +3,6 @@
 *.pth
 *.png
 
-checkpoints/
-
-
-
 # Python
 __pycache__/
 *.py[cod]
@@ -52,7 +48,3 @@ ENV/
 # Logs
 logs/
 *.log
-
-# Data files (if you don't want to track them)
-data/
-datasets/

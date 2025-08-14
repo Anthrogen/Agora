@@ -1,1 +1,0 @@
-{"batch/learning_rate":6.6e-06,"_runtime":100,"batch/epoch":1,"_step":131,"batch/train_loss_seq":2.962890625,"_timestamp":1.7545312799299655e+09,"_wandb":{"runtime":100},"batch/train_struct_acc":0,"step":132,"batch/train_loss_struct":8.21875,"batch/train_loss":11.1796875,"batch/train_seq_acc":0.0752212405204773}
