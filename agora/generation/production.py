@@ -9,17 +9,17 @@ import matplotlib.pyplot as plt
 
 # Import from existing modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from odyssey.src.models.autoencoder import Autoencoder
-from odyssey.src.models.transformer import TransformerTrunk
-from odyssey.src.dataloader import ContentBasedDataLoader, worker_init_fn
-from odyssey.src.dataset import ProteinDataset, Protein
-from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from odyssey.src.model_librarian import load_model_from_checkpoint
-from odyssey.src.tokenizer import CorruptionMode
-from odyssey.generation.mlm_gen import generate_mlm
-from odyssey.generation.discrete_diffusion_gen import generate_discrete_diffusion
-from odyssey.src.configurations import NoMaskConfig
-from odyssey.src.losses import _kabsch_align
+from agora.src.models.autoencoder import Autoencoder
+from agora.src.models.transformer import TransformerTrunk
+from agora.src.dataloader import ContentBasedDataLoader, worker_init_fn
+from agora.src.dataset import ProteinDataset, Protein
+from agora.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from agora.src.model_librarian import load_model_from_checkpoint
+from agora.src.tokenizer import CorruptionMode
+from agora.generation.mlm_gen import generate_mlm
+from agora.generation.discrete_diffusion_gen import generate_discrete_diffusion
+from agora.src.configurations import NoMaskConfig
+from agora.src.losses import _kabsch_align
 
 def tokens_to_sequence(seq_tokens, vocab_mapping):
     """Convert sequence tokens back to amino acid sequence."""
@@ -286,8 +286,9 @@ def generate_single_protein(protein_json_path: str, model_checkpoint: str, refer
                 else: 
                     coords = autoencoder.decoder(z_q, nonbeospank=nonbeospank, seq_tokens=batch.masked_data['seq'])
             
-            # Update the protein data and save
-            generated_coords = coords.squeeze(0).cpu()
+            # Update the protein data and save - exclude BOS/EOS/PAD positions
+            content_mask = ~batch.beospank['coords'].squeeze(0).cpu()
+            generated_coords = coords.squeeze(0).cpu()[content_mask]
             
             # Create a Protein object with the generated data
             protein = Protein(protein_json_path, mode=dataset_mode)
@@ -317,7 +318,8 @@ def generate_single_protein(protein_json_path: str, model_checkpoint: str, refer
             if reference_json_path:
                 print(f"\nLoading reference structure from {reference_json_path}")
                 reference_protein = Protein(reference_json_path, mode=dataset_mode)
-                reference_coords = reference_protein.coords
+                # Filter reference coordinates to exclude BOS/EOS/PAD positions (same length as generated)
+                reference_coords = reference_protein.coords[:len(generated_sequence)]
                 reference_sequence = ''.join(reference_protein.seq)
                 
                 print("Creating structure comparison visualization...")

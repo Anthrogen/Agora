@@ -17,7 +17,7 @@ import time
 import hashlib
 
 # Import tokenizers
-from odyssey.src.tokenizer import (
+from agora.src.tokenizer import (
     SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer,
     SS8Tokenizer, SASATokenizer, PLDDTTokenizer,
     OrthologousGroupsTokenizer, SemanticDescriptionTokenizer,

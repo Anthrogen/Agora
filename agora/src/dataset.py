@@ -65,12 +65,6 @@ ALL_TRACKS = ('seq', 'coords', 'ss8', 'sasa', 'orthologous_groups', 'semantic_de
 
 class Protein():
     """
-    To test this code, try it with:
-
-    Protein("/workspace/demo/Odyssey/sample_data/3k/1a04_A.json", mode="side_chain")
-
-    Modes: side_chain, backbone
-
     TODO: this class should have two methods of construction: one from PDB/JSON, one from sequence and coordinate tensors.
     TODO: furthermore, we should be able to "dump" to PDB/JSON from this class.
     """
@@ -385,10 +379,6 @@ class Protein():
 # JSON at /workspace/cmu_vqvae_data/single_chain_clusters_full.csv
 # See development at tmp_csv_parser.py
 class ProteinDataset(Dataset):
-    """
-    Test me in shell:
-    ProteinDataset("/workspace/demo/Odyssey/sample_data/tiny_set.csv")
-    """
     PROTEIN_ID_COL = 1
     JSON_PATH_COL = 2 # Within the index.csv file, this is the colun (0-indexed) that points ot member Json Path 
     TOTAL_COLS = 4

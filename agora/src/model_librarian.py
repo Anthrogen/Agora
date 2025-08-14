@@ -8,10 +8,10 @@ import numpy as np
 import os
 from typing import Dict
 from dataclasses import replace
-from odyssey.src.models.transformer import TransformerTrunk
-from odyssey.src.models.blocks import StandardTransformerBlock
-from odyssey.src.models.autoencoder import Autoencoder, FSQEncoder
-from odyssey.src.configurations import *
+from agora.src.models.transformer import TransformerTrunk
+from agora.src.models.blocks import StandardTransformerBlock
+from agora.src.models.autoencoder import Autoencoder, FSQEncoder
+from agora.src.configurations import *
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import StateDictType
 import warnings

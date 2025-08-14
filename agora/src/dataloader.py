@@ -4,19 +4,19 @@ import random
 import os
 from torch.utils.data import DataLoader
 from typing import Tuple
-from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from odyssey.src.tokenizer import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer, SS8Tokenizer, SASATokenizer, PLDDTTokenizer
-from odyssey.src.tokenizer import OrthologousGroupsTokenizer, SemanticDescriptionTokenizer, DomainsTokenizer, CorruptionMode
+from agora.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from agora.src.tokenizer import SequenceTokenizer, StructureTokenizer, CoordinatesTokenizer, SS8Tokenizer, SASATokenizer, PLDDTTokenizer
+from agora.src.tokenizer import OrthologousGroupsTokenizer, SemanticDescriptionTokenizer, DomainsTokenizer, CorruptionMode
 import math
 from abc import abstractmethod
 from threading import Thread
 from queue import Queue, Empty
 
-from odyssey.src.configurations import DiffusionMaskConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig
-from odyssey.src.masking_utils import _get_noise_levels, _sample_betalinear30, _sample_cosine, _sample_sqrt
+from agora.src.configurations import DiffusionMaskConfig, SimpleMaskConfig, ComplexMaskConfig, NoMaskConfig
+from agora.src.masking_utils import _get_noise_levels, _sample_betalinear30, _sample_cosine, _sample_sqrt
 
 # Import components from pipeline for DecoupledDataLoader
-from odyssey.src.pipeline import (
+from agora.src.pipeline import (
     RawBatch, RawDataCache, StructureTokenCache,
     raw_collate_fn, CPUTokenizationStage, 
     GPUStructureTokenizationStage, TokenizationPipeline,

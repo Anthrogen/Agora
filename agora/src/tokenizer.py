@@ -1,4 +1,4 @@
-from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS, PLDDT_TOKENS, ORTHOLOGOUS_GROUPS_TOKENS, SEMANTIC_DESCRIPTION_TOKENS, DOMAINS_TOKENS
+from agora.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS, PLDDT_TOKENS, ORTHOLOGOUS_GROUPS_TOKENS, SEMANTIC_DESCRIPTION_TOKENS, DOMAINS_TOKENS
 import torch
 from bisect import bisect_right
 from tabulate import tabulate
@@ -923,78 +923,3 @@ class DomainsTokenizer(Tokenizer):
             if isinstance(item, torch.Tensor): item = item.item()
             ret.append(self.reverse_mapping[item])
         return str(ret).replace("'", "").replace('"', '')
-
-
-"""
-To use the following test function, run the following code:
-# seq, coords, ss8, sasa, orthologous_groups, semantic_description, domains, plddt, l
-
-from odyssey.src.tokenizer import *
-from odyssey.src.dataset import *
-from odyssey.src.vocabulary import *
-pd = ProteinDataset("/workspace/demo/Odyssey/sample_data/27k.csv")
-mask = torch.bernoulli(torch.full((2048,), 0.2)).bool()
-idx = 761
-mode = CorruptionMode.UNIFORM
-
-seq = SequenceTokenizer(2048, corruption_mode=mode)
-print_tokenized_sequence(seq.print_token, *seq.tokenize(pd.__getitem__(idx)[0], mask))
-
-coord = CoordinatesTokenizer(2048)
-print_tokenized_sequence(coord.print_token, *coord.tokenize(pd.__getitem__(idx)[1], mask))
-
-from odyssey.src.model_librarian import load_model_from_checkpoint
-device = torch.device('cpu')
-autoencoder, _, _ = load_model_from_checkpoint("/workspace/demo/Odyssey/checkpoints/fsq/fsq_stage_1_config/fsq_stage_1_config_000/checkpoint_step_66888.pt", device)
-struct = StructureTokenizer(2048, autoencoder, corruption_mode=mode)
-_, _, _, _, struct_unmasked, struct_masked, struct_beospank, struct_mask = struct.tokenize(pd.__getitem__(idx)[1], mask)
-print_tokenized_sequence(struct.print_token, struct_unmasked, struct_masked, struct_beospank, struct_mask)
-
-ss8 = SS8Tokenizer(2048, corruption_mode=mode)
-print_tokenized_sequence(ss8.print_token, *ss8.tokenize(pd.__getitem__(idx)[2], mask))
-
-sasa = SASATokenizer(2048, corruption_mode=mode)
-print_tokenized_sequence(sasa.print_token, *sasa.tokenize(pd.__getitem__(idx)[3], mask))
-
-_ = load_annotation_tokens("/workspace/demo/Odyssey/odyssey/train/vocab_orthologous_groups.txt", ORTHOLOGOUS_GROUPS_TOKENS)
-orthologous_groups = OrthologousGroupsTokenizer(2048)
-data, beospank = orthologous_groups.tokenize(pd.__getitem__(idx)[4])
-print_tokenized_sequence(orthologous_groups.print_token, data, data, beospank, torch.zeros_like(mask))
-
-_ = load_annotation_tokens("/workspace/demo/Odyssey/odyssey/train/vocab_semantic_descriptions.txt", SEMANTIC_DESCRIPTION_TOKENS)
-semantic_descriptions = SemanticDescriptionTokenizer(2048)
-data, beospank = semantic_descriptions.tokenize(pd.__getitem__(idx)[5])
-print_tokenized_sequence(semantic_descriptions.print_token, data, data, beospank, torch.zeros_like(mask))
-
-_ = load_annotation_tokens("/workspace/demo/Odyssey/odyssey/train/vocab_domains.txt", DOMAINS_TOKENS)
-domains = DomainsTokenizer(2048, 4, corruption_mode=mode)
-print_tokenized_sequence(domains.print_token, *domains.tokenize(pd.__getitem__(idx)[6], mask))
-
-plddt = PLDDTTokenizer(2048, corruption_mode=mode)
-print_tokenized_sequence(plddt.print_token, *plddt.tokenize(pd.__getitem__(idx)[7], mask))
-"""
-def print_tokenized_sequence(print_token, unmasked, masked, beospank, mask, limit=100):
-
-    def hot(b):
-        """
-        Print boolean tensors.
-        """
-        if isinstance(b, torch.Tensor) and b.numel() > 1:
-            s = []
-            for i in range(b.shape[0]):
-                s.append("1" if b[i] else "0")
-            return str(s).replace("'", "").replace('"', '')
-        else:
-            return "1" if b else "0"
-            # return "1" if b else ""
-
-
-    data = {'Unmasked': [print_token(tok) for tok in unmasked[:limit]], 
-            'Masked': [print_token(tok) for tok in masked[:limit]],
-            'Beospank?': [hot(b) for b in beospank[:limit]],
-            'Mask?': [hot(m) for m in mask[:limit]],
-            }
-
-    table = tabulate(data, headers='keys', tablefmt='grid')
-
-    print(table)

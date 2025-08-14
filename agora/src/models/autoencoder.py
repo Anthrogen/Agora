@@ -5,11 +5,11 @@ import torch.nn.functional as F
 from typing import Optional
 import math
 import matplotlib.pyplot as plt
-from odyssey.src.quantizer import Quantizer
+from agora.src.quantizer import Quantizer
 
-from odyssey.src.models.blocks import ConvBlock, StandardTransformerBlock, GeometricTransformerBlock, ReflexiveTransformerBlock, ConsensusTransformerBlock
-from odyssey.src.attention.CrossAttention import CrossAttention
-from odyssey.src.attention.CrossConsensus import CrossConsensus
+from agora.src.models.blocks import ConvBlock, StandardTransformerBlock, GeometricTransformerBlock, ReflexiveTransformerBlock, ConsensusTransformerBlock
+from agora.src.attention.CrossAttention import CrossAttention
+from agora.src.attention.CrossConsensus import CrossConsensus
 
 class FSQEncoder(nn.Module):
     """

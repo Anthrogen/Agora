@@ -5,9 +5,9 @@ import torch.nn.functional as F
 from typing import Optional
 import math
 
-from odyssey.src.models.blocks import SinusoidalPositionEmbeddings, AdaptiveLayerNorm, ConvBlock, StandardTransformerBlock, GeometricTransformerBlock, ReflexiveTransformerBlock, ConsensusTransformerBlock
-from odyssey.src.attention.CrossAttention import CrossAttention  
-from odyssey.src.attention.CrossConsensus import CrossConsensus
+from agora.src.models.blocks import SinusoidalPositionEmbeddings, AdaptiveLayerNorm, ConvBlock, StandardTransformerBlock, GeometricTransformerBlock, ReflexiveTransformerBlock, ConsensusTransformerBlock
+from agora.src.attention.CrossAttention import CrossAttention  
+from agora.src.attention.CrossConsensus import CrossConsensus
 
 # --------------------------------------------------------------------------- #
 #  Top-level model                                                             #

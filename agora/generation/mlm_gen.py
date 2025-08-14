@@ -38,13 +38,13 @@ import pdb
 
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from odyssey.src.models.transformer import TransformerTrunk, StandardTransformerBlock
-from odyssey.src.models.autoencoder import FSQEncoder
-from odyssey.src.dataloader import _get_training_dataloader
-from odyssey.src.dataset import ProteinDataset
-from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from odyssey.src.losses import cross_entropy_loss, calculate_accuracy
-from odyssey.src.configurations import TrunkConfig, TrainingConfig, CrossEntropyLossConfig
+from agora.src.models.transformer import TransformerTrunk, StandardTransformerBlock
+from agora.src.models.autoencoder import FSQEncoder
+from agora.src.dataloader import _get_training_dataloader
+from agora.src.dataset import ProteinDataset
+from agora.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from agora.src.losses import cross_entropy_loss, calculate_accuracy
+from agora.src.configurations import TrunkConfig, TrainingConfig, CrossEntropyLossConfig
 
 def sample_positions_to_unmask(masked_positions, probs_masked, UNMASK_STRATEGY, NUM_TO_UNMASK):
     N = min(len(masked_positions), NUM_TO_UNMASK)

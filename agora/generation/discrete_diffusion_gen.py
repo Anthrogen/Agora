@@ -27,18 +27,18 @@ from typing import Optional, Tuple, Callable, List, Dict
 import random
 import math
 from types import SimpleNamespace
-from odyssey.src.dataloader import _get_noise_levels
+from agora.src.dataloader import _get_noise_levels
 
 # Import the model and data loader from the src directory
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from odyssey.src.models.transformer import TransformerTrunk, StandardTransformerBlock
-from odyssey.src.models.autoencoder import FSQEncoder
-from odyssey.src.dataset import ProteinDataset
-from odyssey.src.dataloader import DiffusionDataLoader
-from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
-from odyssey.src.losses import score_entropy_loss_absorb, score_entropy_loss_uniform
-from odyssey.src.configurations import TrunkConfig, TrainingConfig, ScoreEntropyLossConfig
-from odyssey.src.tokenizer import CorruptionMode
+from agora.src.models.transformer import TransformerTrunk, StandardTransformerBlock
+from agora.src.models.autoencoder import FSQEncoder
+from agora.src.dataset import ProteinDataset
+from agora.src.dataloader import DiffusionDataLoader
+from agora.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
+from agora.src.losses import score_entropy_loss_absorb, score_entropy_loss_uniform
+from agora.src.configurations import TrunkConfig, TrainingConfig, ScoreEntropyLossConfig
+from agora.src.tokenizer import CorruptionMode
 
 def generate_discrete_diffusion(corruption_mode, model, model_cfg, train_cfg, batch):
     """Perform a single step with discrete diffusion."""

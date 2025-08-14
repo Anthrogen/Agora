@@ -2,8 +2,8 @@ from __future__ import annotations
 import torch
 from dataclasses import dataclass, field
 from typing import List, Optional, Any, Dict, Type
-from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS, PLDDT_TOKENS
-from odyssey.src.vocabulary import DOMAINS_TOKENS, ORTHOLOGOUS_GROUPS_TOKENS, SEMANTIC_DESCRIPTION_TOKENS, load_annotation_tokens
+from agora.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS, SS8_TOKENS, SASA_TOKENS, PLDDT_TOKENS
+from agora.src.vocabulary import DOMAINS_TOKENS, ORTHOLOGOUS_GROUPS_TOKENS, SEMANTIC_DESCRIPTION_TOKENS, load_annotation_tokens
 import os
 from copy import deepcopy
 

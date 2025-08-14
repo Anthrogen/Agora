@@ -6,7 +6,7 @@ import yaml
 from pathlib import Path
 from typing import Tuple, Dict, Union, List
 
-from odyssey.src.configurations import Config
+from agora.src.configurations import Config
 
 
 def load_config(config_path: Union[str, Path]) -> Tuple[Config, Config, Dict, Dict]:
