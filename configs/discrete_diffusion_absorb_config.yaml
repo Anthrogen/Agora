@@ -83,7 +83,7 @@ train_cfg:
     # Masking configuration
     mask_config:
       diffusion_mask_cfg:
-        noise_schedule: "linear"
+        noise_schedule: "uniform"
         sigma_min: 0.31
         sigma_max: 5.68
         num_timesteps: 100

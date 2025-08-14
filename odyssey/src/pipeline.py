@@ -537,7 +537,7 @@ class GPUStructureTokenizationStage:
         if autoencoder is not None:
             # Check current dtype of autoencoder
             first_param = next(autoencoder.parameters())
-            is_already_fp16 = (first_param.dtype == torch.float16)
+            is_already_fp16 = (first_param.dtype == torch.bfloat16)
             
             if is_already_fp16: self.use_fp16 = True
             elif use_fp16 and self.device.type == 'cuda':

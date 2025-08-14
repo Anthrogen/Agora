@@ -24,9 +24,6 @@ from odyssey.src.dataset import ProteinDataset
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.losses import kabsch_rmsd_loss, squared_kabsch_rmsd_loss
 from odyssey.src.configurations import TransformerConfig, TrainingConfig
-from odyssey.train.fsq_step import stage_1_step, stage_2_step
-from odyssey.train.mlm_step import mlm_step
-from odyssey.train.discrete_diffusion_step import discrete_diffusion_step
 from odyssey.src.configurations import *
 from odyssey.src.config_loader import load_config, load_multi_configs
 from odyssey.src.model_librarian import ensure_identical_parameters_transformers, ensure_identical_parameters_autoencoders, load_model_from_empty, load_model_from_checkpoint, save_model_checkpoint, save_summary_history
@@ -34,8 +31,8 @@ from odyssey.src.tokenizer import CorruptionMode
 
 from odyssey.train.yaml_expander import expand_yaml_to_directory
 from odyssey.train.generate_experiment_map import generate_experiment_map
-from odyssey.train.mlm_step import generate_mlm
-from odyssey.train.discrete_diffusion_step import generate_discrete_diffusion
+from odyssey.generation.mlm_gen import generate_mlm
+from odyssey.generation.discrete_diffusion_gen import generate_discrete_diffusion
 from odyssey.src.losses import _kabsch_align
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -338,10 +335,10 @@ def generate(model_checkpoint, protein_json_path, callback=None):
 if __name__ == "__main__":
     """
     Easy way to test:
-    python generation.py --checkpoint ../../checkpoints/transformer_trunk/mlm_simple_config/mlm_simple_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A0B4DZM7-F1.json
-    python generation.py --checkpoint ../../checkpoints/transformer_trunk/mlm_complex_config/mlm_complex_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A0B4DZM7-F1.json
-    python generation.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_absorb_config/discrete_diffusion_absorb_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A0B4DZM7-F1.json
-    python generation.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_uniform_config/discrete_diffusion_uniform_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A0B4DZM7-F1.json
+    python generation.py --checkpoint ../../checkpoints/transformer_trunk/mlm_simple_config/mlm_simple_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A009G5B5-F1.json
+    python generation.py --checkpoint ../../checkpoints/transformer_trunk/mlm_complex_config/mlm_complex_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A009G5B5-F1.json
+    python generation.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_absorb_config/discrete_diffusion_absorb_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A009G5B5-F1.json
+    python generation.py --checkpoint ../../checkpoints/transformer_trunk/discrete_diffusion_uniform_config/discrete_diffusion_uniform_config_000/checkpoint_step_89184.pt --protein ../../sample_data/27k/AF-A0A009G5B5-F1.json
     """
     parser = argparse.ArgumentParser(description='Generate Odyssey models')
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to fully trained model checkpoint')

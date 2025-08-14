@@ -439,9 +439,9 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             auto_wrap_policy = create_transformer_block_wrap_policy()
             # Configure bf16 mixed precision for params/reduction/buffers (better with FP8 compute)
             mp_policy = MixedPrecision(
-                param_dtype=torch.bfloat16,
-                reduce_dtype=torch.bfloat16,
-                buffer_dtype=torch.bfloat16,
+                param_dtype=torch.float16,
+                reduce_dtype=torch.float16,
+                buffer_dtype=torch.float16,
             )
             # Wrap with classic FSDP API
             fsdp_config = dict(

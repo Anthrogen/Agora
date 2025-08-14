@@ -531,9 +531,9 @@ class TrainingConfig(Config):
         assert isinstance(self.mask_config, MaskConfig)
         assert isinstance(self.loss_config, LossConfig)
 
-        assert self.data_dir is not None and os.path.exists(self.data_dir), f"Data directory {self.data_dir} does not exist."
+        assert self.data_dir is None or os.path.exists(self.data_dir), f"Data directory {self.data_dir} does not exist."
         assert not isinstance(self.checkpoint_dir, list) and ',' not in str(self.checkpoint_dir) and ';' not in str(self.checkpoint_dir), f"Multiple checkpoint directories not allowed: {self.checkpoint_dir}"
-        assert self.checkpoint_dir is not None and os.path.exists(self.checkpoint_dir), f"Checkpoint directory {self.checkpoint_dir} does not exist."
+        assert self.checkpoint_dir is None or os.path.exists(self.checkpoint_dir), f"Checkpoint directory {self.checkpoint_dir} does not exist."
 
         assert self.jump_start is None or os.path.exists(self.jump_start)
         

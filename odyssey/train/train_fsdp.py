@@ -415,16 +415,16 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             auto_wrap_policy = create_transformer_block_wrap_policy()
             
             # Configure fp16 mixed precision
-            fp16_policy = MixedPrecision(
-                param_dtype=torch.float16,
-                reduce_dtype=torch.float16,
-                buffer_dtype=torch.float16,
+            bf16_policy = MixedPrecision(
+                param_dtype=torch.bfloat16,
+                reduce_dtype=torch.bfloat16,
+                buffer_dtype=torch.bfloat16,
             )
             
             # FSDP configuration
             fsdp_config = dict(
                 auto_wrap_policy=auto_wrap_policy,
-                mixed_precision=fp16_policy,  # Enable fp16 mixed precision
+                mixed_precision=bf16_policy,  # Enable fp16 mixed precision
                 sharding_strategy=ShardingStrategy.FULL_SHARD,
                 cpu_offload=CPUOffload(offload_params=False),
                 backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
@@ -659,8 +659,24 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             train_cfg = train_cfg_list[model_idx]
             optimizer = optimizers[model_idx]
             scheduler = schedulers[model_idx]
-            train_loader = train_loaders[model_idx]
             step_fn = step_fns[model_idx]
+            
+            # Create a fresh training dataloader each epoch (like validation does)
+            # Note: This only works correctly for single model training (num_models=1)
+            # For multiple models, we'd need to store the datasets/samplers separately
+            if num_models == 1:
+                train_loader = _get_training_dataloader(
+                    train_ds, model_cfg, train_cfg, tracks_list[model_idx], loader_device,
+                    batch_size=train_cfg.batch_size, sampler=train_sampler if is_fsdp else None,
+                    shuffle=False if is_fsdp else True, min_unmasked=min_unmasked_list[model_idx],
+                    autoencoder=autoencoder, num_workers=num_workers,
+                    pin_memory=True, persistent_workers=False,  # Don't persist workers between epochs
+                    prefetch_factor=2 if num_workers > 0 else None,
+                    use_fp16=True
+                )
+            else:
+                # For multiple models, fall back to using the pre-created dataloader
+                train_loader = train_loaders[model_idx]
             
             model.train()
             # Only show progress bar on rank 0
@@ -854,13 +870,23 @@ def train(model_cfg_list: List[TransformerConfig], train_cfg_list: List[Training
             if rank == 5 or (rank == 0 and world_size <= 5):
                 print(f"[Rank {rank}][Training] Epoch {epoch+1} complete - Total steps: {steps[model_idx]}")
             
-            # Explicitly close the iterator to trigger generator cleanup between epochs
-            try:
-                close_fn = getattr(itr, 'close', None)
-                if callable(close_fn):
-                    close_fn()
-            except Exception:
-                pass
+            # For single model training, the dataloader is recreated each epoch
+            # so no cleanup is needed (it gets garbage collected)
+            # For multi-model training, we still need cleanup
+            if num_models > 1:
+                # Explicitly close the iterator to trigger generator cleanup between epochs
+                try:
+                    close_fn = getattr(itr, 'close', None)
+                    if callable(close_fn):
+                        close_fn()
+                except Exception:
+                    pass
+                
+                # Clean up the iterator to ensure fresh start next epoch
+                if hasattr(train_loader, '_iterator'):
+                    del train_loader._iterator
+                if hasattr(train_loader, '_DataLoader__initialized'):
+                    train_loader._DataLoader__initialized = False
     
     # Clean up dataloaders to terminate persistent workers
     if rank == 0: print("\nCleaning up dataloader workers...")

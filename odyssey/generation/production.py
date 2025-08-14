@@ -16,11 +16,10 @@ from odyssey.src.dataset import ProteinDataset, Protein
 from odyssey.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from odyssey.src.model_librarian import load_model_from_checkpoint
 from odyssey.src.tokenizer import CorruptionMode
-from odyssey.train.mlm_step import generate_mlm
-from odyssey.train.discrete_diffusion_step import generate_discrete_diffusion
+from odyssey.generation.mlm_gen import generate_mlm
+from odyssey.generation.discrete_diffusion_gen import generate_discrete_diffusion
 from odyssey.src.configurations import NoMaskConfig
 from odyssey.src.losses import _kabsch_align
-
 
 def tokens_to_sequence(seq_tokens, vocab_mapping):
     """Convert sequence tokens back to amino acid sequence."""
@@ -333,7 +332,7 @@ def generate_single_protein(protein_json_path: str, model_checkpoint: str, refer
 if __name__ == "__main__":
     """
     Easy way to test:
-    python production.py --protein ../../sample_data/27k/AF-A0A0B4DZM7-F1.json --checkpoint ../../checkpoints/transformer_trunk/mlm_simple_config/mlm_simple_config_000/checkpoint_step_89184.pt --reference ../../sample_data/27k/AF-A0A0B4DZM7-F1.json    
+    python production.py --protein ../../sample_data/1k/AF-A0A009LZF3-F1.json --checkpoint ../../checkpoints/transformer_trunk/mlm_simple_config/mlm_simple_config_000/checkpoint_step_89184.pt --reference ../../sample_data/27k/AF-A0A009LZF3-F1.json    
     """
     parser = argparse.ArgumentParser(description='Generate sequences and structures for masked protein positions')
     parser.add_argument('--protein', type=str, required=True, 
