@@ -8,6 +8,9 @@ from typing import Optional
 from enum import Enum
 import array
 import re
+import boto3
+from botocore.exceptions import NoCredentialsError
+import smart_open
 
 class Chirality(Enum):
     D = 1   # Dextrorotatory amino acid
@@ -65,6 +68,12 @@ ALL_TRACKS = ('seq', 'coords', 'ss8', 'sasa', 'orthologous_groups', 'semantic_de
 
 class Protein():
     """
+    To test this code, try it with:
+
+    Protein("/workspace/demo/Odyssey/sample_data/3k/1a04_A.json", mode="side_chain")
+
+    Modes: side_chain, backbone
+
     TODO: this class should have two methods of construction: one from PDB/JSON, one from sequence and coordinate tensors.
     TODO: furthermore, we should be able to "dump" to PDB/JSON from this class.
     """
@@ -73,10 +82,29 @@ class Protein():
         assert mode in ["side_chain", "backbone"]
         self.mode = mode
 
-        assert os.path.exists(file_path)
-        # data = json.load(open(file_path))
-        with open(file_path, 'rb') as f:
-            data = orjson.loads(f.read())
+        # Check if this is an S3/R2 URL
+        if file_path.startswith(('s3://', 'r2://', 'https://')):
+            # Handle R2 URLs by converting to S3 format for boto3
+            if file_path.startswith('r2://'):
+                file_path = file_path.replace('r2://', 's3://')
+            
+            # Use smart_open for S3/R2 streaming
+            endpoint_url = os.environ.get('AWS_ENDPOINT_URL', None)
+            s3_client = boto3.client(
+                's3',
+                endpoint_url=endpoint_url,
+                aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY'),
+                region_name=os.environ.get('AWS_DEFAULT_REGION', 'auto')
+            ) if endpoint_url else None
+            
+            with smart_open.open(file_path, 'rb', transport_params={'client': s3_client} if s3_client else {}) as f:
+                data = orjson.loads(f.read())
+        else:
+            # Local file path
+            assert os.path.exists(file_path)
+            with open(file_path, 'rb') as f:
+                data = orjson.loads(f.read())
 
         # This dataloader assumes that each amino acid begins with an "N".
         atom_names = data.get("all_atoms", {}).get('atom_names', None)
@@ -334,35 +362,24 @@ class Protein():
             # Reconstruct atom coordinates for each residue
             for residue_idx in range(self.len):
                 residue_char = self.seq[residue_idx]
-                if residue_char not in ATOMS: continue
                     
-                # Get atoms for this residue typee
+                # Get atoms for this residue type
                 residue_atoms = ATOMS[residue_char]
                 
-                # Add each atom
+                # Add each atom (only up to the number that this residue type should have)
                 for atom_idx, atom_name in enumerate(residue_atoms):
-                    if atom_idx < self.coords.shape[1]:
-                        coord = self.coords[residue_idx, atom_idx, :].tolist()
-                        # Only add non-zero coordinates
-                        if any(c != 0 for c in coord):
-                            atom_names_list.append(atom_name)
-                            atom_coords_list.append(coord)
-                            
-                            # Also update backbone coordinates
-                            if atom_name == 'N':
-                                backbone_n_coords.append(coord)
-                            elif atom_name == 'CA':
-                                backbone_ca_coords.append(coord)
-                            elif atom_name == 'C':
-                                backbone_c_coords.append(coord)
-                
-                # Ensure backbone coordinates are added even if they're zero (to maintain indexing)
-                if len(backbone_n_coords) <= residue_idx:
-                    backbone_n_coords.append(self.coords[residue_idx, 0, :].tolist())  # N is typically at index 0
-                if len(backbone_ca_coords) <= residue_idx:
-                    backbone_ca_coords.append(self.coords[residue_idx, 1, :].tolist())  # CA is typically at index 1
-                if len(backbone_c_coords) <= residue_idx:
-                    backbone_c_coords.append(self.coords[residue_idx, 2, :].tolist())  # C is typically at index 2
+                    coord = self.coords[residue_idx, atom_idx, :].tolist()
+                    # Add coordinates (including zeros) - we need all atoms for proper structure
+                    atom_names_list.append(atom_name)
+                    atom_coords_list.append(coord)
+                    
+                    # Also update backbone coordinates
+                    if atom_name == 'N':
+                        backbone_n_coords.append(coord)
+                    elif atom_name == 'CA':
+                        backbone_ca_coords.append(coord)
+                    elif atom_name == 'C':
+                        backbone_c_coords.append(coord)
             
             data['all_atoms']['atom_names'] = atom_names_list
             data['all_atoms']['atom_coordinates'] = atom_coords_list
@@ -379,6 +396,10 @@ class Protein():
 # JSON at /workspace/cmu_vqvae_data/single_chain_clusters_full.csv
 # See development at tmp_csv_parser.py
 class ProteinDataset(Dataset):
+    """
+    Test me in shell:
+    ProteinDataset("/workspace/demo/Odyssey/sample_data/tiny_set.csv")
+    """
     PROTEIN_ID_COL = 1
     JSON_PATH_COL = 2 # Within the index.csv file, this is the colun (0-indexed) that points ot member Json Path 
     TOTAL_COLS = 4
@@ -516,12 +537,16 @@ class ProteinDataset(Dataset):
                 .strip()  # remove any whitespace/newline characters
             )
 
-            json_path = os.path.join(self.index_csv_dir, rel_path_to_json)
+            # Check if it's an S3/R2 URL or local path
+            if rel_path_to_json.startswith(('s3://', 'r2://', 'https://')):
+                json_path = rel_path_to_json  # Use URL directly
+            else:
+                json_path = os.path.join(self.index_csv_dir, rel_path_to_json)
 
         # Load protein (same for both cases)
         try:
             return Protein(json_path, mode=self.mode)
-        except (AssertionError, ValueError, orjson.JSONDecodeError, PermissionError, OSError, FileNotFoundError) as e:
+        except (AssertionError, ValueError, orjson.JSONDecodeError, PermissionError, OSError, FileNotFoundError, NoCredentialsError) as e:
             if self.verbose:
                 print(f"Warning: encountered malformed file {json_path}: {e}")
             return None

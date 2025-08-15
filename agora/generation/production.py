@@ -12,7 +12,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from agora.src.models.autoencoder import Autoencoder
 from agora.src.models.transformer import TransformerTrunk
 from agora.src.dataloader import ContentBasedDataLoader, worker_init_fn
-from agora.src.dataset import ProteinDataset, Protein
+from agora.src.dataset import ProteinDataset, Protein, ATOMS
 from agora.src.vocabulary import SEQUENCE_TOKENS, SPECIAL_TOKENS
 from agora.src.model_librarian import load_model_from_checkpoint
 from agora.src.tokenizer import CorruptionMode
@@ -295,7 +295,20 @@ def generate_single_protein(protein_json_path: str, model_checkpoint: str, refer
             
             # Update sequence and coordinates
             protein.seq = list(generated_sequence)
-            protein.coords = generated_coords
+            
+            # Process coordinates to match the number of atoms per residue
+            # For each residue, only keep coordinates up to the number of atoms that residue type has
+            processed_coords = torch.zeros_like(generated_coords)
+            for residue_idx, residue_char in enumerate(generated_sequence):
+                if residue_idx >= generated_coords.shape[0]: break
+                    
+                # Get the number of atoms this residue type should have
+                num_atoms = len(ATOMS[residue_char])
+                # Copy only up to that many coordinates
+                max_atoms_to_copy = min(num_atoms, generated_coords.shape[1])
+                processed_coords[residue_idx, :max_atoms_to_copy, :] = generated_coords[residue_idx, :max_atoms_to_copy, :]
+            
+            protein.coords = processed_coords
             protein.len = len(protein.seq)  # Update length to match new sequence
             
             # Auto-create output path in gen folder
